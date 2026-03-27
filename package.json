@@ -1,0 +1,76 @@
+{
+  "name": "blue-cuts-gems",
+  "version": "1.0.0",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "concurrently \"npm:dev:electron\" \"npm:dev:frontend\" \"npm:dev:backend\"",
+    "dev:electron": "cross-env NODE_ENV=development electron .",
+    "dev:frontend": "npm run start --prefix frontend",
+    "dev:backend": "npm run dev --prefix backend",
+    "build:frontend": "cross-env REACT_APP_API_URL=http://127.0.0.1:4000 npm run build --prefix frontend",
+    "build:backend": "npm run build --prefix backend",
+    "predist": "node scripts/ensure-electron-native.cjs && npm run build:frontend",
+    "dist": "electron-builder",
+    "dist:dir": "electron-builder --dir",
+    "package": "npm run dist",
+    "restore:dev-native": "npm rebuild sqlite3 bcrypt --prefix backend"
+  },
+  "keywords": [],
+  "author": "Blue Cuts Co., Ltd.",
+  "license": "ISC",
+  "description": "Blue Cuts — point of sale (Electron + React + Express + SQLite)",
+  "build": {
+    "appId": "com.bluecuts.pos",
+    "productName": "Blue Cuts",
+    "icon": "build/icon.png",
+    "copyright": "Copyright © Blue Cuts Co., Ltd.",
+    "directories": {
+      "output": "release"
+    },
+    "npmRebuild": false,
+    "files": [
+      "electron-main.js",
+      "frontend/build/**/*",
+      "build/icon.png"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!data/**",
+          "!uploads/**"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    }
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "cross-env": "^7.0.3",
+    "electron": "^41.0.2",
+    "electron-builder": "^25.1.8",
+    "electron-rebuild": "^3.2.9"
+  }
+}
