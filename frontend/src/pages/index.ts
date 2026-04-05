@@ -1,6 +1,7 @@
 export { DashboardPage } from './DashboardPage';
 export { UpdateInventoryPage } from './inventory/UpdateInventoryPage';
 export { CheckInventoryPage } from './inventory/CheckInventoryPage';
+export { StockCountPage } from './inventory/StockCountPage';
 export { SellingPage } from './selling/SellingPage';
 export { PaymentPage } from './payments/PaymentPage';
 export { InvoiceCheckoutPage } from './payments/InvoiceCheckoutPage';

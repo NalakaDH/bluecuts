@@ -1,7 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAlertDialog } from '../../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../../api';
-import { DEFAULT_CURRENCY_CODE, formatMoneyAmount } from '../../lib/currencies';
+import { DEFAULT_CURRENCY_CODE } from '../../lib/currencies';
+import {
+  formatUsdOnlyFromAny,
+  formatUsdOnlyFromThb,
+  thbEquivalentToUsdCsv,
+  thbEquivalentToUsdNumber,
+} from '../../lib/moneyUsdDisplay';
+import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
 
 type GroupMode = 'daily' | 'monthly';
 
@@ -103,8 +110,6 @@ interface ReportsPageProps {
 
 const money = (n: number) => Number(n || 0).toFixed(2);
 
-const thbAgg = (n: number) => formatMoneyAmount(Number(n) || 0, DEFAULT_CURRENCY_CODE);
-
 interface InvoiceListRow {
   id: number;
   invoice_no: string;
@@ -204,7 +209,7 @@ function formatChartPeriod(period: string): string {
   return trimmed.length > 14 ? `${trimmed.slice(0, 14)}…` : trimmed;
 }
 
-function ReportsSalesLineChart({ rows }: { rows: TrendRow[] }) {
+function ReportsSalesLineChart({ rows, thbPerUnit }: { rows: TrendRow[]; thbPerUnit: ThbPerUnitMap }) {
   const w = 840;
   const h = 360;
   const pad = { t: 32, r: 52, b: 72, l: 76 };
@@ -227,14 +232,12 @@ function ReportsSalesLineChart({ rows }: { rows: TrendRow[] }) {
     return <div className="rep2-chart-empty">No trend data for this range.</div>;
   }
 
-  const money2 = (v: number) => thbAgg(v);
-
   const maxVal = Math.max(
     1e-6,
     ...rows.flatMap(r => [
-      Number(r.sales_total) || 0,
-      Number(r.collected_total) || 0,
-      Number(r.outstanding_total) || 0,
+      thbEquivalentToUsdNumber(r.sales_total, thbPerUnit),
+      thbEquivalentToUsdNumber(r.collected_total, thbPerUnit),
+      thbEquivalentToUsdNumber(r.outstanding_total, thbPerUnit),
     ])
   );
 
@@ -271,7 +274,12 @@ function ReportsSalesLineChart({ rows }: { rows: TrendRow[] }) {
     key: 'sales_total' | 'collected_total' | 'outstanding_total',
     stroke: string
   ) => {
-    const pts = rows.map((r, i) => `${xAt(i)},${yAt(Number(r[key]) || 0)}`).join(' ');
+    const pts = rows
+      .map((r, i) => {
+        const vUsd = thbEquivalentToUsdNumber(Number(r[key]) || 0, thbPerUnit);
+        return `${xAt(i)},${yAt(vUsd)}`;
+      })
+      .join(' ');
     return (
       <g key={key}>
         <polyline
@@ -284,11 +292,12 @@ function ReportsSalesLineChart({ rows }: { rows: TrendRow[] }) {
         />
         {rows.map((r, i) => {
           const isHover = hoverIdx === i;
+          const vUsd = thbEquivalentToUsdNumber(Number(r[key]) || 0, thbPerUnit);
           return (
             <circle
               key={`${key}-${r.period}`}
               cx={xAt(i)}
-              cy={yAt(Number(r[key]) || 0)}
+              cy={yAt(vUsd)}
               r={isHover ? pointR + 2 : pointR}
               fill="#ffffff"
               stroke={stroke}
@@ -376,15 +385,17 @@ function ReportsSalesLineChart({ rows }: { rows: TrendRow[] }) {
       {hovered && (
         <div className="rep2-chart-tooltip" style={{ left: tipX, top: 14 }}>
           <div className="rep2-chart-tooltip-title">{formatChartPeriod(hovered.period)}</div>
-          <div className="rep2-chart-tooltip-row" style={{ color: colors.sales }}>
-            sales : {money2(Number(hovered.sales_total))}
-          </div>
-          <div className="rep2-chart-tooltip-row" style={{ color: colors.collected }}>
-            collected : {money2(Number(hovered.collected_total))}
-          </div>
-          <div className="rep2-chart-tooltip-row" style={{ color: colors.outstanding }}>
-            outstanding : {money2(Number(hovered.outstanding_total))}
-          </div>
+          {(
+            [
+              { key: 'sales', color: colors.sales, label: 'sales', v: Number(hovered.sales_total) || 0 },
+              { key: 'collected', color: colors.collected, label: 'collected', v: Number(hovered.collected_total) || 0 },
+              { key: 'outstanding', color: colors.outstanding, label: 'outstanding', v: Number(hovered.outstanding_total) || 0 },
+            ] as const
+          ).map(({ key, color, label, v }) => (
+            <div key={key} className="rep2-chart-tooltip-row" style={{ color }}>
+              {label}: {formatUsdOnlyFromThb(v, thbPerUnit)}
+            </div>
+          ))}
         </div>
       )}
 
@@ -406,7 +417,7 @@ function ReportsSalesLineChart({ rows }: { rows: TrendRow[] }) {
   );
 }
 
-function ReportsProfitBarChart({ rows }: { rows: ProfitTrendRow[] }) {
+function ReportsProfitBarChart({ rows, thbPerUnit }: { rows: ProfitTrendRow[]; thbPerUnit: ThbPerUnitMap }) {
   const w = 840;
   const h = 360;
   const pad = { t: 32, r: 52, b: 76, l: 76 };
@@ -426,14 +437,12 @@ function ReportsProfitBarChart({ rows }: { rows: ProfitTrendRow[] }) {
     return <div className="rep2-chart-empty">No profit data for this range.</div>;
   }
 
-  const money2 = (v: number) => thbAgg(v);
-
   const maxV = Math.max(
     1e-6,
     ...rows.flatMap(r => [
-      Number(r.selling_total) || 0,
-      Number(r.cost_total) || 0,
-      Number(r.profit_total) || 0,
+      thbEquivalentToUsdNumber(r.selling_total, thbPerUnit),
+      thbEquivalentToUsdNumber(r.cost_total, thbPerUnit),
+      thbEquivalentToUsdNumber(r.profit_total, thbPerUnit),
     ])
   );
 
@@ -515,9 +524,9 @@ function ReportsProfitBarChart({ rows }: { rows: ProfitTrendRow[] }) {
         {rows.map((r, i) => {
           const gx = gxAt(i);
           const startX = gx - trioW / 2;
-          const sellH = ((Number(r.selling_total) || 0) / maxV) * plotH;
-          const costH = ((Number(r.cost_total) || 0) / maxV) * plotH;
-          const profH = ((Number(r.profit_total) || 0) / maxV) * plotH;
+          const sellH = (thbEquivalentToUsdNumber(r.selling_total, thbPerUnit) / maxV) * plotH;
+          const costH = (thbEquivalentToUsdNumber(r.cost_total, thbPerUnit) / maxV) * plotH;
+          const profH = (thbEquivalentToUsdNumber(r.profit_total, thbPerUnit) / maxV) * plotH;
           return (
             <g key={r.period}>
               <rect
@@ -580,15 +589,17 @@ function ReportsProfitBarChart({ rows }: { rows: ProfitTrendRow[] }) {
       {hovered && (
         <div className="rep2-chart-tooltip" style={{ left: tipX, top: 14 }}>
           <div className="rep2-chart-tooltip-title">{formatChartPeriod(hovered.period)}</div>
-          <div className="rep2-chart-tooltip-row" style={{ color: fills.selling }}>
-            selling : {money2(Number(hovered.selling_total))}
-          </div>
-          <div className="rep2-chart-tooltip-row" style={{ color: fills.cost }}>
-            cost : {money2(Number(hovered.cost_total))}
-          </div>
-          <div className="rep2-chart-tooltip-row" style={{ color: fills.profit }}>
-            profit : {money2(Number(hovered.profit_total))}
-          </div>
+          {(
+            [
+              { key: 'selling', color: fills.selling, label: 'selling', v: Number(hovered.selling_total) || 0 },
+              { key: 'cost', color: fills.cost, label: 'cost', v: Number(hovered.cost_total) || 0 },
+              { key: 'profit', color: fills.profit, label: 'profit', v: Number(hovered.profit_total) || 0 },
+            ] as const
+          ).map(({ key, color, label, v }) => (
+            <div key={key} className="rep2-chart-tooltip-row" style={{ color }}>
+              {label}: {formatUsdOnlyFromThb(v, thbPerUnit)}
+            </div>
+          ))}
         </div>
       )}
 
@@ -616,6 +627,10 @@ function typeBadgeClass(type: string) {
   if (t.includes('SALE') || t.includes('INVOICE')) return 'rep2-type-badge rep2-type-badge--sale';
   if (t.includes('MEMO')) return 'rep2-type-badge rep2-type-badge--memo';
   return 'rep2-type-badge';
+}
+
+function RepUsdCell({ thb, thbPerUnit }: { thb: number; thbPerUnit: ThbPerUnitMap }) {
+  return <span className="rep2-money-usd">{formatUsdOnlyFromThb(thb, thbPerUnit)}</span>;
 }
 
 function MetricCard({
@@ -676,6 +691,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
   const [summary, setSummary] = useState<ReportsSummaryResponse | null>(null);
   const [salesTrend, setSalesTrend] = useState<TrendRow[]>([]);
   const [profitTrend, setProfitTrend] = useState<ProfitTrendRow[]>([]);
+  const [thbPerUnit, setThbPerUnit] = useState<ThbPerUnitMap>({ THB: 1 });
 
   const [customerInvoicesOpen, setCustomerInvoicesOpen] = useState(false);
   const [customerInvoicesLoading, setCustomerInvoicesLoading] = useState(false);
@@ -785,6 +801,27 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [from, to, group, token]);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(apiUrl('/api/exchange-rates'), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (data?.thb_per_unit && typeof data.thb_per_unit === 'object') {
+          setThbPerUnit(data.thb_per_unit as ThbPerUnitMap);
+        }
+      } catch {
+        // keep defaults
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
   const resetRange = () => {
     setFrom(defaultFrom);
     setTo(today);
@@ -818,35 +855,54 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
     lines.push(`From,${from}`);
     lines.push(`To,${to}`);
     lines.push(`Grouping,${group}`);
-    lines.push('Note,"Monetary totals are THB equivalents (amount × exchange_rates.thb_per_unit)"');
+    lines.push(
+      'Note,"USD values converted from internal THB-equivalent totals using Profile exchange rates (THB bridge)"'
+    );
     lines.push('');
-    lines.push('Metric,Value');
-    lines.push(`Total Sales,${s?.sales_total ?? 0}`);
-    lines.push(`Total Collected,${s?.collected_total ?? 0}`);
-    lines.push(`Outstanding Balance,${s?.outstanding_total ?? 0}`);
-    lines.push(`Gross Profit,${p?.profit_total ?? 0}`);
-    lines.push(`Inventory Value,${inv?.inventory_value ?? 0}`);
-    lines.push(`Open Memo Value,${memoOpenValue}`);
+    lines.push('Metric,Value (USD)');
+    lines.push(`Total Sales,${thbEquivalentToUsdCsv(s?.sales_total ?? 0, thbPerUnit)}`);
+    lines.push(`Total Collected,${thbEquivalentToUsdCsv(s?.collected_total ?? 0, thbPerUnit)}`);
+    lines.push(`Outstanding Balance,${thbEquivalentToUsdCsv(s?.outstanding_total ?? 0, thbPerUnit)}`);
+    lines.push(`Gross Profit,${thbEquivalentToUsdCsv(p?.profit_total ?? 0, thbPerUnit)}`);
+    lines.push(`Inventory Value,${thbEquivalentToUsdCsv(inv?.inventory_value ?? 0, thbPerUnit)}`);
+    lines.push(`Open Memo Value,${thbEquivalentToUsdCsv(memoOpenValue, thbPerUnit)}`);
     lines.push('');
     lines.push('SALES TREND');
     lines.push(
-      toCsv(salesTrend, [
-        { key: 'period', label: 'Period' },
-        { key: 'invoices_count', label: 'Invoices' },
-        { key: 'sales_total', label: 'Sales Total' },
-        { key: 'collected_total', label: 'Collected Total' },
-        { key: 'outstanding_total', label: 'Outstanding Total' },
-      ])
+      toCsv(
+        salesTrend.map(r => ({
+          period: r.period,
+          invoices_count: r.invoices_count,
+          sales_total: thbEquivalentToUsdCsv(r.sales_total, thbPerUnit),
+          collected_total: thbEquivalentToUsdCsv(r.collected_total, thbPerUnit),
+          outstanding_total: thbEquivalentToUsdCsv(r.outstanding_total, thbPerUnit),
+        })),
+        [
+          { key: 'period', label: 'Period' },
+          { key: 'invoices_count', label: 'Invoices' },
+          { key: 'sales_total', label: 'Sales Total (USD)' },
+          { key: 'collected_total', label: 'Collected Total (USD)' },
+          { key: 'outstanding_total', label: 'Outstanding Total (USD)' },
+        ]
+      )
     );
     lines.push('');
     lines.push('PROFIT TREND');
     lines.push(
-      toCsv(profitTrend, [
-        { key: 'period', label: 'Period' },
-        { key: 'selling_total', label: 'Selling Total' },
-        { key: 'cost_total', label: 'Cost Total' },
-        { key: 'profit_total', label: 'Profit Total' },
-      ])
+      toCsv(
+        profitTrend.map(r => ({
+          period: r.period,
+          selling_total: thbEquivalentToUsdCsv(r.selling_total, thbPerUnit),
+          cost_total: thbEquivalentToUsdCsv(r.cost_total, thbPerUnit),
+          profit_total: thbEquivalentToUsdCsv(r.profit_total, thbPerUnit),
+        })),
+        [
+          { key: 'period', label: 'Period' },
+          { key: 'selling_total', label: 'Selling Total (USD)' },
+          { key: 'cost_total', label: 'Cost Total (USD)' },
+          { key: 'profit_total', label: 'Profit Total (USD)' },
+        ]
+      )
     );
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -867,11 +923,6 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
     <div className="page page-reports">
       <div className="rep2-page">
         <div className="rep2-shell">
-          <header className="rep2-header-block">
-            <h1 className="rep2-title">Reports &amp; Analytics</h1>
-            <p className="rep2-subtitle">Sales, inventory, and business performance overview</p>
-          </header>
-
           <section className="rep2-controls" aria-label="Report filters">
             <div className="rep2-controls-grid">
               <div className="rep2-field">
@@ -922,42 +973,42 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
               <section className="rep2-kpi-grid" aria-label="Key metrics">
                 <MetricCard
                   title="Total Sales"
-                  value={thbAgg(sales?.sales_total || 0)}
-                  subtitle={`${sales?.invoices_count || 0} invoices · THB`}
+                  value={formatUsdOnlyFromThb(sales?.sales_total || 0, thbPerUnit)}
+                  subtitle={`${sales?.invoices_count || 0} invoices · USD (Profile rates)`}
                   icon={<IconTrendingUp />}
                   variant="blue"
                 />
                 <MetricCard
                   title="Total Collected"
-                  value={thbAgg(sales?.collected_total || 0)}
-                  subtitle={`${sales?.paid_invoices || 0} paid invoices · THB`}
+                  value={formatUsdOnlyFromThb(sales?.collected_total || 0, thbPerUnit)}
+                  subtitle={`${sales?.paid_invoices || 0} paid invoices · USD (Profile rates)`}
                   icon={<IconArrowUpRight />}
                   variant="emerald"
                 />
                 <MetricCard
                   title="Outstanding Balance"
-                  value={thbAgg(sales?.outstanding_total || 0)}
-                  subtitle={`${sales?.unpaid_invoices || 0} unpaid · THB`}
+                  value={formatUsdOnlyFromThb(sales?.outstanding_total || 0, thbPerUnit)}
+                  subtitle={`${sales?.unpaid_invoices || 0} unpaid · USD (Profile rates)`}
                   icon={<IconArrowDownRight />}
                   variant="red"
                   alert={(sales?.outstanding_total || 0) > 0}
                 />
                 <MetricCard
                   title="Gross Profit"
-                  value={thbAgg(profit?.profit_total || 0)}
-                  subtitle={`${money(profit?.profit_margin_pct || 0)}% margin · THB`}
+                  value={formatUsdOnlyFromThb(profit?.profit_total || 0, thbPerUnit)}
+                  subtitle={`${money(profit?.profit_margin_pct || 0)}% margin · USD (Profile rates)`}
                   variant="emerald"
                 />
                 <MetricCard
                   title="Inventory Value"
-                  value={thbAgg(inventory?.inventory_value || 0)}
-                  subtitle={`${inventory?.remaining_pcs || 0} pieces · THB`}
+                  value={formatUsdOnlyFromThb(inventory?.inventory_value || 0, thbPerUnit)}
+                  subtitle={`${inventory?.remaining_pcs || 0} pieces · USD (Profile rates)`}
                   variant="amber"
                 />
                 <MetricCard
                   title="Open Memo Value"
-                  value={thbAgg(memoOpenValue)}
-                  subtitle={`${openMemoCount} open memos · THB`}
+                  value={formatUsdOnlyFromThb(memoOpenValue, thbPerUnit)}
+                  subtitle={`${openMemoCount} open memos · USD (Profile rates)`}
                   variant="slate"
                 />
               </section>
@@ -966,21 +1017,19 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                 <div className="rep2-card rep2-card--chart">
                   <div className="rep2-card-head">
                     <h2 className="rep2-card-title">Sales Trend</h2>
-                    <p className="rep2-card-desc">
-                      {groupLabel} sales, collections, and outstanding (THB equivalent)
-                    </p>
+                    <p className="rep2-card-desc">{groupLabel} sales, collections, and outstanding (USD)</p>
                   </div>
                   <div className="rep2-card-body rep2-card-body--chart">
-                    <ReportsSalesLineChart rows={salesTrend} />
+                    <ReportsSalesLineChart rows={salesTrend} thbPerUnit={thbPerUnit} />
                   </div>
                 </div>
                 <div className="rep2-card rep2-card--chart">
                   <div className="rep2-card-head">
                     <h2 className="rep2-card-title">Profit Trend</h2>
-                    <p className="rep2-card-desc">Selling vs cost vs profit (THB equivalent)</p>
+                    <p className="rep2-card-desc">Selling vs cost vs profit (USD)</p>
                   </div>
                   <div className="rep2-card-body rep2-card-body--chart">
-                    <ReportsProfitBarChart rows={profitTrend} />
+                    <ReportsProfitBarChart rows={profitTrend} thbPerUnit={thbPerUnit} />
                   </div>
                 </div>
               </div>
@@ -1025,8 +1074,8 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                               <tr>
                                 <th>Name</th>
                                 <th className="rep2-th-right">Invoices</th>
-                                <th className="rep2-th-right">Invoiced</th>
-                                <th className="rep2-th-right">Owed</th>
+                                <th className="rep2-th-right">Invoiced (USD)</th>
+                                <th className="rep2-th-right">Owed (USD)</th>
                                 <th className="rep2-th-center">Action</th>
                               </tr>
                             </thead>
@@ -1045,11 +1094,13 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                                       <div className="rep2-cell-muted">{c.phone || '—'}</div>
                                     </td>
                                     <td className="rep2-td-right">{c.invoices_count}</td>
-                                    <td className="rep2-td-right">{thbAgg(c.total_invoiced)}</td>
+                                    <td className="rep2-td-right rep2-td-money">
+                                      <RepUsdCell thb={c.total_invoiced} thbPerUnit={thbPerUnit} />
+                                    </td>
                                     <td
-                                      className={`rep2-td-right rep2-owed${c.total_owed > 0 ? ' rep2-owed--alert' : ''}`}
+                                      className={`rep2-td-right rep2-td-money rep2-owed${c.total_owed > 0 ? ' rep2-owed--alert' : ''}`}
                                     >
-                                      {thbAgg(c.total_owed)}
+                                      <RepUsdCell thb={c.total_owed} thbPerUnit={thbPerUnit} />
                                     </td>
                                     <td className="rep2-td-center">
                                       <button
@@ -1086,8 +1137,8 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                                 <th>SKU</th>
                                 <th>Description</th>
                                 <th className="rep2-th-right">Qty Sold</th>
-                                <th className="rep2-th-right">Sales</th>
-                                <th className="rep2-th-right">Profit</th>
+                                <th className="rep2-th-right">Sales (USD)</th>
+                                <th className="rep2-th-right">Profit (USD)</th>
                                 <th className="rep2-th-center">Action</th>
                               </tr>
                             </thead>
@@ -1110,8 +1161,12 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                                       </div>
                                     </td>
                                     <td className="rep2-td-right">{it.qty_sold}</td>
-                                    <td className="rep2-td-right">{thbAgg(it.sales_value)}</td>
-                                    <td className="rep2-td-right rep2-profit-cell">{thbAgg(it.profit_value)}</td>
+                                    <td className="rep2-td-right rep2-td-money">
+                                      <RepUsdCell thb={it.sales_value} thbPerUnit={thbPerUnit} />
+                                    </td>
+                                    <td className="rep2-td-right rep2-td-money rep2-profit-cell">
+                                      <RepUsdCell thb={it.profit_value} thbPerUnit={thbPerUnit} />
+                                    </td>
                                     <td className="rep2-td-center">
                                       <button
                                         type="button"
@@ -1151,7 +1206,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                               <tr>
                                 <th>Status</th>
                                 <th className="rep2-th-right">Pieces</th>
-                                <th className="rep2-th-right">Value</th>
+                                <th className="rep2-th-right">Value (USD)</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -1166,7 +1221,9 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                                   <tr key={r.status}>
                                     <td className="rep2-cell-name">{r.status}</td>
                                     <td className="rep2-td-right">{r.pcs_remaining}</td>
-                                    <td className="rep2-td-right">{thbAgg(r.value)}</td>
+                                    <td className="rep2-td-right rep2-td-money">
+                                      <RepUsdCell thb={r.value} thbPerUnit={thbPerUnit} />
+                                    </td>
                                   </tr>
                                 ))
                               )}
@@ -1211,7 +1268,9 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                                     <td className="rep2-cell-name">{r.status}</td>
                                     <td className="rep2-td-right">{r.memo_count}</td>
                                     <td className="rep2-td-right">{r.remaining_qty}</td>
-                                    <td className="rep2-td-right">{thbAgg(r.value)}</td>
+                                    <td className="rep2-td-right rep2-td-money">
+                                      <RepUsdCell thb={r.value} thbPerUnit={thbPerUnit} />
+                                    </td>
                                   </tr>
                                 ))
                               )}
@@ -1309,24 +1368,27 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                       <tr>
                         <th>Invoice #</th>
                         <th>Date</th>
-                        <th className="right">Total</th>
-                        <th className="right">Paid</th>
-                        <th className="right">Balance</th>
+                        <th className="right">Total (USD)</th>
+                        <th className="right">Paid (USD)</th>
+                        <th className="right">Balance (USD)</th>
                         <th>Status</th>
                       </tr>
                     </thead>
                     <tbody>
                       {customerInvoices.map(inv => {
                         const bal = Math.max(0, (inv.total || 0) - (inv.paid || 0));
-                        const cur = inv.currency_code || DEFAULT_CURRENCY_CODE;
                         return (
                           <tr key={inv.id}>
                             <td className="reports-strong">{inv.invoice_no}</td>
                             <td>{new Date(inv.created_at).toLocaleDateString()}</td>
-                            <td className="right">{formatMoneyAmount(inv.total, cur)}</td>
-                            <td className="right reports-profit-positive">{formatMoneyAmount(inv.paid, cur)}</td>
+                            <td className="right">
+                              {formatUsdOnlyFromAny(inv.total, inv.currency_code || DEFAULT_CURRENCY_CODE, thbPerUnit)}
+                            </td>
+                            <td className="right reports-profit-positive">
+                              {formatUsdOnlyFromAny(inv.paid, inv.currency_code || DEFAULT_CURRENCY_CODE, thbPerUnit)}
+                            </td>
                             <td className={`right ${bal > 0 ? 'reports-balance-red' : ''}`}>
-                              {formatMoneyAmount(bal, cur)}
+                              {formatUsdOnlyFromAny(bal, inv.currency_code || DEFAULT_CURRENCY_CODE, thbPerUnit)}
                             </td>
                             <td>{inv.status}</td>
                           </tr>

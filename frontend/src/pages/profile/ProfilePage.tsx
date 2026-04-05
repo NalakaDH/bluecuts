@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useAlertDialog } from '../../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../../api';
-import { SUPPORTED_CURRENCIES } from '../../lib/currencies';
+import { SUPPORTED_CURRENCIES, roundRate6 } from '../../lib/currencies';
 import {
   ASSIGNABLE_STAFF_PAGE_IDS,
   ASSIGNABLE_STAFF_PAGE_LABELS,
@@ -112,10 +112,13 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   const [fxSaving, setFxSaving] = useState(false);
   const [fxErr, setFxErr] = useState<string | null>(null);
   const [fxMsg, setFxMsg] = useState<string | null>(null);
-  const [fxDraft, setFxDraft] = useState<Record<string, string>>(() => {
+  /** THB per 1 USD (standard quote: how many baht one dollar is worth). */
+  const [fxThbPerUsd, setFxThbPerUsd] = useState('');
+  /** Units of each foreign currency per 1 USD (e.g. EUR per USD, JPY per USD). */
+  const [fxUnitsPerUsd, setFxUnitsPerUsd] = useState<Record<string, string>>(() => {
     const d: Record<string, string> = {};
     for (const { code } of SUPPORTED_CURRENCIES) {
-      d[code] = code === 'THB' ? '1' : '';
+      if (code !== 'USD' && code !== 'THB') d[code] = '';
     }
     return d;
   });
@@ -200,15 +203,21 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       }
       const data = await res.json();
       const map = (data.thb_per_unit || {}) as Record<string, number>;
-      const next: Record<string, string> = {};
+      const thbPerUsd = Number(map.USD);
+      const hasBridge = Number.isFinite(thbPerUsd) && thbPerUsd > 0;
+      setFxThbPerUsd(hasBridge ? String(roundRate6(thbPerUsd)) : '');
+
+      const nextUnits: Record<string, string> = {};
       for (const { code } of SUPPORTED_CURRENCIES) {
-        if (code === 'THB') next[code] = '1';
-        else {
-          const v = map[code];
-          next[code] = v != null && Number.isFinite(Number(v)) ? String(v) : '';
+        if (code === 'USD' || code === 'THB') continue;
+        const thbPer = map[code];
+        if (hasBridge && thbPer != null && Number.isFinite(Number(thbPer)) && Number(thbPer) > 0) {
+          nextUnits[code] = String(roundRate6(thbPerUsd / Number(thbPer)));
+        } else {
+          nextUnits[code] = '';
         }
       }
-      setFxDraft(next);
+      setFxUnitsPerUsd(nextUnits);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Failed to load exchange rates';
       setFxErr(msg);
@@ -292,26 +301,54 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     e.preventDefault();
     setFxErr(null);
     setFxMsg(null);
-    const thb_per_unit: Record<string, number> = {};
-    for (const { code } of SUPPORTED_CURRENCIES) {
-      if (code === 'THB') continue;
-      const s = (fxDraft[code] ?? '').trim();
-      if (!s) continue;
-      const n = Number(s);
-      if (!Number.isFinite(n) || n <= 0) {
-        const msg = `Invalid rate for ${code}: enter a positive number (THB per 1 ${code}).`;
-        setFxErr(msg);
-        showAlert({ title: 'Exchange rates', message: msg, variant: 'warning' });
-        return;
-      }
-      thb_per_unit[code] = n;
-    }
-    if (Object.keys(thb_per_unit).length === 0) {
-      const msg = 'Enter at least one rate to save, or use Reload to refresh from the server.';
+
+    const tRaw = fxThbPerUsd.trim().replace(/,/g, '');
+    const tUsd = Number(tRaw);
+    const thbPerUsd = Number.isFinite(tUsd) && tUsd > 0 ? roundRate6(tUsd) : NaN;
+
+    const otherFilled = SUPPORTED_CURRENCIES.some(({ code }) => {
+      if (code === 'USD' || code === 'THB') return false;
+      return (fxUnitsPerUsd[code] ?? '').trim() !== '';
+    });
+
+    if (otherFilled && (!Number.isFinite(thbPerUsd) || thbPerUsd <= 0)) {
+      const msg =
+        'Set how many THB equal 1 USD first, then enter other currencies as “how much of that currency per 1 USD”.';
       setFxErr(msg);
       showAlert({ title: 'Exchange rates', message: msg, variant: 'warning' });
       return;
     }
+
+    const thb_per_unit: Record<string, number> = {};
+
+    if (Number.isFinite(thbPerUsd) && thbPerUsd > 0) {
+      thb_per_unit.USD = thbPerUsd;
+    }
+
+    if (otherFilled) {
+      for (const { code } of SUPPORTED_CURRENCIES) {
+        if (code === 'USD' || code === 'THB') continue;
+        const s = (fxUnitsPerUsd[code] ?? '').trim();
+        if (!s) continue;
+        const n = Number(s.replace(/,/g, ''));
+        if (!Number.isFinite(n) || n <= 0) {
+          const msg = `Invalid rate for ${code}: enter a positive number (${code} per 1 USD).`;
+          setFxErr(msg);
+          showAlert({ title: 'Exchange rates', message: msg, variant: 'warning' });
+          return;
+        }
+        thb_per_unit[code] = roundRate6(thbPerUsd / n);
+      }
+    }
+
+    if (Object.keys(thb_per_unit).length === 0) {
+      const msg =
+        'Enter 1 USD in THB and/or at least one other currency (units per 1 USD), then save. Use Reload to refresh.';
+      setFxErr(msg);
+      showAlert({ title: 'Exchange rates', message: msg, variant: 'warning' });
+      return;
+    }
+
     setFxSaving(true);
     try {
       const res = await fetch(apiUrl('/api/exchange-rates'), {
@@ -328,7 +365,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       await fetchExchangeRates();
       showAlert({
         title: 'Exchange rates saved',
-        message: 'THB-based rates were updated successfully.',
+        message: 'Rates saved (stored internally as THB per unit for conversions).',
         variant: 'success',
       });
     } catch (err: unknown) {
@@ -738,9 +775,12 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       <section className="profile-section-card profile-section-card--fx" aria-label="Exchange rates">
           <div className="profile-section-head">
             <span className="profile-section-kicker profile-section-kicker--violet">Rates</span>
-            <h3 className="profile-section-title">Exchange rates (THB base)</h3>
+            <h3 className="profile-section-title">Exchange rates (USD reference)</h3>
             <p className="profile-section-desc">
-              How many <strong>THB</strong> equal <strong>1 unit</strong> of each currency. Used when memos and invoices use a different currency than an item’s list price. Leave a field blank when saving to keep the current stored rate for that currency.
+              Quote everything as <strong>how much of that currency one US dollar is worth</strong>: <strong>1 USD = ? THB</strong>, then{' '}
+              <strong>1 USD = ? EUR</strong>, <strong>1 USD = ? JPY</strong>, and so on. That matches usual FX screens and avoids mixing up
+              which side of the fraction you are editing. Changing rates does <strong>not</strong> change stored inventory list prices—it
+              only affects conversions (invoices, memos, reports, prefill). Leave a currency blank when saving to keep its current stored rate.
               {role === 'staff' ? (
                 <>
                   {' '}
@@ -760,33 +800,89 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                   <thead>
                     <tr>
                       <th>Currency</th>
-                      <th>THB per 1 unit</th>
+                      <th>Your rate</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {SUPPORTED_CURRENCIES.map(({ code, label }) => (
-                      <tr key={code}>
-                        <td>
-                          <span className="profile-fx-code">{code}</span>
-                          <span className="profile-fx-label">{label.replace(/^[^—]+—\s*/, '')}</span>
-                        </td>
-                        <td>
-                          {code === 'THB' ? (
-                            <input type="text" className="profile-fx-input" value="1" readOnly disabled aria-label="THB base" />
-                          ) : (
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              className="profile-fx-input"
-                              value={fxDraft[code] ?? ''}
-                              onChange={e => setFxDraft(prev => ({ ...prev, [code]: e.target.value }))}
-                              placeholder="e.g. 35.5"
-                              aria-label={`THB per 1 ${code}`}
-                            />
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                    {[
+                      SUPPORTED_CURRENCIES.find(c => c.code === 'USD')!,
+                      SUPPORTED_CURRENCIES.find(c => c.code === 'THB')!,
+                      ...SUPPORTED_CURRENCIES.filter(c => c.code !== 'USD' && c.code !== 'THB'),
+                    ].map(({ code, label }) => {
+                      const shortLabel = label.replace(/^[^—]+—\s*/, '');
+                      const tThb = Number(fxThbPerUsd.trim().replace(/,/g, ''));
+                      const bridgeOk = Number.isFinite(tThb) && tThb > 0;
+
+                      if (code === 'USD') {
+                        return (
+                          <tr key={code}>
+                            <td>
+                              <span className="profile-fx-code">{code}</span>
+                              <span className="profile-fx-label">{shortLabel}</span>
+                            </td>
+                            <td>
+                              <div className="profile-fx-usd-ref">
+                                <span className="profile-fx-static-eq">1 USD = 1 USD</span>
+                                <span className="profile-fx-ref-note">Reference currency — not editable.</span>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      if (code === 'THB') {
+                        return (
+                          <tr key={code}>
+                            <td>
+                              <span className="profile-fx-code">{code}</span>
+                              <span className="profile-fx-label">{shortLabel}</span>
+                            </td>
+                            <td>
+                              <span className="profile-fx-inline">
+                                <span className="profile-fx-eq">1 USD =</span>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  className="profile-fx-input profile-fx-input--inline"
+                                  value={fxThbPerUsd}
+                                  onChange={e => setFxThbPerUsd(e.target.value)}
+                                  placeholder="e.g. 35"
+                                  aria-label="Thai baht per 1 US dollar"
+                                />
+                                <span className="profile-fx-suffix">THB</span>
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      return (
+                        <tr key={code}>
+                          <td>
+                            <span className="profile-fx-code">{code}</span>
+                            <span className="profile-fx-label">{shortLabel}</span>
+                          </td>
+                          <td>
+                            <span className="profile-fx-inline">
+                              <span className="profile-fx-eq">1 USD =</span>
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                className="profile-fx-input profile-fx-input--inline"
+                                value={fxUnitsPerUsd[code] ?? ''}
+                                onChange={e =>
+                                  setFxUnitsPerUsd(prev => ({ ...prev, [code]: e.target.value }))
+                                }
+                                placeholder={bridgeOk ? `e.g. ${code === 'JPY' ? '150' : '0.92'}` : 'Set 1 USD in THB first'}
+                                disabled={!bridgeOk}
+                                aria-label={`${code} per 1 US dollar`}
+                              />
+                              <span className="profile-fx-suffix">{code}</span>
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

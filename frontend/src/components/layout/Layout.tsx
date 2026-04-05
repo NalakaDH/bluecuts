@@ -40,6 +40,7 @@ export type PageId =
   | 'dashboard'
   | 'updateInventory'
   | 'checkInventory'
+  | 'stockCount'
   | 'selling'
   | 'payments'
   | 'invoiceCheckout'
@@ -105,10 +106,18 @@ const NavIconProfile = () => (
   </svg>
 );
 
+const NavIconStockCount = () => (
+  <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M9 11l3 3L22 4" />
+    <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
+  </svg>
+);
+
 const navIcons: Record<PageId, React.FC> = {
   dashboard: NavIconDashboard,
   updateInventory: NavIconInventory,
   checkInventory: NavIconCheckInventory,
+  stockCount: NavIconStockCount,
   selling: NavIconSelling,
   payments: NavIconPayments,
   invoiceCheckout: NavIconPayments,
@@ -124,6 +133,7 @@ const TOPBAR_NAV_ORDER: { id: PageId; label: string }[] = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'updateInventory', label: 'Update Inventory' },
   { id: 'checkInventory', label: 'Check Inventory' },
+  { id: 'stockCount', label: 'Stock count' },
   { id: 'selling', label: 'Selling' },
   { id: 'payments', label: 'Payments' },
   { id: 'customers', label: 'Customers' },
@@ -189,7 +199,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const navSections: { title: string; items: { id: PageId; label: string }[] }[] = [
     { title: 'Overview', items: [{ id: 'dashboard', label: 'Dashboard' }] },
-    { title: 'Inventory', items: [{ id: 'updateInventory', label: 'Update Inventory' }, { id: 'checkInventory', label: 'Check Inventory' }] },
+    {
+      title: 'Inventory',
+      items: [
+        { id: 'updateInventory', label: 'Update Inventory' },
+        { id: 'checkInventory', label: 'Check Inventory' },
+        { id: 'stockCount', label: 'Stock count' },
+      ],
+    },
     {
       title: 'Sales',
       items: [
@@ -302,6 +319,7 @@ export function Topbar(props: TopbarProps) {
     dashboard: 'Dashboard',
     updateInventory: 'Update Inventory',
     checkInventory: 'Check Inventory',
+    stockCount: 'Stock count',
     selling: 'Selling',
     payments: 'Payments & Loans',
     invoiceCheckout: 'Invoice Checkout',

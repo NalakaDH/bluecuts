@@ -1,32 +1,18 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useAlertDialog } from '../../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../../api';
+import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
 import { mapApiInvoiceToReceipt, openInvoiceReceiptWindow } from '../../lib/receiptDocument';
+import { formatUsdOnlyFromThb } from '../../lib/moneyUsdDisplay';
 import { DEFAULT_CURRENCY_CODE, formatMoneyAmount, roundMoney2 } from '../../lib/currencies';
 import { INVOICE_CHECKOUT_INVOICE_ID_KEY } from '../../constants/invoiceCheckout';
 import type { PageId } from '../../components/layout/Layout';
+import { InvoiceCheckoutPage } from './InvoiceCheckoutPage';
 
 type InvoiceStatus = 'Unpaid' | 'Partial' | 'Paid';
 type InvoiceListFilter = 'all' | InvoiceStatus;
 
 const iconSize = 16;
-
-const IconEye: React.FC = () => (
-  <svg
-    width={iconSize}
-    height={iconSize}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
-    <circle cx="12" cy="12" r="3" />
-  </svg>
-);
 
 const IconCreditCard: React.FC = () => (
   <svg
@@ -46,24 +32,6 @@ const IconCreditCard: React.FC = () => (
   </svg>
 );
 
-const IconDownload: React.FC = () => (
-  <svg
-    width={iconSize}
-    height={iconSize}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-    <polyline points="7 10 12 15 17 10" />
-    <line x1="12" y1="15" x2="12" y2="3" />
-  </svg>
-);
-
 const IconSearch: React.FC = () => (
   <svg
     width={16}
@@ -78,6 +46,75 @@ const IconSearch: React.FC = () => (
   >
     <circle cx="11" cy="11" r="8" />
     <line x1="21" y1="21" x2="16.65" y2="16.65" />
+  </svg>
+);
+
+const IconCheck: React.FC = () => (
+  <svg
+    width={15}
+    height={15}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
+
+const IconAlertCircle: React.FC = () => (
+  <svg
+    width={15}
+    height={15}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <circle cx="12" cy="12" r="10" />
+    <line x1="12" y1="8" x2="12" y2="12" />
+    <line x1="12" y1="16" x2="12.01" y2="16" />
+  </svg>
+);
+
+const IconPartial: React.FC = () => (
+  <svg
+    width={15}
+    height={15}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <circle cx="12" cy="12" r="10" />
+    <path d="M12 6v6l4 2" />
+  </svg>
+);
+
+const IconPrinter: React.FC = () => (
+  <svg
+    width={13}
+    height={13}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <polyline points="6 9 6 2 18 2 18 9" />
+    <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+    <rect x="6" y="14" width="12" height="8" />
   </svg>
 );
 
@@ -117,6 +154,39 @@ function invoiceLineDiscountAmount(item: InvoiceItemRow): number {
   const g = invoiceLineGrossAmount(item);
   const net = Number(item.line_total) || 0;
   return Math.max(0, g - net);
+}
+
+function itemCardTitle(item: InvoiceItemRow): string {
+  return (
+    item.description ||
+    item.inventory_description ||
+    item.inv_category ||
+    item.inv_item_type ||
+    'Line item'
+  );
+}
+
+function itemCardSubline(item: InvoiceItemRow, currencyCode: string): string {
+  const parts: string[] = [];
+  if (item.item_code) parts.push(`Code ${item.item_code}`);
+  else parts.push(`#${item.inventory_item_id}`);
+  if (item.weight_carats != null && String(item.weight_carats) !== '') {
+    parts.push(`${item.weight_carats} ct`);
+  }
+  if (item.weight_grams != null && String(item.weight_grams) !== '') {
+    parts.push(`${item.weight_grams} g`);
+  }
+  parts.push(`${item.quantity} × ${formatMoneyAmount(item.unit_price, currencyCode)}`);
+  let s = parts.join(' · ');
+  if (invoiceLineDiscountAmount(item) > 0) {
+    s += ` · line disc. −${formatMoneyAmount(invoiceLineDiscountAmount(item), currencyCode)}`;
+  }
+  return s;
+}
+
+function itemCodeLetter(item: InvoiceItemRow): string {
+  const raw = item.item_code?.trim() || String(item.inventory_item_id);
+  return raw.charAt(0).toUpperCase() || '?';
 }
 
 interface PaymentRow {
@@ -169,6 +239,7 @@ interface InvoiceStatsResponse {
 
 export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) => {
   const { showAlert } = useAlertDialog();
+  const [thbPerUnit, setThbPerUnit] = useState<ThbPerUnitMap>({ THB: 1 });
   const [statusFilter, setStatusFilter] = useState<InvoiceListFilter>('all');
   const [search, setSearch] = useState('');
   const [invoices, setInvoices] = useState<PaymentInvoiceRow[]>([]);
@@ -179,9 +250,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
   const [selectedInvoice, setSelectedInvoice] = useState<InvoiceDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [paymentAmount, setPaymentAmount] = useState<number>(0);
-  const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Card' | 'QR' | 'BankTransfer'>('Cash');
-  const [paymentSaving, setPaymentSaving] = useState(false);
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
   const fetchInvoices = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -251,6 +320,27 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
     fetchInvoices();
   }, [fetchInvoices]);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(apiUrl('/api/exchange-rates'), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (data?.thb_per_unit && typeof data.thb_per_unit === 'object') {
+          setThbPerUnit(data.thb_per_unit as ThbPerUnitMap);
+        }
+      } catch {
+        // keep defaults
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
   const fetchInvoiceDetail = async (id: number) => {
     setDetailLoading(true);
     setDetailError(null);
@@ -280,19 +370,13 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
 
   const handleRowClick = (id: number) => {
     setSelectedInvoiceId(id);
+    void fetchInvoiceDetail(id);
   };
 
-  const handleToggleDetails = (id: number) => {
-    const panelOpen = detailLoading || !!selectedInvoice || !!detailError;
-    if (panelOpen && selectedInvoiceId === id) {
-      // Toggle off when double-clicking the same invoice
-      setSelectedInvoiceId(null);
-      setSelectedInvoice(null);
-      setDetailError(null);
-      return;
-    }
-    setSelectedInvoiceId(id);
-    fetchInvoiceDetail(id);
+  const handleCloseDetail = () => {
+    setSelectedInvoiceId(null);
+    setSelectedInvoice(null);
+    setDetailError(null);
   };
 
   /** Dedicated invoice checkout page (not full Selling page). */
@@ -302,10 +386,27 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
     } catch {
       // Ignore storage errors and still navigate.
     }
-    onNavigate?.('invoiceCheckout');
+    setCheckoutOpen(true);
   };
 
-  const detailsOpen = detailLoading || !!selectedInvoice || !!detailError;
+  const closeCheckout = useCallback(() => {
+    setCheckoutOpen(false);
+    // Refresh list + stats so the paid/remaining status updates immediately.
+    void fetchInvoices();
+    // Refresh selected invoice detail too (if still selected).
+    if (selectedInvoiceId != null) {
+      void fetchInvoiceDetail(selectedInvoiceId);
+    }
+  }, [fetchInvoices, selectedInvoiceId]);
+
+  useEffect(() => {
+    if (!checkoutOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeCheckout();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [checkoutOpen, closeCheckout]);
 
   const kpiUnpaidCount = invoiceStats?.unpaid_count ?? 0;
   const kpiPartialCount = invoiceStats?.partial_count ?? 0;
@@ -314,6 +415,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
   const kpiPaidAmountThb = roundMoney2(invoiceStats?.collected_thb ?? 0);
   const listTruncated =
     invoices.length >= 500 && (invoiceStats?.invoices_count ?? 0) > 500;
+  const kpiPaidCount = invoiceStats?.paid_count ?? 0;
 
   const selectedRemaining = selectedInvoice
     ? Math.max(0, selectedInvoice.total - selectedInvoice.paid)
@@ -364,415 +466,412 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
     );
   };
 
-  const printInvoiceById = async (id: number) => {
-    try {
-      const res = await fetch(apiUrl(`/api/invoices/${id}`), {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) return;
-      const data: InvoiceDetail = await res.json();
-      if (data.derived_status == null && data.status) data.derived_status = data.status;
-      printInvoiceReceipt(data);
-    } catch {
-      // ignore
-    }
-  };
-
   return (
     <div className="page page-payments">
-      <section className="payments-kpi-grid" aria-label="Payments summary stats">
-        <div className="payments-kpi-card payments-kpi-card--red">
-          <div className="payments-kpi-label">Outstanding Balance</div>
-          <div className="payments-kpi-value">
-            {formatMoneyAmount(kpiOutstandingThb, DEFAULT_CURRENCY_CODE)}
+      {checkoutOpen && (
+        <div
+          className="pay-checkout-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Invoice checkout"
+          onMouseDown={e => {
+            if (e.target === e.currentTarget) closeCheckout();
+          }}
+        >
+          <div className="pay-checkout-modal" onMouseDown={e => e.stopPropagation()}>
+            <InvoiceCheckoutPage
+              token={token}
+              onNavigate={() => {
+                closeCheckout();
+              }}
+            />
           </div>
+        </div>
+      )}
+      <section
+        className="payments-kpi-grid payments-kpi-grid--inv-ui"
+        aria-label="Payments summary stats"
+      >
+        <div className="dashT-kpi-sum dashT-kpi-sum--green">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Total Collected</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--green" aria-hidden="true">
+              <IconCheck />
+            </div>
+          </div>
+          <div className="dashT-kpi-sum__value">{formatUsdOnlyFromThb(kpiPaidAmountThb, thbPerUnit)}</div>
           <div className="payments-kpi-sub">
-            {kpiUnpaidCount} unpaid · full totals for current search & status (not capped by table)
+            All time · paid invoices · USD from Profile rates (matches search and status filter)
           </div>
         </div>
 
-        <div className="payments-kpi-card payments-kpi-card--amber">
-          <div className="payments-kpi-label">Partial Payments</div>
-          <div className="payments-kpi-value">{kpiPartialCount}</div>
-          <div className="payments-kpi-sub">Invoices with balance (same scope)</div>
-        </div>
-
-        <div className="payments-kpi-card payments-kpi-card--blue">
-          <div className="payments-kpi-label">Total Invoices</div>
-          <div className="payments-kpi-value">{kpiTotalInvoices}</div>
+        <div className="dashT-kpi-sum dashT-kpi-sum--orange">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Outstanding</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--orange" aria-hidden="true">
+              <IconAlertCircle />
+            </div>
+          </div>
+          <div className="dashT-kpi-sum__value">{formatUsdOnlyFromThb(kpiOutstandingThb, thbPerUnit)}</div>
           <div className="payments-kpi-sub">
-            Matching filter
-            {listTruncated ? ' · Table shows first 500; refine search' : ''}
+            {kpiUnpaidCount + kpiPartialCount > 0
+              ? `${kpiUnpaidCount} unpaid · ${kpiPartialCount} partial · same scope as list`
+              : 'No balance in scope'}
           </div>
         </div>
 
-        <div className="payments-kpi-card payments-kpi-card--green">
-          <div className="payments-kpi-label">Paid Amount</div>
-          <div className="payments-kpi-value">
-            {formatMoneyAmount(kpiPaidAmountThb, DEFAULT_CURRENCY_CODE)}
+        <div className="dashT-kpi-sum dashT-kpi-sum--blue">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Total Invoices</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--blue" aria-hidden="true">
+              <IconCreditCard />
+            </div>
           </div>
-          <div className="payments-kpi-sub">Payments recorded · THB equivalent (server rates)</div>
+          <div className="dashT-kpi-sum__value">{kpiTotalInvoices}</div>
+          <div className="payments-kpi-sub">
+            {kpiPaidCount} paid · {kpiUnpaidCount} unpaid
+            {listTruncated ? ' · list shows first 500; refine search' : ''}
+          </div>
         </div>
       </section>
 
-      <section
-        className={detailsOpen ? 'payments-layout' : 'payments-layout payments-layout--single'}
-      >
-        <section className="selling-invoices-card payments-invoices-list">
-          <div className="selling-invoices-card-head">
-            <h3 className="selling-section-title">Invoices</h3>
-            <button
-              type="button"
-              className="primary-button payments-new-invoice-btn"
-              onClick={() => onNavigate && onNavigate('selling')}
-            >
-              <span className="payments-plus-icon" aria-hidden="true">
-                +
-              </span>
-              New Invoice
-            </button>
-          </div>
-
-          {error && (
-            <div className="selling-state selling-state-error">
-              <p>{error}</p>
-            </div>
-          )}
-
-          <div className="selling-invoices-toolbar">
-            <div className="selling-invoices-search-wrap">
-              <span className="selling-invoices-search-icon" aria-hidden="true">
-                <IconSearch />
-              </span>
-              <input
-                type="search"
-                className="selling-invoices-search"
-                placeholder="Search by invoice number"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                aria-label="Search invoices"
-              />
-            </div>
-            <div className="selling-invoices-filters" role="tablist" aria-label="Invoice status filters">
-              {(['all', 'Unpaid', 'Partial', 'Paid'] as const).map(key => {
-                const label = key === 'all' ? 'All' : key;
-                const active = statusFilter === key;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    className={`selling-invoices-filter${active ? ' is-active' : ''}`}
-                    onClick={() => setStatusFilter(key)}
-                    role="tab"
-                    aria-selected={active}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="selling-invoices-table-wrap">
-            <table className="selling-invoices-table" aria-label="Invoices for payment">
-              <thead>
-                <tr>
-                  <th scope="col">Invoice #</th>
-                  <th scope="col">Date</th>
-                  <th scope="col">Customer</th>
-                  <th scope="col">Total</th>
-                  <th scope="col">Paid</th>
-                  <th scope="col">Balance</th>
-                  <th scope="col">Status</th>
-                  {!detailsOpen && <th scope="col">Actions</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr>
-                    <td colSpan={detailsOpen ? 7 : 8} className="selling-empty-cell">
-                      Loading invoices…
-                    </td>
-                  </tr>
-                ) : invoices.length === 0 ? (
-                  <tr>
-                    <td colSpan={detailsOpen ? 7 : 8} className="selling-empty-cell">
-                      No invoices to display yet.
-                    </td>
-                  </tr>
-                ) : (
-                  invoices.map(inv => {
-                    const isSelected = selectedInvoiceId === inv.id;
-                    return (
-                      <tr
-                        key={inv.id}
-                        className={isSelected ? 'is-selected' : undefined}
-                        onClick={() => handleRowClick(inv.id)}
-                        onDoubleClick={() => handleToggleDetails(inv.id)}
-                      >
-                        <td className="selling-invoice-id">{inv.invoiceNo}</td>
-                        <td>{new Date(inv.createdAt).toLocaleDateString()}</td>
-                        <td className="selling-invoice-customer">{inv.customerName}</td>
-                        <td className="selling-invoice-total">
-                          {formatMoneyAmount(inv.total, inv.currencyCode)}
-                        </td>
-                        <td>
-                          <span className="selling-invoice-paid">
-                            {formatMoneyAmount(inv.paid, inv.currencyCode)}
-                          </span>
-                        </td>
-                        <td>
-                          {inv.remaining > 0 ? (
-                            <span className="selling-invoice-balance">
-                              {formatMoneyAmount(inv.remaining, inv.currencyCode)}
-                            </span>
-                          ) : (
-                            <span className="selling-invoice-balance-zero">—</span>
-                          )}
-                        </td>
-                        <td>
-                          <span
-                            className={`selling-invoice-status selling-invoice-status--${(inv.status || '').toLowerCase()}`}
-                          >
-                            {inv.status}
-                          </span>
-                        </td>
-                        {!detailsOpen && (
-                          <td className="selling-invoice-actions">
-                            <div className="selling-invoice-actions-inner payments-invoice-action-row">
-                              <button
-                                type="button"
-                                className="selling-invoice-action-btn selling-invoice-action-btn--view"
-                                title="View details"
-                                aria-label={`View ${inv.invoiceNo}`}
-                                onClick={e => {
-                                  e.stopPropagation();
-                                  handleToggleDetails(inv.id);
-                                }}
-                              >
-                                <IconEye />
-                              </button>
-                              {inv.remaining > 0 && (
-                                <button
-                                  type="button"
-                                  className="selling-invoice-action-btn selling-invoice-action-btn--pay"
-                                  title="Pay invoice"
-                                  aria-label={`Pay ${inv.invoiceNo}`}
-                                  onClick={e => {
-                                    e.stopPropagation();
-                                    handlePayClick(inv.id);
-                                  }}
-                                >
-                                  <IconCreditCard />
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                className="selling-invoice-action-btn selling-invoice-action-btn--print"
-                                title="Print receipt"
-                                aria-label={`Print receipt ${inv.invoiceNo}`}
-                                onClick={e => {
-                                  e.stopPropagation();
-                                  void printInvoiceById(inv.id);
-                                }}
-                              >
-                                <IconDownload />
-                              </button>
-                            </div>
-                          </td>
-                        )}
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        { (detailLoading || selectedInvoice || detailError) && (
-          <aside className="payments-detail-column">
-            <div className="payments-detail-card">
-              <div className="payments-detail-header-row">
-            <div className="payments-detail-title-block">
-              <h3 className="payments-section-title">Payment details</h3>
-              {selectedInvoice && (
-                <p className="payments-detail-subtitle">
-                  Invoice:{' '}
-                  <span className="payments-detail-invoice-id">
-                    {selectedInvoice.invoice_no}
-                  </span>
-                </p>
+      <section className="payments-layout payments-layout--inv-ui">
+        <div className="pay-inv-list-panel">
+          <div className="pay-inv-list-card">
+            <div className="pay-inv-list-card-header">
+              <div className="pay-inv-list-card-top">
+                <h2 className="pay-inv-list-title">Invoices</h2>
+              </div>
+              {error && (
+                <div className="pay-inv-inline-error" role="alert">
+                  {error}
+                </div>
               )}
-            </div>
-            <div className="payments-detail-header-actions">
-              <button
-                type="button"
-                className="primary-button small payments-detail-print-btn"
-                onClick={() => {
-                  if (selectedInvoice) printInvoiceReceipt(selectedInvoice);
-                }}
-              >
-                <span className="btn-icon">
-                  <IconDownload />
-                </span>
-                Print
-              </button>
-              <button
-                type="button"
-                className="payments-detail-close"
-                aria-label="Close payment details"
-                onClick={() => {
-                  setSelectedInvoiceId(null);
-                  setSelectedInvoice(null);
-                  setDetailError(null);
-                }}
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-          {detailLoading && (
-            <div className="payments-placeholder-panel">
-              <p>Loading invoice details…</p>
-            </div>
-          )}
-          {detailError && (
-            <div className="payments-placeholder-panel">
-              <p>{detailError}</p>
-            </div>
-          )}
-          {selectedInvoice && !detailLoading && !detailError && (
-            <div className="payments-detail-content">
-              <div className="payments-detail-header">
-                <div className="payments-detail-customer">
-                  <div className="payments-detail-name">
-                    {selectedInvoice.customer_name || 'Walk-in customer'}
-                  </div>
-                  <div className="payments-detail-date">
-                    {new Date(selectedInvoice.created_at).toLocaleString()}
-                  </div>
-                </div>
-
-                <div className="payments-detail-summary">
-                  <div className="payments-summary-card payments-summary-card--total">
-                    <span className="payments-summary-label">Total amount</span>
-                    <span className="payments-summary-value">
-                      {formatMoneyAmount(selectedInvoice.total, detailCurrency)}
-                    </span>
-                  </div>
-                  <div className="payments-summary-card payments-summary-card--paid">
-                    <span className="payments-summary-label">Amount paid</span>
-                    <span className="payments-summary-value">
-                      {formatMoneyAmount(selectedInvoice.paid, detailCurrency)}
-                    </span>
-                  </div>
-                  <div className="payments-summary-card payments-summary-card--remaining">
-                    <span className="payments-summary-label">Remaining</span>
-                    <span className="payments-summary-value">
-                      {formatMoneyAmount(
-                        selectedInvoice.total - selectedInvoice.paid,
-                        detailCurrency
-                      )}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="payments-detail-status-row">
-                  <span className="payments-detail-status-label">Status:</span>
-                  <span
-                    className={`payments-detail-status-value payments-detail-status-value--${(selectedInvoice.derived_status || '').toLowerCase()}`}
-                  >
-                    {selectedInvoice.derived_status}
-                  </span>
-                  {selectedInvoice.discount > 0 && (
-                    <span className="payments-detail-discount">
-                      Discount: {formatMoneyAmount(selectedInvoice.discount, detailCurrency)}
-                    </span>
-                  )}
-                </div>
+              <div className="pay-inv-search">
+                <IconSearch />
+                <input
+                  type="search"
+                  placeholder="Search by invoice number or customer…"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  aria-label="Search invoices"
+                />
               </div>
-
-              <div className="payments-detail-items">
-                <h5>Items</h5>
-                <div className="payments-detail-items-card">
-                  {selectedInvoice.items.map(item => (
-                    <div key={item.id} className="payments-detail-item-row">
-                      <div className="payments-detail-item-main">
-                        <div className="payments-detail-item-name">
-                          {item.item_code || `#${item.inventory_item_id}`}{' '}
-                          {item.description && <span>· {item.description}</span>}
-                        </div>
-                        <div className="payments-detail-item-meta">
-                          {item.quantity} × {formatMoneyAmount(item.unit_price, detailCurrency)}
-                          {invoiceLineDiscountAmount(item) > 0 ? (
-                            <span className="payments-detail-item-discount">
-                              {' '}
-                              · line disc. −{formatMoneyAmount(invoiceLineDiscountAmount(item), detailCurrency)}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                      <div className="payments-detail-item-total">
-                        {formatMoneyAmount(item.line_total, detailCurrency)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+              <div className="pay-inv-filter-tabs" role="tablist" aria-label="Invoice status filters">
+                {(['all', 'Unpaid', 'Partial', 'Paid'] as const).map(key => {
+                  const label = key === 'all' ? 'All' : key;
+                  const active = statusFilter === key;
+                  let tabClass = 'pay-inv-filter-tab';
+                  if (active) {
+                    tabClass +=
+                      key === 'all'
+                        ? ' pay-inv-filter-tab--active'
+                        : ` pay-inv-filter-tab--active-${key.toLowerCase()}`;
+                  }
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      className={tabClass}
+                      onClick={() => setStatusFilter(key)}
+                      role="tab"
+                      aria-selected={active}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
+            </div>
 
-              <div className="payments-detail-payments">
-                <h5>Payment history</h5>
-                {selectedInvoice.payments.length === 0 ? (
-                  <p className="payments-detail-empty">No payments recorded yet.</p>
-                ) : (
-                  <div className="payments-detail-payments-card">
-                    {selectedInvoice.payments.map(p => (
-                      <div key={p.id} className="payments-detail-payment-row">
-                        <div className="payments-detail-payment-main">
-                          <div className="payments-detail-payment-method">{p.method}</div>
-                          <div className="payments-detail-payment-date">
-                            {new Date(p.created_at).toLocaleString()}
-                          </div>
-                        </div>
-                        <div className="payments-detail-payment-amount">
-                          {formatMoneyAmount(p.amount, detailCurrency)}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="payments-detail-pay-actions">
-                {selectedRemaining > 0 ? (
-                  <>
+            <div className="pay-inv-row-list" aria-label="Invoices for payment">
+              {loading ? (
+                <div className="pay-inv-row-empty">Loading invoices…</div>
+              ) : invoices.length === 0 ? (
+                <div className="pay-inv-row-empty">No invoices to display yet.</div>
+              ) : (
+                invoices.map(inv => {
+                  const isSelected = selectedInvoiceId === inv.id;
+                  const st = (inv.status || 'Unpaid').toLowerCase() as 'paid' | 'unpaid' | 'partial';
+                  const createdLabel = new Date(inv.createdAt).toLocaleString(undefined, {
+                    month: 'numeric',
+                    day: 'numeric',
+                    year: 'numeric',
+                    hour: 'numeric',
+                    minute: '2-digit',
+                  });
+                  const balanceLabel =
+                    inv.remaining <= 0
+                      ? 'Fully paid'
+                      : `${formatMoneyAmount(inv.remaining, inv.currencyCode)} due`;
+                  return (
                     <button
                       type="button"
-                      className="primary-button payments-detail-pay-btn"
-                      onClick={() => handlePayClick(selectedInvoice.id)}
+                      key={inv.id}
+                      className={`pay-inv-row${isSelected ? ' pay-inv-row--selected' : ''}`}
+                      onClick={() => handleRowClick(inv.id)}
                     >
-                      <span className="btn-icon" aria-hidden="true">
-                        <IconCreditCard />
-                      </span>
-                      Pay invoice
+                      <div className={`pay-inv-row-icon pay-inv-row-icon--${st}`}>
+                        {inv.status === 'Paid' ? (
+                          <IconCheck />
+                        ) : inv.status === 'Partial' ? (
+                          <IconPartial />
+                        ) : (
+                          <IconAlertCircle />
+                        )}
+                      </div>
+                      <div className="pay-inv-row-main">
+                        <div className="pay-inv-row-line1">
+                          <span className="pay-inv-num">{inv.invoiceNo}</span>
+                          <span className="pay-inv-dot" aria-hidden="true">
+                            ·
+                          </span>
+                          <span className={`pay-inv-status pay-inv-status--${st}`}>{inv.status}</span>
+                        </div>
+                        <div className="pay-inv-row-line2">
+                          <span className="pay-inv-customer">{inv.customerName}</span>
+                          <span className="pay-inv-dot" aria-hidden="true">
+                            ·
+                          </span>
+                          <span className="pay-inv-date">{createdLabel}</span>
+                        </div>
+                      </div>
+                      <div className="pay-inv-row-right" aria-label="Invoice amounts">
+                        <div className="pay-inv-total">
+                          {formatMoneyAmount(inv.total, inv.currencyCode)}
+                        </div>
+                        <div
+                          className={`pay-inv-balance ${
+                            inv.remaining <= 0 ? 'pay-inv-balance--zero' : 'pay-inv-balance--due'
+                          }`}
+                        >
+                          {balanceLabel}
+                        </div>
+                      </div>
                     </button>
-                    <p className="payments-detail-pay-hint">
-                      Opens invoice checkout to choose payment method, currency, and amount tendered.
-                    </p>
-                  </>
-                ) : (
-                  <div className="payments-detail-paid-banner" role="status">
-                    <span className="payments-detail-paid-banner-title">Fully paid</span>
-                    <span className="payments-detail-paid-banner-sub">No balance remaining on this invoice.</span>
-                  </div>
-                )}
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+
+        <aside className="pay-inv-detail-aside">
+          {!selectedInvoiceId && !detailLoading && !detailError ? (
+            <div className="pay-inv-detail-empty">
+              <div className="pay-inv-detail-empty-icon" aria-hidden="true">
+                <IconCreditCard />
               </div>
+              <h3 className="pay-inv-detail-empty-title">Select an invoice</h3>
+              <p className="pay-inv-detail-empty-text">
+                Choose an invoice from the list to view details, print, or pay.
+              </p>
+            </div>
+          ) : (
+            <div className="pay-inv-detail-card">
+              {detailLoading && (
+                <div className="pay-inv-detail-placeholder">
+                  <p>Loading invoice details…</p>
+                </div>
+              )}
+              {detailError && !detailLoading && (
+                <div className="pay-inv-detail-placeholder pay-inv-detail-placeholder--error">
+                  <p>{detailError}</p>
+                </div>
+              )}
+              {selectedInvoice && !detailLoading && !detailError && (
+                <>
+                  <div className="pay-inv-detail-head">
+                    <div className="pay-inv-detail-head-top">
+                      <div>
+                        <div className="pay-inv-detail-eyebrow">
+                          Invoice · {selectedInvoice.invoice_no}
+                        </div>
+                        <div className="pay-inv-detail-customer-name">
+                          {selectedInvoice.customer_name || 'Walk-in customer'}
+                        </div>
+                        <div className="pay-inv-detail-when">
+                          {new Date(selectedInvoice.created_at).toLocaleString(undefined, {
+                            month: 'numeric',
+                            day: 'numeric',
+                            year: 'numeric',
+                            hour: 'numeric',
+                            minute: '2-digit',
+                            second: '2-digit',
+                          })}
+                        </div>
+                      </div>
+                      <div className="pay-inv-detail-head-actions">
+                        <button
+                          type="button"
+                          className="pay-inv-btn-print"
+                          onClick={() => printInvoiceReceipt(selectedInvoice)}
+                        >
+                          <IconPrinter />
+                          Print
+                        </button>
+                        <button
+                          type="button"
+                          className="pay-inv-btn-close"
+                          aria-label="Close invoice details"
+                          onClick={handleCloseDetail}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                    <div className="pay-inv-amount-grid">
+                      <div className="pay-inv-amount-tile pay-inv-amount-tile--total">
+                        <div className="pay-inv-amount-label">Total amount</div>
+                        <div className="pay-inv-amount-value">
+                          {formatMoneyAmount(selectedInvoice.total, detailCurrency)}
+                        </div>
+                      </div>
+                      <div className="pay-inv-amount-tile pay-inv-amount-tile--paid">
+                        <div className="pay-inv-amount-label">Amount paid</div>
+                        <div className="pay-inv-amount-value">
+                          {formatMoneyAmount(selectedInvoice.paid, detailCurrency)}
+                        </div>
+                      </div>
+                      <div
+                        className={`pay-inv-amount-tile ${
+                          selectedRemaining <= 0
+                            ? 'pay-inv-amount-tile--cleared'
+                            : selectedInvoice.derived_status === 'Partial'
+                              ? 'pay-inv-amount-tile--partial'
+                              : 'pay-inv-amount-tile--due'
+                        }`}
+                      >
+                        <div className="pay-inv-amount-label">Remaining</div>
+                        <div className="pay-inv-amount-value">
+                          {formatMoneyAmount(selectedRemaining, detailCurrency)}
+                        </div>
+                      </div>
+                    </div>
+                    {selectedInvoice.discount > 0 && (
+                      <p className="pay-inv-invoice-discount">
+                        Invoice discount:{' '}
+                        {formatMoneyAmount(selectedInvoice.discount, detailCurrency)}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="pay-inv-detail-body">
+                    <div>
+                      <div className="pay-inv-section-heading">Items</div>
+                      {selectedInvoice.items.map(item => (
+                        <div key={item.id} className="pay-inv-item-row">
+                          <div className="pay-inv-item-left">
+                            <div className="pay-inv-item-code">{itemCodeLetter(item)}</div>
+                            <div>
+                              <div className="pay-inv-item-title">{itemCardTitle(item)}</div>
+                              <div className="pay-inv-item-meta">{itemCardSubline(item, detailCurrency)}</div>
+                            </div>
+                          </div>
+                          <div className="pay-inv-item-price">
+                            {formatMoneyAmount(item.line_total, detailCurrency)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div>
+                      <div className="pay-inv-section-heading">Payment history</div>
+                      {selectedInvoice.payments.length === 0 ? (
+                        <p className="pay-inv-no-payments">No payments recorded yet.</p>
+                      ) : (
+                        <div className="pay-inv-payment-timeline">
+                          {selectedInvoice.payments.map(p => (
+                            <div key={p.id} className="pay-inv-payment-entry">
+                              <div className="pay-inv-payment-dot">
+                                <IconCheck />
+                              </div>
+                              <div className="pay-inv-payment-body">
+                                <div className="pay-inv-payment-row-line">
+                                  <div>
+                                    <div className="pay-inv-payment-method">{p.method}</div>
+                                    <div className="pay-inv-payment-when">
+                                      {new Date(p.created_at).toLocaleString(undefined, {
+                                        month: 'numeric',
+                                        day: 'numeric',
+                                        year: 'numeric',
+                                        hour: 'numeric',
+                                        minute: '2-digit',
+                                        second: '2-digit',
+                                      })}
+                                    </div>
+                                  </div>
+                                  <div className="pay-inv-payment-amt">
+                                    {formatMoneyAmount(p.amount, detailCurrency)}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {selectedRemaining > 0 ? (
+                      <div
+                        className={`pay-inv-status-banner pay-inv-status-banner--${(
+                          selectedInvoice.derived_status || ''
+                        ).toLowerCase()}`}
+                        role="status"
+                      >
+                        <div className="pay-inv-status-banner-icon">
+                          <IconAlertCircle />
+                        </div>
+                        <div>
+                          <div className="pay-inv-status-banner-title">
+                            {selectedInvoice.derived_status === 'Partial'
+                              ? 'Partially paid'
+                              : 'Unpaid'}
+                          </div>
+                          <div className="pay-inv-status-banner-sub">
+                            {formatMoneyAmount(selectedRemaining, detailCurrency)} balance remaining
+                            on this invoice.
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="pay-inv-status-banner pay-inv-status-banner--paid" role="status">
+                        <div className="pay-inv-status-banner-icon pay-inv-status-banner-icon--ok">
+                          <IconCheck />
+                        </div>
+                        <div>
+                          <div className="pay-inv-status-banner-title">Fully paid</div>
+                          <div className="pay-inv-status-banner-sub">
+                            No balance remaining on this invoice.
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="pay-inv-detail-footer">
+                    {selectedRemaining > 0 ? (
+                      <>
+                        <button
+                          type="button"
+                          className="pay-inv-btn-pay"
+                          onClick={() => handlePayClick(selectedInvoice.id)}
+                        >
+                          <IconCreditCard />
+                          Pay invoice
+                        </button>
+                        <p className="pay-inv-pay-hint">
+                          Opens invoice checkout to choose payment method, currency, and amount
+                          tendered.
+                        </p>
+                      </>
+                    ) : null}
+                  </div>
+                </>
+              )}
             </div>
           )}
-            </div>
-          </aside>
-        )}
+        </aside>
       </section>
     </div>
   );

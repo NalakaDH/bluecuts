@@ -8,6 +8,7 @@ import {
   DashboardPage,
   UpdateInventoryPage,
   CheckInventoryPage,
+  StockCountPage,
   SellingPage,
   PaymentPage,
   InvoiceCheckoutPage,
@@ -198,6 +199,11 @@ const App: React.FC = () => {
         ? fallbackStaffPage
         : activePage;
 
+    const contentStretch =
+      effectivePage === 'updateInventory' ||
+      effectivePage === 'checkInventory' ||
+      effectivePage === 'stockCount';
+
     const renderPage = () => {
       switch (effectivePage) {
         case 'dashboard':
@@ -206,6 +212,8 @@ const App: React.FC = () => {
           return <UpdateInventoryPage token={auth.token} />;
         case 'checkInventory':
           return <CheckInventoryPage token={auth.token} onNavigate={goToPage} />;
+        case 'stockCount':
+          return <StockCountPage token={auth.token} />;
         case 'selling':
           return <SellingPage token={auth.token} onNavigate={goToPage} />;
         case 'payments':
@@ -215,7 +223,7 @@ const App: React.FC = () => {
         case 'customers':
           return <CustomersPage token={auth.token} />;
         case 'memo':
-          return <MemoPage token={auth.token} />;
+          return <MemoPage token={auth.token} onNavigate={goToPage} />;
         case 'returns':
           return <ReturnsPage token={auth.token} />;
         case 'reports':
@@ -263,7 +271,9 @@ const App: React.FC = () => {
             onToggleTheme={toggleTheme}
             onOpenProfile={() => goToPage('profile')}
           />
-          <section className="content">{renderPage()}</section>
+          <section className={`content${contentStretch ? ' content--page-stretch' : ''}`}>
+            {renderPage()}
+          </section>
         </main>
       </div>
     );

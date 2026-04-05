@@ -21,6 +21,12 @@ export function roundMoney2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** Round exchange-rate factors (e.g. THB per 1 unit) to 6 decimal places. */
+export function roundRate6(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 1_000_000) / 1_000_000;
+}
+
 /**
  * Parse a typed money field into a 2-decimal value. Uses digit structure from the string so
  * "10.50" stays exact; optional third decimal rounds half-up into cents.

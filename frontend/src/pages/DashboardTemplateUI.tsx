@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useAlertDialog } from '../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../api';
 import type { PageId } from '../components/layout/Layout';
-import { DEFAULT_CURRENCY_CODE, formatMoneyAmount } from '../lib/currencies';
+import { DEFAULT_CURRENCY_CODE } from '../lib/currencies';
+import { formatUsdOnlyFromAny, formatUsdOnlyFromThb, thbEquivalentToUsdNumber } from '../lib/moneyUsdDisplay';
+import type { ThbPerUnitMap } from '../lib/exchangeConversion';
 
 type InvoiceStatus = 'Unpaid' | 'Partial' | 'Paid';
 
@@ -108,7 +110,51 @@ const weekdayShort = (isoDate: string) => {
   }
 };
 
-function RevenueWeekChart({ rows }: { rows: { period: string; sales_total: number }[] }) {
+type TrendDelta = 'up' | 'down' | 'flat';
+
+/** Compare two day bucket values as a vs-yesterday percentage (reference UI). */
+function pctVersusPriorDay(prev: number, curr: number): { delta: TrendDelta; label: string } {
+  if (prev === 0 && curr === 0) return { delta: 'flat', label: '0% than yesterday' };
+  if (prev === 0) {
+    return curr > 0
+      ? { delta: 'up', label: 'Up from yesterday' }
+      : { delta: 'down', label: 'Down from yesterday' };
+  }
+  const pct = ((curr - prev) / Math.abs(prev)) * 100;
+  if (Math.abs(pct) < 0.0001) return { delta: 'flat', label: '0% than yesterday' };
+  const abs = Math.abs(pct);
+  const label = `${(abs < 0.05 ? abs.toFixed(2) : abs.toFixed(1))}% than yesterday`;
+  return { delta: pct > 0 ? 'up' : 'down', label };
+}
+
+function TrendFooter({ delta, children }: { delta: TrendDelta; children: React.ReactNode }) {
+  const tone = delta === 'flat' ? 'flat' : delta === 'up' ? 'up' : 'down';
+  const common = { fill: 'none' as const, stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
+  return (
+    <div className={`dashT-kpi-trend dashT-kpi-trend--${tone}`} role="status">
+      {delta === 'up' && (
+        <svg className="dashT-kpi-trend-ico" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 14l5-5 5 5" {...common} />
+        </svg>
+      )}
+      {delta === 'down' && (
+        <svg className="dashT-kpi-trend-ico" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 10l5 5 5-5" {...common} />
+        </svg>
+      )}
+      {delta === 'flat' && (
+        <svg className="dashT-kpi-trend-ico" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 12h14" {...common} />
+        </svg>
+      )}
+      <span>{children}</span>
+    </div>
+  );
+}
+
+const strokeIcon = { fill: 'none' as const, stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
+
+function RevenueWeekChart({ rows, thbPerUnit }: { rows: { period: string; sales_total: number }[]; thbPerUnit: ThbPerUnitMap }) {
   const w = 560;
   const h = 220;
   const padTop = 22;
@@ -123,14 +169,20 @@ function RevenueWeekChart({ rows }: { rows: { period: string; sales_total: numbe
 
   const n = Math.max(1, rows.length);
   const stepX = plotW / n;
-  const maxVal = Math.max(1, ...rows.map(r => Number(r.sales_total) || 0));
+  const maxVal = Math.max(
+    1,
+    ...rows.map(r => thbEquivalentToUsdNumber(r.sales_total, thbPerUnit))
+  );
 
   const xAt = (i: number) => (n === 1 ? padLeft + plotW / 2 : padLeft + i * stepX + stepX / 2);
   const yAt = (v: number) => padTop + (1 - v / maxVal) * plotH;
 
   const ticks = [0, 0.25, 0.5, 0.75, 1];
   const points = rows
-    .map((r, i) => `${xAt(i)},${yAt(Number(r.sales_total) || 0)}`)
+    .map((r, i) => {
+      const vUsd = thbEquivalentToUsdNumber(r.sales_total, thbPerUnit);
+      return `${xAt(i)},${yAt(vUsd)}`;
+    })
     .join(' ');
 
   const baseY = padTop + plotH;
@@ -159,9 +211,23 @@ function RevenueWeekChart({ rows }: { rows: { period: string; sales_total: numbe
         onMouseMove={handleMove}
         onMouseLeave={() => setHoverIdx(null)}
       >
-        {/* Axes */}
-        <line x1={padLeft} x2={padLeft} y1={padTop} y2={baseY} stroke="rgba(0,0,0,0.18)" strokeWidth="2" />
-        <line x1={padLeft} x2={w - padRight} y1={baseY} y2={baseY} stroke="rgba(0,0,0,0.18)" strokeWidth="2" />
+        {/* Axes — colors from .dashT-chart-wrap--revenue CSS variables */}
+        <line
+          x1={padLeft}
+          x2={padLeft}
+          y1={padTop}
+          y2={baseY}
+          stroke="var(--dash-chart-axis)"
+          strokeWidth="2"
+        />
+        <line
+          x1={padLeft}
+          x2={w - padRight}
+          y1={baseY}
+          y2={baseY}
+          stroke="var(--dash-chart-axis)"
+          strokeWidth="2"
+        />
 
         {/* Grid + Y labels */}
         {ticks.map(f => {
@@ -169,8 +235,23 @@ function RevenueWeekChart({ rows }: { rows: { period: string; sales_total: numbe
           const y = yAt(v);
           return (
             <g key={`y-${f}`}>
-              <line x1={padLeft} x2={w - padRight} y1={y} y2={y} stroke="rgba(0,0,0,0.06)" strokeWidth="1" strokeDasharray="3 3" />
-              <text x={padLeft - 10} y={y + 4} fontSize="12" textAnchor="end" fill="rgba(148,163,184,1)" fontWeight={600}>
+              <line
+                x1={padLeft}
+                x2={w - padRight}
+                y1={y}
+                y2={y}
+                stroke="var(--dash-chart-grid)"
+                strokeWidth="1"
+                strokeDasharray="3 3"
+              />
+              <text
+                x={padLeft - 10}
+                y={y + 4}
+                fontSize="12"
+                textAnchor="end"
+                fill="var(--dash-chart-tick)"
+                fontWeight={600}
+              >
                 {Math.round(v).toLocaleString()}
               </text>
             </g>
@@ -184,26 +265,33 @@ function RevenueWeekChart({ rows }: { rows: { period: string; sales_total: numbe
             x2={xAt(hoverIdx)}
             y1={padTop}
             y2={baseY}
-            stroke="rgba(37,99,235,0.45)"
+            stroke="var(--dash-chart-hover)"
             strokeWidth="2"
             strokeDasharray="3 3"
           />
         )}
 
         {/* Lines + points */}
-        <polyline points={points} fill="none" stroke="rgba(37,99,235,0.95)" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
+        <polyline
+          points={points}
+          fill="none"
+          stroke="var(--dash-chart-line)"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
         {rows.map((r, i) => {
-          const v = Number(r.sales_total) || 0;
+          const vUsd = thbEquivalentToUsdNumber(r.sales_total, thbPerUnit);
           const isHover = hoverIdx === i;
           return (
             <circle
               key={r.period}
               cx={xAt(i)}
-              cy={yAt(v)}
-              r={isHover ? 7 : 4}
-              fill="#ffffff"
-              stroke="rgba(37,99,235,0.95)"
-              strokeWidth={isHover ? 3 : 2}
+              cy={yAt(vUsd)}
+              r={isHover ? 6.5 : 4}
+              fill="var(--dash-chart-point-fill)"
+              stroke="var(--dash-chart-line)"
+              strokeWidth={isHover ? 2.5 : 2}
             />
           );
         })}
@@ -217,7 +305,7 @@ function RevenueWeekChart({ rows }: { rows: { period: string; sales_total: numbe
               y={h - 18}
               fontSize="12"
               textAnchor="middle"
-              fill="rgba(0,0,0,0.65)"
+              fill="var(--dash-chart-xlabel)"
               fontWeight={600}
             >
               {weekdayShort(r.period)}
@@ -229,8 +317,8 @@ function RevenueWeekChart({ rows }: { rows: { period: string; sales_total: numbe
       {hovered && (
         <div className="dashT-chart-tooltip" style={{ left: tip.left, top: tip.top }}>
           <div className="dashT-chart-tooltip-title">{weekdayShort(hovered.period)}</div>
-          <div className="dashT-chart-tooltip-row" style={{ color: 'var(--accent)' }}>
-            sales: {formatMoneyAmount(Number(hovered.sales_total) || 0, DEFAULT_CURRENCY_CODE)}
+          <div className="dashT-chart-tooltip-row">
+            Sales {formatUsdOnlyFromThb(Number(hovered.sales_total) || 0, thbPerUnit)}
           </div>
         </div>
       )}
@@ -250,6 +338,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
 
   const [stockAlerts, setStockAlerts] = useState<InventoryItem[]>([]);
   const [memos, setMemos] = useState<MemoRow[]>([]);
+  const [thbPerUnit, setThbPerUnit] = useState<ThbPerUnitMap>({ THB: 1 });
 
   const [greetingTick, setGreetingTick] = useState(0);
   useEffect(() => {
@@ -366,6 +455,27 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, rangeDays]);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(apiUrl('/api/exchange-rates'), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (data?.thb_per_unit && typeof data.thb_per_unit === 'object') {
+          setThbPerUnit(data.thb_per_unit as ThbPerUnitMap);
+        }
+      } catch {
+        // keep defaults
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
   const lowStockCount = stockAlerts.length;
 
   const openMemosCount = overview?.memos_summary?.open_count ?? memos.filter(m => m.status !== 'Closed').length;
@@ -376,12 +486,17 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
   const kpiOutstanding = overview?.outstanding_all?.outstanding_total ?? 0;
   const kpiOutstandingInvoiceCount = overview?.outstanding_all?.invoice_count ?? 0;
   const itemsSoldToday = Math.floor(Number(overview?.items_sold_today ?? 0));
-
   const weekRows = useMemo(() => {
     const rows = overview?.trends?.sales || [];
     if (!rows.length) return [];
     // endpoint returns ASC; take last 7 for a "week" chart
     return rows.slice(-7).map(r => ({ period: r.period, sales_total: r.sales_total }));
+  }, [overview]);
+
+  const trendPair = useMemo(() => {
+    const rows = overview?.trends?.sales ?? [];
+    if (rows.length < 2) return null;
+    return { prev: rows[rows.length - 2], curr: rows[rows.length - 1] };
   }, [overview]);
 
   const navBtns = [
@@ -496,86 +611,97 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
       </div>
 
       <div className="dashT-kpi-grid">
-        <div className="dashT-kpi-card dashT-kpi-card--blue">
-          <div className="dashT-kpi-header">
-            <div className="dashT-kpi-header-left">
-              <div className="dashT-kpi-icon ic-blue">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <line x1="12" y1="1" x2="12" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                  <path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" fill="none" stroke="currentColor" strokeWidth="2" />
-                </svg>
-              </div>
-              <div className="dashT-kpi-label dashT-kpi-label--top">Today&apos;s Revenue</div>
-            </div>
-          </div>
-          <div className="dashT-kpi-value dashT-kpi-value--top">
-            {formatMoneyAmount(kpiToday?.sales_total ?? 0, DEFAULT_CURRENCY_CODE)}
-          </div>
-          <div className="dashT-kpi-sub">
-            {(kpiToday?.invoices_count ?? 0)} invoices · THB equivalent (by exchange rates)
-            {overview?.business_today ? ` · ${overview.business_today}` : ''}
-          </div>
-        </div>
-
-        <div className="dashT-kpi-card dashT-kpi-card--green">
-          <div className="dashT-kpi-header">
-            <div className="dashT-kpi-header-left">
-              <div className="dashT-kpi-icon ic-green">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-                  <line x1="3" y1="6" x2="21" y2="6" stroke="currentColor" strokeWidth="2" />
-                  <path d="M16 10a4 4 0 01-8 0" fill="none" stroke="currentColor" strokeWidth="2" />
-                </svg>
-              </div>
-              <div className="dashT-kpi-label dashT-kpi-label--top">Items sold (today)</div>
-            </div>
-          </div>
-          <div className="dashT-kpi-value dashT-kpi-value--top">{itemsSoldToday}</div>
-          <div className="dashT-kpi-sub">Sum of line quantities on today&apos;s invoices</div>
-        </div>
-
-        <div className="dashT-kpi-card dashT-kpi-card--red">
-          <div className="dashT-kpi-header">
-            <div className="dashT-kpi-header-left">
-              <div className="dashT-kpi-icon ic-amber">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <rect x="1" y="4" width="22" height="16" rx="2" fill="none" stroke="currentColor" strokeWidth="2" />
-                  <line x1="1" y1="10" x2="23" y2="10" stroke="currentColor" strokeWidth="2" />
-                </svg>
-              </div>
-              <div className="dashT-kpi-label dashT-kpi-label--top">Outstanding Balance</div>
-            </div>
-
-            <div className="dashT-kpi-warning-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 9v4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                <path d="M12 17h.01" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-                <path d="M10.29 3.86 1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+        <div className="dashT-kpi-sum dashT-kpi-sum--blue">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Total Sales Today</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--blue" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z" {...strokeIcon} />
+                <line x1="3" y1="6" x2="21" y2="6" {...strokeIcon} />
+                <path d="M16 10a4 4 0 01-8 0" {...strokeIcon} />
               </svg>
             </div>
           </div>
-          <div className="dashT-kpi-value dashT-kpi-value--top">
-            {formatMoneyAmount(kpiOutstanding, DEFAULT_CURRENCY_CODE)}
+          <div className="dashT-kpi-sum__value">{formatUsdOnlyFromThb(kpiToday?.sales_total ?? 0, thbPerUnit)}</div>
+          <div className="dashT-kpi-sum-desc">
+            {kpiToday != null
+              ? `${kpiToday.invoices_count} invoice${kpiToday.invoices_count === 1 ? '' : 's'} today · USD from Profile rates`
+              : 'Invoice face totals · USD from Profile rates · shop business day'}
           </div>
-          <div className="dashT-kpi-sub">
-            Across {kpiOutstandingInvoiceCount} invoice{kpiOutstandingInvoiceCount === 1 ? '' : 's'} with a balance (all time)
-          </div>
+          {trendPair ? (
+            (() => {
+              const salesTrend = pctVersusPriorDay(
+                thbEquivalentToUsdNumber(trendPair.prev.sales_total, thbPerUnit),
+                thbEquivalentToUsdNumber(trendPair.curr.sales_total, thbPerUnit)
+              );
+              return <TrendFooter delta={salesTrend.delta}>{salesTrend.label}</TrendFooter>;
+            })()
+          ) : (
+            <div className="dashT-kpi-trend dashT-kpi-trend--flat" role="status">
+              <span>{overview ? 'Not enough history to compare' : '…'}</span>
+            </div>
+          )}
         </div>
 
-        <div className="dashT-kpi-card dashT-kpi-card--purple">
-          <div className="dashT-kpi-header">
-            <div className="dashT-kpi-header-left">
-              <div className="dashT-kpi-icon ic-purple">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" fill="none" stroke="currentColor" strokeWidth="2" />
-                  <polyline points="14 2 14 8 20 8" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-                </svg>
-              </div>
-              <div className="dashT-kpi-label dashT-kpi-label--top">Open Memos</div>
+        <div className="dashT-kpi-sum dashT-kpi-sum--green">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Items Sold Today</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--green" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M22 11.08V12a10 10 0 11-5.93-9.14" {...strokeIcon} />
+                <polyline points="22 4 12 14.01 9 11.01" {...strokeIcon} />
+              </svg>
             </div>
           </div>
-          <div className="dashT-kpi-value dashT-kpi-value--top">{openMemosCount}</div>
-          <div className="dashT-kpi-sub">{memosDueSoon} with due date in the next 3 days</div>
+          <div className="dashT-kpi-sum__value">{itemsSoldToday}</div>
+          <div className="dashT-kpi-sum-desc">Pieces on invoiced lines today · from dashboard totals</div>
+          <TrendFooter delta="flat">
+            {overview ? 'No day-over-day quantity trend' : '…'}
+          </TrendFooter>
+        </div>
+
+        <div className="dashT-kpi-sum dashT-kpi-sum--orange">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Outstanding Balance</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--orange" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10" {...strokeIcon} />
+                <polyline points="12 6 12 12 16 14" {...strokeIcon} />
+              </svg>
+            </div>
+          </div>
+          <div className="dashT-kpi-sum__value">{formatUsdOnlyFromThb(kpiOutstanding, thbPerUnit)}</div>
+          <div className="dashT-kpi-sum-desc">Unpaid + partial invoice balances · USD from Profile rates</div>
+          {kpiOutstandingInvoiceCount === 0 ? (
+            <TrendFooter delta="up">No invoices with a balance</TrendFooter>
+          ) : (
+            <TrendFooter delta="down">
+              {kpiOutstandingInvoiceCount} invoice{kpiOutstandingInvoiceCount === 1 ? '' : 's'} with balance
+            </TrendFooter>
+          )}
+        </div>
+
+        <div className="dashT-kpi-sum dashT-kpi-sum--pink">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Open Memos</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--pink" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" {...strokeIcon} />
+                <polyline points="14 2 14 8 20 8" {...strokeIcon} />
+                <line x1="12" y1="13" x2="12" y2="17" {...strokeIcon} />
+                <line x1="9" y1="15" x2="15" y2="15" {...strokeIcon} />
+              </svg>
+            </div>
+          </div>
+          <div className="dashT-kpi-sum__value">{openMemosCount}</div>
+          <div className="dashT-kpi-sum-desc">Open & partially returned · memo desk overview</div>
+          {memosDueSoon === 0 ? (
+            <TrendFooter delta="up">None due in the next 3 days</TrendFooter>
+          ) : (
+            <TrendFooter delta="down">
+              {memosDueSoon} due in the next 3 day{memosDueSoon === 1 ? '' : 's'}
+            </TrendFooter>
+          )}
         </div>
       </div>
 
@@ -599,7 +725,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
       {!loading && !error && (
         <>
           <div className="dashT-row-main">
-            <div className="dashT-card">
+            <div className="dashT-card dashT-card--sec-invoices">
               <div className="dashT-card-head">
                 <div>
                   <div className="dashT-card-title">Recent Invoices</div>
@@ -615,8 +741,8 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
                         <th>Invoice</th>
                         <th>Customer</th>
                         <th>Items</th>
-                        <th style={{ textAlign: 'right' }}>Amount</th>
-                        <th style={{ textAlign: 'right' }}>Balance</th>
+                        <th style={{ textAlign: 'right' }}>Amount (USD)</th>
+                        <th style={{ textAlign: 'right' }}>Balance (USD)</th>
                         <th style={{ textAlign: 'center' }}>Status</th>
                       </tr>
                     </thead>
@@ -627,23 +753,22 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
                           const items = invoiceItemsCount[inv.id];
                           const statusClass = inv.status === 'Paid' ? 'st-paid' : inv.status === 'Partial' ? 'st-partial' : 'st-unpaid';
                           const statusColor =
-                            inv.status === 'Paid' ? 'var(--fg-muted)' : inv.status === 'Partial' ? 'var(--warning)' : 'var(--danger)';
+                            inv.status === 'Paid' ? 'var(--dashT-label)' : inv.status === 'Partial' ? 'var(--warning)' : 'var(--danger)';
                           return (
                             <tr key={inv.id}>
-                              <td style={{ fontWeight: 700, color: 'var(--accent)' }}>{`#${inv.invoice_no}`}</td>
-                              <td style={{ color: '#0b0b0b', fontWeight: 600 }}>
-                                {inv.customer_name || 'Walk-in customer'}
+                              <td className="dashT-inv-num">{`#${inv.invoice_no}`}</td>
+                              <td className="dashT-inv-cell">{inv.customer_name || 'Walk-in customer'}</td>
+                              <td className="dashT-inv-cell">{typeof items === 'number' ? `${items} pcs` : '—'}</td>
+                              <td className="dashT-inv-cell dashT-inv-cell--num">
+                                {formatUsdOnlyFromAny(inv.total, inv.currency_code || DEFAULT_CURRENCY_CODE, thbPerUnit)}
                               </td>
-                              <td style={{ color: '#0b0b0b', fontWeight: 600 }}>
-                                {typeof items === 'number' ? `${items} pcs` : '—'}
-                              </td>
-                              <td style={{ textAlign: 'right', fontWeight: 600, color: '#0b0b0b' }}>
-                                {formatMoneyAmount(inv.total, inv.currency_code || DEFAULT_CURRENCY_CODE)}
-                              </td>
-                              <td style={{ textAlign: 'right', fontWeight: 600, color: inv.status === 'Paid' ? 'var(--fg-muted)' : statusColor }}>
+                              <td
+                                className="dashT-inv-cell dashT-inv-cell--num"
+                                style={{ fontWeight: 600, color: inv.status === 'Paid' ? 'var(--dashT-label)' : statusColor }}
+                              >
                                 {inv.status === 'Paid'
                                   ? '—'
-                                  : formatMoneyAmount(remaining, inv.currency_code || DEFAULT_CURRENCY_CODE)}
+                                  : formatUsdOnlyFromAny(remaining, inv.currency_code || DEFAULT_CURRENCY_CODE, thbPerUnit)}
                               </td>
                               <td style={{ textAlign: 'center' }}>
                                 <span className={`dashT-status-tag ${statusClass}`}>{inv.status}</span>
@@ -664,7 +789,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
               </div>
             </div>
 
-            <div className="dashT-card">
+            <div className="dashT-card dashT-card--sec-activity">
               <div className="dashT-card-head">
                 <div>
                   <div className="dashT-card-title">Recent Activity</div>
@@ -680,16 +805,29 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
                       const isMemoOut = t === 'MEMO_OUT';
                       const isMemoReturn = t === 'MEMO_RETURN';
                       const isSaleReturn = t === 'SALE_RETURN';
-                      const dotColor = isRestock ? 'var(--success)' : isMemoOut ? 'var(--accent)' : isMemoReturn ? 'var(--section-list)' : isSaleReturn ? 'var(--danger)' : 'var(--warning)';
+                      const isShrinkage = t === 'SHRINKAGE';
+                      const dotColor = isRestock
+                        ? 'var(--success)'
+                        : isShrinkage
+                          ? 'var(--danger)'
+                          : isMemoOut
+                            ? 'var(--dashT-body)'
+                            : isMemoReturn
+                              ? 'var(--dashT-body)'
+                              : isSaleReturn
+                                ? 'var(--danger)'
+                                : 'var(--warning)';
                       const msg = isRestock
                         ? `Restocked ${item.item_code || 'item'} — +${Math.abs(item.qty_change)} pcs added`
-                        : isMemoOut
-                          ? `Memo created — ${item.item_code || 'item'} moved to memo`
-                          : isMemoReturn
-                            ? `Memo return — ${item.item_code || 'item'} returned`
-                            : isSaleReturn
-                              ? `Return processed — ${item.item_code || 'item'} restocked`
-                              : `${item.type || 'UPDATE'}: ${item.note || ''}`;
+                        : isShrinkage
+                          ? `Stock adjustment — ${item.item_code || 'item'} ${item.qty_change} pcs`
+                          : isMemoOut
+                            ? `Memo created — ${item.item_code || 'item'} moved to memo`
+                            : isMemoReturn
+                              ? `Memo return — ${item.item_code || 'item'} returned`
+                              : isSaleReturn
+                                ? `Return processed — ${item.item_code || 'item'} restocked`
+                                : `${item.type || 'UPDATE'}: ${item.note || ''}`;
                       return (
                         <div key={item.id} className="dashT-feed-item">
                           <div className="dashT-feed-dot-wrap">
@@ -716,19 +854,19 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
           </div>
 
           <div className="dashT-row-lower">
-            <div className="dashT-card">
+            <div className="dashT-card dashT-card--sec-revenue">
               <div className="dashT-card-head">
                 <div>
                   <div className="dashT-card-title">Revenue This Week</div>
-                  <div className="dashT-card-subtitle">Daily sales · THB (converted)</div>
+                  <div className="dashT-card-subtitle">Daily sales · THB equivalent · hover for USD</div>
                 </div>
               </div>
               <div className="dashT-card-body">
-                <RevenueWeekChart rows={weekRows} />
+                <RevenueWeekChart rows={weekRows} thbPerUnit={thbPerUnit} />
               </div>
             </div>
 
-            <div className="dashT-card">
+            <div className="dashT-card dashT-card--sec-stock">
               <div className="dashT-card-head">
                 <div>
                   <div className="dashT-card-title">Low Stock Alerts</div>
@@ -765,7 +903,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
               </div>
             </div>
 
-            <div className="dashT-card">
+            <div className="dashT-card dashT-card--sec-memos">
               <div className="dashT-card-head">
                 <div>
                   <div className="dashT-card-title">Open Memos</div>
@@ -801,7 +939,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
                           <div
                             className={`dashT-memo-tag ${
                               m.status === 'Closed'
-                                ? 'mt-open'
+                                ? 'mt-converted'
                                 : cls.includes('overdue')
                                   ? 'mt-overdue'
                                   : cls.includes('soon')

@@ -3,6 +3,7 @@ import { useAlertDialog } from '../../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../../api';
 import { INVOICE_CHECKOUT_INVOICE_ID_KEY } from '../../constants/invoiceCheckout';
 import type { PageId } from '../../components/layout/Layout';
+import { mapApiInvoiceToReceipt, openInvoiceReceiptWindow } from '../../lib/receiptDocument';
 import {
   DEFAULT_CURRENCY_CODE,
   SUPPORTED_CURRENCIES,
@@ -45,6 +46,14 @@ const IconAlert = () => (
   </svg>
 );
 
+const IconPrinter = () => (
+  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="6 9 6 2 18 2 18 9" />
+    <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+    <rect x="6" y="14" width="12" height="8" />
+  </svg>
+);
+
 interface InvoiceCheckoutPageProps {
   token: string;
   onNavigate: (page: PageId) => void;
@@ -65,6 +74,7 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({ token,
   const [checkoutAmount, setCheckoutAmount] = useState(0);
   const [saving, setSaving] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [printLoading, setPrintLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -244,6 +254,79 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({ token,
 
   const goBack = () => onNavigate('payments');
 
+  const handlePrintReceipt = async () => {
+    if (!invoiceId) return;
+    setPrintLoading(true);
+    try {
+      const res = await fetch(apiUrl(`/api/invoices/${invoiceId}`), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const msg = await parseErrorResponse(res, 'Failed to load invoice');
+        throw new Error(msg);
+      }
+      const data = (await res.json()) as {
+        invoice_no: string;
+        created_at: string;
+        customer_name: string | null;
+        customer_phone?: string | null;
+        customer_email?: string | null;
+        customer_address_line1?: string | null;
+        customer_address_line2?: string | null;
+        customer_city?: string | null;
+        customer_postal_code?: string | null;
+        customer_country?: string | null;
+        subtotal: number;
+        discount: number;
+        total: number;
+        paid?: number;
+        status?: string;
+        derived_status?: string;
+        items: {
+          item_code: string | null;
+          description: string | null;
+          quantity: number;
+          unit_price: number;
+          line_total: number;
+          weight_grams?: number | null;
+          weight_carats?: number | null;
+          inv_category?: string | null;
+          inv_item_type?: string | null;
+          inventory_description?: string | null;
+        }[];
+        payments?: { method: string; amount: number; created_at: string }[];
+        currency_code?: string | null;
+      };
+      openInvoiceReceiptWindow(
+        mapApiInvoiceToReceipt({
+          invoice_no: data.invoice_no,
+          created_at: data.created_at,
+          customer_name: data.customer_name,
+          customer_phone: data.customer_phone,
+          customer_email: data.customer_email,
+          customer_address_line1: data.customer_address_line1,
+          customer_address_line2: data.customer_address_line2,
+          customer_city: data.customer_city,
+          customer_postal_code: data.customer_postal_code,
+          customer_country: data.customer_country,
+          subtotal: data.subtotal,
+          discount: data.discount,
+          total: data.total,
+          paid: data.paid,
+          status: data.status ?? data.derived_status,
+          currency_code: data.currency_code,
+          items: data.items,
+          payments: data.payments,
+        })
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Could not print receipt';
+      showAlert({ title: 'Print failed', message: msg, variant: 'error' });
+    } finally {
+      setPrintLoading(false);
+    }
+  };
+
   const payMethods: PayMethod[] = ['Cash', 'Card', 'QR'];
 
   if (loading) {
@@ -323,9 +406,21 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({ token,
                   Checkout
                 </h3>
               </div>
-              <button type="button" className="checkout-close invoice-checkout-close" onClick={goBack} aria-label="Close and return to payments">
-                <IconX size={20} />
-              </button>
+              <div className="invoice-checkout-topbar-actions">
+                <button
+                  type="button"
+                  className="invoice-checkout-print-btn"
+                  onClick={() => void handlePrintReceipt()}
+                  disabled={!invoiceId || printLoading}
+                  aria-label="Print invoice receipt"
+                >
+                  <IconPrinter />
+                  {printLoading ? 'Printing…' : 'Print'}
+                </button>
+                <button type="button" className="checkout-close invoice-checkout-close" onClick={goBack} aria-label="Close and return to payments">
+                  <IconX size={20} />
+                </button>
+              </div>
             </header>
 
             {successMessage && (
@@ -350,9 +445,20 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({ token,
                 {successMessage ? (
                   <p className="invoice-checkout-paid-hint">Taking you back to Payments…</p>
                 ) : null}
-                <button type="button" className="invoice-checkout-secondary-btn invoice-checkout-full" onClick={goBack}>
-                  {successMessage ? 'Back to Payments now' : 'Back to Payments'}
-                </button>
+                <div className="invoice-checkout-paid-actions">
+                  <button
+                    type="button"
+                    className="invoice-checkout-print-btn invoice-checkout-print-btn--block"
+                    onClick={() => void handlePrintReceipt()}
+                    disabled={!invoiceId || printLoading}
+                  >
+                    <IconPrinter />
+                    {printLoading ? 'Printing…' : 'Print receipt'}
+                  </button>
+                  <button type="button" className="invoice-checkout-secondary-btn invoice-checkout-full" onClick={goBack}>
+                    {successMessage ? 'Back to Payments now' : 'Back to Payments'}
+                  </button>
+                </div>
               </div>
             ) : (
               <>
@@ -485,6 +591,15 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({ token,
                 <footer className="checkout-footer invoice-checkout-footer">
                   <button type="button" className="checkout-btn-back invoice-checkout-footer-back" onClick={goBack}>
                     Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="invoice-checkout-print-btn invoice-checkout-print-btn--footer"
+                    onClick={() => void handlePrintReceipt()}
+                    disabled={!invoiceId || printLoading}
+                  >
+                    <IconPrinter />
+                    {printLoading ? '…' : 'Print'}
                   </button>
                   <button
                     type="button"

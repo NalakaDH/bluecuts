@@ -1,19 +1,34 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAlertDialog } from '../../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../../api';
-import { INVOICE_CHECKOUT_INVOICE_ID_KEY } from '../../constants/invoiceCheckout';
+import { INVOICE_CHECKOUT_INVOICE_ID_KEY, SELLING_FROM_MEMO_CONVERT_INVOICE_KEY } from '../../constants/invoiceCheckout';
 import type { PageId } from '../../components/layout/Layout';
+import { InvoiceCheckoutPage } from '../payments/InvoiceCheckoutPage';
 import { mapApiInvoiceToReceipt, openInvoiceReceiptWindow } from '../../lib/receiptDocument';
 import {
   DEFAULT_CURRENCY_CODE,
   SUPPORTED_CURRENCIES,
   formatMoneyAmount,
-  formatMoneyWhole,
   normalizeCurrencyCode,
   parseMoneyInput,
   roundMoney2,
 } from '../../lib/currencies';
-import { convertAmountViaThb, hasRateFor, type ThbPerUnitMap } from '../../lib/exchangeConversion';
+import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
+import { formatUsdOnlyFromAny } from '../../lib/moneyUsdDisplay';
+
+/** Default invoice / checkout display currency for new sales on this page. */
+const SELLING_DEFAULT_CURRENCY = 'USD';
+
+/**
+ * Unit price prefill from inventory list: no FX conversion. Staff enters amounts in invoice currency
+ * when it differs from the item's stored list currency.
+ */
+function sellingUnitPrefillFromList(item: InventoryItem, invoiceCurrency: string): number {
+  const listCur = normalizeCurrencyCode(item.selling_currency ?? DEFAULT_CURRENCY_CODE);
+  const inv = normalizeCurrencyCode(invoiceCurrency);
+  if (listCur === inv) return roundMoney2(Number(item.selling_total_price ?? 0));
+  return 0;
+}
 
 interface InventoryItem {
   id: number;
@@ -59,6 +74,15 @@ interface InvoiceSummary {
   currencyCode: string;
 }
 
+/** Lines shown in “Invoice created” when the sale did not originate from the current cart (e.g. memo → invoice). */
+type InvoiceCreatedLineView = {
+  label: string;
+  qty: number;
+  gross: number;
+  disc: number;
+  net: number;
+};
+
 interface ApiInvoice {
   id: number;
   invoice_no: string;
@@ -68,6 +92,19 @@ interface ApiInvoice {
   status: InvoiceStatus;
   created_at: string;
   currency_code?: string | null;
+}
+
+function mapApiInvoiceSummary(inv: ApiInvoice): InvoiceSummary {
+  return {
+    id: inv.id,
+    invoiceNo: inv.invoice_no,
+    customerName: inv.customer_name || 'Walk-in customer',
+    total: inv.total,
+    paid: inv.paid,
+    status: inv.status,
+    createdAt: inv.created_at,
+    currencyCode: inv.currency_code || DEFAULT_CURRENCY_CODE,
+  };
 }
 
 interface InvoiceDetailForEdit {
@@ -103,6 +140,11 @@ const IconPlus = () => (
     <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
   </svg>
 );
+const IconPlusSm = () => (
+  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+  </svg>
+);
 const IconTrash = () => (
   <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
@@ -117,13 +159,6 @@ const IconCheck = () => (
 const IconUser = () => (
   <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
-  </svg>
-);
-
-const IconPlusCircle = () => (
-  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <circle cx="12" cy="12" r="10" />
-    <path d="M12 8v8M8 12h8" />
   </svg>
 );
 
@@ -165,6 +200,13 @@ const IconCreditCard = () => (
   </svg>
 );
 
+const IconInvoiceDoc = () => (
+  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <polyline points="14 2 14 8 20 8" />
+  </svg>
+);
+
 interface SellingPageProps {
   token: string;
   onNavigate?: (page: PageId) => void;
@@ -203,21 +245,18 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
   const [invoiceSearch, setInvoiceSearch] = useState('');
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<'all' | InvoiceStatus>('all');
   const [checkoutOpen, setCheckoutOpen] = useState(false);
-  const [checkoutMethod, setCheckoutMethod] = useState<'Cash' | 'Card' | 'QR'>('Cash');
-  const [checkoutAmount, setCheckoutAmount] = useState<number>(0);
-  const [checkoutDue, setCheckoutDue] = useState<number>(0);
-  const [checkoutInvoiceId, setCheckoutInvoiceId] = useState<number | null>(null);
-  /** Currency for amounts shown and entered in the checkout modal (converted to invoice currency for API). */
-  const [checkoutDisplayCurrency, setCheckoutDisplayCurrency] = useState<string>(DEFAULT_CURRENCY_CODE);
   const [loadingInvoices, setLoadingInvoices] = useState(false);
   const [invoicesError, setInvoicesError] = useState<string | null>(null);
   const [itemDiscounts, setItemDiscounts] = useState<Record<number, number>>({});
   const [itemQuantities, setItemQuantities] = useState<Record<number, number>>({});
-  /** ISO 4217 for this sale / receipt (THB default). */
-  const [saleCurrency, setSaleCurrency] = useState<string>(DEFAULT_CURRENCY_CODE);
+  /** Per-line unit price in the selected invoice currency (manual; not recomputed when currency changes). */
+  const [itemUnitPrices, setItemUnitPrices] = useState<Record<number, number>>({});
+  /** ISO 4217 for this sale / receipt. */
+  const [saleCurrency, setSaleCurrency] = useState<string>(SELLING_DEFAULT_CURRENCY);
   const [thbPerUnit, setThbPerUnit] = useState<ThbPerUnitMap>({ THB: 1 });
   const [invoiceCreatedOpen, setInvoiceCreatedOpen] = useState(false);
   const [createdInvoice, setCreatedInvoice] = useState<InvoiceSummary | null>(null);
+  const [invoiceCreatedLineOverride, setInvoiceCreatedLineOverride] = useState<InvoiceCreatedLineView[] | null>(null);
   const [newCustomerModalOpen, setNewCustomerModalOpen] = useState(false);
   /** Inventory ids whose thumbnail URL failed to load */
   const [cartImageLoadFailed, setCartImageLoadFailed] = useState<Set<number>>(() => new Set());
@@ -299,18 +338,98 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     };
   }, [token]);
 
-  const mapApiInvoice = (inv: ApiInvoice): InvoiceSummary => ({
-    id: inv.id,
-    invoiceNo: inv.invoice_no,
-    customerName: inv.customer_name || 'Walk-in customer',
-    total: inv.total,
-    paid: inv.paid,
-    status: inv.status,
-    createdAt: inv.created_at,
-    currencyCode: inv.currency_code || DEFAULT_CURRENCY_CODE,
-  });
+  useEffect(() => {
+    let cancelled = false;
+    const clearMemoConvertKey = () => {
+      try {
+        window.sessionStorage.removeItem(SELLING_FROM_MEMO_CONVERT_INVOICE_KEY);
+      } catch {
+        // ignore
+      }
+    };
+    (async () => {
+      let raw: string | null = null;
+      try {
+        raw = window.sessionStorage.getItem(SELLING_FROM_MEMO_CONVERT_INVOICE_KEY);
+      } catch {
+        return;
+      }
+      if (!raw) return;
+      let invoiceId = NaN;
+      try {
+        const p = JSON.parse(raw) as { invoiceId?: unknown };
+        invoiceId = Number(p.invoiceId);
+      } catch {
+        clearMemoConvertKey();
+        return;
+      }
+      if (!Number.isFinite(invoiceId) || invoiceId <= 0) {
+        clearMemoConvertKey();
+        return;
+      }
 
-  const fetchInvoices = async () => {
+      try {
+        const res = await fetch(apiUrl(`/api/invoices/${invoiceId}`), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (cancelled) return;
+        if (!res.ok) {
+          clearMemoConvertKey();
+          return;
+        }
+        const data = (await res.json()) as ApiInvoice & {
+          items?: Array<{
+            inventory_item_id: number;
+            item_code: string | null;
+            description: string | null;
+            quantity: number;
+            unit_price: number;
+            line_total: number;
+          }>;
+        };
+        if (cancelled) return;
+
+        setCheckoutOpen(false);
+
+        const summary = mapApiInvoiceSummary({
+          id: data.id,
+          invoice_no: data.invoice_no,
+          customer_name: data.customer_name,
+          total: data.total,
+          paid: data.paid,
+          status: data.status,
+          created_at: data.created_at,
+          currency_code: data.currency_code,
+        });
+
+        const rawItems = Array.isArray(data.items) ? data.items : [];
+        const lines: InvoiceCreatedLineView[] = rawItems.map(it => {
+          const label =
+            (it.item_code && String(it.item_code).trim()) ||
+            (it.description && String(it.description).trim()) ||
+            `#${it.inventory_item_id}`;
+          const qty = Math.max(0, Math.floor(Number(it.quantity || 0)));
+          const unit = roundMoney2(Number(it.unit_price || 0));
+          const net = roundMoney2(Number(it.line_total || 0));
+          const gross = roundMoney2(unit * qty);
+          return { label, qty, gross, disc: 0, net };
+        });
+
+        setInvoices(prev => (prev.some(r => r.id === summary.id) ? prev : [summary, ...prev]));
+        setInvoiceCreatedLineOverride(lines.length > 0 ? lines : null);
+        setCreatedInvoice(summary);
+        setInvoiceCreatedOpen(true);
+        clearMemoConvertKey();
+      } catch {
+        if (!cancelled) clearMemoConvertKey();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  const fetchInvoices = useCallback(async () => {
     setLoadingInvoices(true);
     setInvoicesError(null);
     try {
@@ -322,7 +441,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         throw new Error(msg);
       }
       const data: ApiInvoice[] = await res.json();
-      setInvoices(data.map(mapApiInvoice));
+      setInvoices(data.map(mapApiInvoiceSummary));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to load invoices';
       setInvoicesError(msg);
@@ -331,7 +450,30 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     } finally {
       setLoadingInvoices(false);
     }
+  }, [token, showAlert]);
+
+  const openInvoiceCheckout = (invoiceId: number) => {
+    try {
+      window.sessionStorage.setItem(INVOICE_CHECKOUT_INVOICE_ID_KEY, String(invoiceId));
+    } catch {
+      // ignore
+    }
+    setCheckoutOpen(true);
   };
+
+  const closeCheckout = useCallback(() => {
+    setCheckoutOpen(false);
+    void fetchInvoices();
+  }, [fetchInvoices]);
+
+  useEffect(() => {
+    if (!checkoutOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeCheckout();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [checkoutOpen, closeCheckout]);
 
   useEffect(() => {
     const id = setTimeout(() => {
@@ -348,8 +490,8 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
   }, [customerSearch]);
 
   useEffect(() => {
-    fetchInvoices();
-  }, [token]);
+    void fetchInvoices();
+  }, [fetchInvoices]);
 
   const maxPcsForItem = (item: InventoryItem) => {
     const base = Math.floor(Number(item.pieces_remaining ?? item.pieces ?? 0));
@@ -361,19 +503,16 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     return Math.max(1, base + bonus);
   };
 
-  /** Unit list price converted into the selected invoice currency */
-  const unitPriceInSaleCurrency = (item: InventoryItem) =>
-    convertAmountViaThb(
-      Number(item.selling_total_price ?? 0),
-      item.selling_currency ?? DEFAULT_CURRENCY_CODE,
-      saleCurrency,
-      thbPerUnit
-    );
+  const lineUnitPriceForItem = (item: InventoryItem): number => {
+    const manual = itemUnitPrices[item.id];
+    if (manual != null && Number.isFinite(manual)) return roundMoney2(manual);
+    return sellingUnitPrefillFromList(item, saleCurrency);
+  };
 
   const lineGrossForItem = (item: InventoryItem) => {
-    const unit = unitPriceInSaleCurrency(item);
+    const unit = lineUnitPriceForItem(item);
     const q = itemQuantities[item.id] ?? 1;
-    return unit * q;
+    return roundMoney2(unit * q);
   };
 
   const lineNetForItem = (item: InventoryItem) => {
@@ -384,16 +523,28 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
 
   const addToCart = (item: InventoryItem) => {
     if (cart.some((c) => c.id === item.id)) return;
+    const initialUnit = sellingUnitPrefillFromList(item, saleCurrency);
     setCart((prev) => [...prev, item]);
     setItemQuantities(prev => ({
       ...prev,
       [item.id]: 1,
     }));
+    setItemUnitPrices(prev => ({ ...prev, [item.id]: roundMoney2(initialUnit) }));
   };
 
   const removeFromCart = (id: number) => {
     setCart((prev) => prev.filter((c) => c.id !== id));
     setItemQuantities(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setItemDiscounts(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setItemUnitPrices(prev => {
       const next = { ...prev };
       delete next[id];
       return next;
@@ -597,7 +748,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         currency_code: saleCurrency,
         items: cart.map(item => ({
           inventory_item_id: item.id,
-          price: unitPriceInSaleCurrency(item),
+          price: lineUnitPriceForItem(item),
           quantity: itemQuantities[item.id] ?? 1,
           discount: itemDiscounts[item.id] || 0,
           item_code: item.item_code,
@@ -618,7 +769,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
           throw new Error(msg);
         }
         const updated = (await res.json()) as ApiInvoice;
-        const summary = mapApiInvoice(updated);
+        const summary = mapApiInvoiceSummary(updated);
         setInvoices(prev => prev.map(row => (row.id === summary.id ? summary : row)));
         resetInvoice();
         setInvoiceMessage(`Invoice ${summary.invoiceNo} updated.`);
@@ -649,7 +800,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         discount?: number;
       } = await res.json();
 
-      const summary = mapApiInvoice(created);
+      const summary = mapApiInvoiceSummary(created);
       setInvoices(prev => [summary, ...prev]);
       setNextInvoiceNumber(n => n + 1);
 
@@ -659,11 +810,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         message: `${summary.invoiceNo} is ready. You can record payment below or from Payments.`,
         variant: 'success',
       });
-      setCheckoutInvoiceId(summary.id);
-      setCheckoutDue(roundMoney2(summary.total));
-      setCheckoutAmount(roundMoney2(summary.total));
-      setCheckoutDisplayCurrency(normalizeCurrencyCode(summary.currencyCode));
-      setCheckoutMethod('Cash');
+      setInvoiceCreatedLineOverride(null);
       setCreatedInvoice(summary);
       setInvoiceCreatedOpen(true);
     } catch (err: unknown) {
@@ -674,13 +821,11 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     }
   };
 
-  const handleSellingPayClick = (invoiceId: number) => {
-    try {
-      window.sessionStorage.setItem(INVOICE_CHECKOUT_INVOICE_ID_KEY, String(invoiceId));
-    } catch {
-      // still navigate
-    }
-    onNavigate?.('invoiceCheckout');
+  const handleSellingPayClick = (inv: InvoiceSummary) => {
+    const remaining = roundMoney2(Math.max(0, inv.total - inv.paid));
+    if (remaining <= 0) return;
+    setInvoiceCreatedOpen(false);
+    openInvoiceCheckout(inv.id);
   };
 
   const filteredInvoices = invoices.filter(inv => {
@@ -692,29 +837,13 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     return matchesSearch && matchesStatus;
   });
 
-  const checkoutBaseCurrency = normalizeCurrencyCode(
-    checkoutInvoiceId ? createdInvoice?.currencyCode ?? saleCurrency : saleCurrency
-  );
-  const checkoutTotalInInvoice = checkoutInvoiceId ? checkoutDue : finalTotal;
-  const checkoutTotalDisplay = convertAmountViaThb(
-    checkoutTotalInInvoice,
-    checkoutBaseCurrency,
-    checkoutDisplayCurrency,
-    thbPerUnit
-  );
-  const checkoutChangeDisplay = Math.max(0, checkoutAmount - checkoutTotalDisplay);
-  const checkoutNeedsConversion =
-    normalizeCurrencyCode(checkoutDisplayCurrency) !== checkoutBaseCurrency;
-  const checkoutFxMissing =
-    checkoutNeedsConversion &&
-    (!hasRateFor(checkoutBaseCurrency, thbPerUnit) || !hasRateFor(checkoutDisplayCurrency, thbPerUnit));
-
   const resetInvoice = () => {
     setCart([]);
     setItemDiscounts({});
     setItemQuantities({});
+    setItemUnitPrices({});
     setDiscountAmount(0);
-    setSaleCurrency(DEFAULT_CURRENCY_CODE);
+    setSaleCurrency(SELLING_DEFAULT_CURRENCY);
     setSelectedCustomer(null);
     setCustomerSearch('');
     setCustomers([]);
@@ -724,6 +853,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     setEditingInvoiceId(null);
     setEditingInvoiceNo(null);
     setReservedPiecesOnEdit({});
+    setInvoiceCreatedLineOverride(null);
   };
 
   const cancelInvoiceEdit = () => {
@@ -748,6 +878,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         discountAmount,
         itemDiscounts,
         itemQuantities,
+        itemUnitPrices,
         cart,
         saleCurrency,
       };
@@ -799,6 +930,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
           discountAmount: number;
           itemDiscounts: Record<number, number>;
           itemQuantities?: Record<number, number>;
+          itemUnitPrices?: Record<number, number>;
           cart: InventoryItem[];
           saleCurrency?: string;
         };
@@ -806,14 +938,20 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       const payload = data.payload || ({} as any);
       setSelectedCustomer(payload.selectedCustomer || null);
       setDiscountAmount(roundMoney2(Number(payload.discountAmount || 0)));
-      if (payload.saleCurrency && typeof payload.saleCurrency === 'string') {
-        setSaleCurrency(payload.saleCurrency);
-      }
+      const invoiceCur =
+        payload.saleCurrency && typeof payload.saleCurrency === 'string'
+          ? normalizeCurrencyCode(payload.saleCurrency)
+          : SELLING_DEFAULT_CURRENCY;
+      setSaleCurrency(invoiceCur);
       setItemDiscounts(payload.itemDiscounts || {});
       const rawCart: InventoryItem[] = Array.isArray(payload.cart) ? payload.cart : [];
       const savedQ =
         payload.itemQuantities && typeof payload.itemQuantities === 'object'
           ? (payload.itemQuantities as Record<number, number>)
+          : {};
+      const savedUnitPrices =
+        payload.itemUnitPrices && typeof payload.itemUnitPrices === 'object'
+          ? (payload.itemUnitPrices as Record<number, number>)
           : {};
       const nextQ: Record<number, number> = {};
       rawCart.forEach(it => {
@@ -822,6 +960,16 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         nextQ[it.id] = Math.max(1, Math.min(maxP, Number.isFinite(v) ? v : 1));
       });
       setItemQuantities(nextQ);
+      const nextUnitPrices: Record<number, number> = {};
+      rawCart.forEach(it => {
+        const saved = savedUnitPrices[it.id];
+        if (saved != null && Number.isFinite(Number(saved))) {
+          nextUnitPrices[it.id] = roundMoney2(Number(saved));
+        } else {
+          nextUnitPrices[it.id] = sellingUnitPrefillFromList(it, invoiceCur);
+        }
+      });
+      setItemUnitPrices(nextUnitPrices);
       setCart(rawCart);
       setEditingInvoiceId(null);
       setEditingInvoiceNo(null);
@@ -837,94 +985,6 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       showAlert({ title: 'Could not load draft', message: msg, variant: 'error' });
     } finally {
       setLoadingDraft(false);
-    }
-  };
-
-  const completePayment = async () => {
-    if (!checkoutInvoiceId) {
-      setCheckoutOpen(false);
-      return;
-    }
-    if (!checkoutAmount || checkoutAmount <= 0) {
-      showAlert({
-        title: 'Invalid payment',
-        message: 'Payment amount must be greater than zero.',
-        variant: 'warning',
-      });
-      return;
-    }
-    const invCur = normalizeCurrencyCode(createdInvoice?.currencyCode ?? saleCurrency);
-    const amountInInvoice = roundMoney2(
-      convertAmountViaThb(checkoutAmount, checkoutDisplayCurrency, invCur, thbPerUnit)
-    );
-    if (!amountInInvoice || amountInInvoice <= 0) {
-      showAlert({
-        title: 'Invalid payment',
-        message: 'Payment amount must be greater than zero.',
-        variant: 'warning',
-      });
-      return;
-    }
-    try {
-      const res = await fetch(apiUrl(`/api/invoices/${checkoutInvoiceId}/payments`), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          method: checkoutMethod,
-          amount: amountInInvoice,
-        }),
-      });
-      if (!res.ok) {
-        const msg = await parseErrorResponse(res, 'Failed to record payment');
-        throw new Error(msg);
-      }
-      const data: {
-        payment: {
-          id: number;
-          invoice_id: number;
-          method: string;
-          amount: number;
-          note: string | null;
-          created_at: string;
-        };
-        invoice: {
-          id: number;
-          invoice_no: string;
-          total: number;
-          status: InvoiceStatus;
-          paid: number;
-        };
-      } = await res.json();
-
-      setInvoices(prev =>
-        prev.map(inv =>
-          inv.id === data.invoice.id
-            ? {
-                ...inv,
-                invoiceNo: data.invoice.invoice_no,
-                total: data.invoice.total,
-                status: data.invoice.status,
-                paid: data.invoice.paid,
-              }
-            : inv
-        )
-      );
-
-      setInvoiceMessage(`Payment recorded for ${data.invoice.invoice_no}.`);
-      showAlert({
-        title: 'Payment recorded',
-        message: `Payment for ${data.invoice.invoice_no} was saved.`,
-        variant: 'success',
-      });
-      setCheckoutOpen(false);
-      setCheckoutInvoiceId(null);
-      setCheckoutDue(0);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to record payment';
-      showAlert({ title: 'Payment failed', message: msg, variant: 'error' });
     }
   };
 
@@ -950,6 +1010,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       const cartRows: InventoryItem[] = [];
       const discounts: Record<number, number> = {};
       const quantities: Record<number, number> = {};
+      const unitPrices: Record<number, number> = {};
 
       for (const line of data.items) {
         const invRes = await fetch(apiUrl(`/api/inventory/${line.inventory_item_id}`), {
@@ -960,18 +1021,14 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
           throw new Error(msg);
         }
         const row = (await invRes.json()) as InventoryItem;
-        const merged: InventoryItem = {
-          ...row,
-          selling_total_price: line.unit_price,
-          selling_currency: normalizeCurrencyCode(data.currency_code || DEFAULT_CURRENCY_CODE),
-        };
-        cartRows.push(merged);
+        cartRows.push(row);
         const qty = Math.max(1, Math.floor(Number(line.quantity) || 1));
-        quantities[merged.id] = qty;
-        reserved[merged.id] = qty;
+        quantities[row.id] = qty;
+        reserved[row.id] = qty;
+        unitPrices[row.id] = roundMoney2(Number(line.unit_price || 0));
         const lineGross = qty * Number(line.unit_price || 0);
         const lineDisc = Math.max(0, lineGross - Number(line.line_total || 0));
-        discounts[merged.id] = lineDisc;
+        discounts[row.id] = lineDisc;
       }
 
       let itemsDiscSum = 0;
@@ -985,11 +1042,12 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       setCart(cartRows);
       setItemQuantities(quantities);
       setItemDiscounts(discounts);
+      setItemUnitPrices(unitPrices);
       setDiscountAmount(orderDisc);
       setReservedPiecesOnEdit(reserved);
       setEditingInvoiceId(data.id);
       setEditingInvoiceNo(data.invoice_no);
-      setSaleCurrency(data.currency_code || DEFAULT_CURRENCY_CODE);
+      setSaleCurrency(data.currency_code || SELLING_DEFAULT_CURRENCY);
 
       if (data.customer_id != null) {
         const cRes = await fetch(apiUrl(`/api/customers/${data.customer_id}`), {
@@ -1060,16 +1118,6 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     }
   };
 
-  const sellingFxWarning =
-    cart.length > 0
-      ? cart.some(it => {
-          const from = normalizeCurrencyCode(it.selling_currency ?? DEFAULT_CURRENCY_CODE);
-          const to = normalizeCurrencyCode(saleCurrency);
-          if (from === to) return false;
-          return !hasRateFor(from, thbPerUnit) || !hasRateFor(to, thbPerUnit);
-        })
-      : false;
-
   const itemSuggestions =
     search.trim().length === 0
       ? []
@@ -1087,13 +1135,27 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     setSearch('');
   };
 
+  const invoiceCreatedModalLineViews: InvoiceCreatedLineView[] =
+    invoiceCreatedLineOverride ??
+    cart.map(row => {
+      const q = itemQuantities[row.id] ?? 1;
+      const gross = lineGrossForItem(row);
+      const disc = Math.min(itemDiscounts[row.id] || 0, gross);
+      const net = Math.max(0, gross - disc);
+      const label = row.item_code || `#${row.id}`;
+      return { label, qty: q, gross, disc, net };
+    });
+
+  const invoiceCreatedModalItemsPcs = invoiceCreatedModalLineViews.reduce((n, l) => n + l.qty, 0);
+  const invoiceCreatedModalLineCount = invoiceCreatedModalLineViews.length;
+
   return (
     <div className="page page-selling">
       {editingInvoiceId != null && editingInvoiceNo && (
         <div className="selling-inline-edit-banner" role="status">
           <div className="selling-inline-edit-banner-inner">
             <span>
-              Editing <strong>{editingInvoiceNo}</strong> — add or remove items, change quantities, then click{' '}
+              Editing <strong>{editingInvoiceNo}</strong> — add or remove items, change quantities or unit prices, then click{' '}
               <strong>Update invoice</strong>.
             </span>
             <button type="button" className="selling-inline-edit-cancel" onClick={cancelInvoiceEdit}>
@@ -1110,24 +1172,35 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
 
       <div className="selling2-grid" ref={sellingComposerRef}>
         <div className="selling2-left">
-          <section className="selling2-card">
-            <h3 className="selling2-card-title">
-              <span className="selling2-card-title-icon" aria-hidden="true"><IconPlus /></span>
-              Search &amp; Add Items
-            </h3>
-            <div className="selling2-search">
-              <span className="selling2-search-icon" aria-hidden="true"><IconSearch /></span>
-              <input
-                type="search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="selling2-search-input"
-                placeholder="Search by Gem ID, stone type..."
-              />
+          <section className="selling2-card selling2-gem-main-card">
+            <div className="selling2-gem-card-header">
+              <div className="selling2-gem-card-title">
+                <div className="selling2-gem-title-icon" aria-hidden="true">
+                  <IconPlusSm />
+                </div>
+                Search &amp; Add Items
+              </div>
+            </div>
+            <div className="selling2-gem-search-bar">
+              <div className="selling2-search selling2-search--gem">
+                <span className="selling2-search-icon" aria-hidden="true">
+                  <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="8" />
+                    <path d="m21 21-4.35-4.35" />
+                  </svg>
+                </span>
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="selling2-search-input"
+                  placeholder="Search by Gem ID, stone type, description…"
+                />
+              </div>
             </div>
 
             {search.trim() && itemSuggestions.length > 0 && (
-              <div className="selling2-suggest">
+              <div className="selling2-suggest selling2-suggest--embedded">
                 {itemSuggestions.map(it => (
                   <button
                     key={it.id}
@@ -1138,32 +1211,35 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
                     <span className="selling2-suggest-code">{it.item_code || `#${it.id}`}</span>
                     <span className="selling2-suggest-name">{it.category}</span>
                     <span className="selling2-suggest-meta">
-                      {it.weight_carats != null ? `${it.weight_carats} ct` : '—'} ·{' '}
-                      {formatMoneyWhole(
-                        convertAmountViaThb(
-                          Number(it.selling_total_price ?? 0),
-                          it.selling_currency ?? DEFAULT_CURRENCY_CODE,
-                          saleCurrency,
-                          thbPerUnit
-                        ),
-                        saleCurrency
+                      {it.weight_carats != null ? `${it.weight_carats} ct` : '—'} · list{' '}
+                      {formatUsdOnlyFromAny(
+                        Number(it.selling_total_price ?? 0),
+                        it.selling_currency ?? DEFAULT_CURRENCY_CODE,
+                        thbPerUnit
                       )}
                     </span>
                   </button>
                 ))}
               </div>
             )}
-          </section>
 
-          <section className="selling2-card selling2-card--added">
-            <h3 className="selling2-card-title">Added Items</h3>
+            <div className="selling2-gem-added-head">
+              <span className="selling2-gem-added-label">Added Items</span>
+              <span className="selling2-gem-count-chip">
+                {cart.length === 1 ? '1 item' : `${cart.length} items`}
+              </span>
+            </div>
+
             {cart.length === 0 ? (
-              <div className="selling2-empty">
+              <div className="selling2-empty selling2-empty--gem">
                 <div className="selling2-empty-title">No items added yet</div>
-                <div className="selling2-empty-sub">Search and add items from the left to get started</div>
+                <div className="selling2-empty-sub">
+                  Search and add items above. List prices in search results are shown in USD (Profile rates). Line totals
+                  use the invoice currency you choose in the summary.
+                </div>
               </div>
             ) : (
-              <div className="selling2-table-wrap">
+              <div className="selling2-table-wrap selling2-table-wrap--gem">
                 <table className="selling2-table" aria-label="Added items">
                   <thead>
                     <tr>
@@ -1171,6 +1247,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
                       <th>Code</th>
                       <th>Description</th>
                       <th>Pcs</th>
+                      <th>Unit price ({normalizeCurrencyCode(saleCurrency)})</th>
                       <th>Subtotal</th>
                       <th>Discount</th>
                       <th>Net</th>
@@ -1226,6 +1303,22 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
                               onChange={e => setQtyForItem(it, Number(e.target.value))}
                             />
                           </td>
+                          <td>
+                            <input
+                              type="number"
+                              className="selling2-unit-price-input"
+                              value={lineUnitPriceForItem(it)}
+                              min={0}
+                              step={0.01}
+                              title={`Unit price (${saleCurrency})`}
+                              onChange={e =>
+                                setItemUnitPrices(prev => ({
+                                  ...prev,
+                                  [it.id]: Math.max(0, roundMoney2(parseMoneyInput(e.target.value))),
+                                }))
+                              }
+                            />
+                          </td>
                           <td className="selling2-price">{formatMoneyAmount(lineGross, saleCurrency)}</td>
                           <td>
                             <input
@@ -1258,190 +1351,249 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         </div>
 
         <div className="selling2-right">
-          <section className="selling2-card">
-            <h3 className="selling2-card-title">Customer</h3>
+          <section className="selling2-panel-card">
+            <div className="selling2-panel-inner">
+              <div className="selling2-panel-section">
+                <div className="selling2-panel-label">Customer</div>
 
-            {selectedCustomer ? (
-              <div className="selling2-customer-selected">
-                <span className="selling2-customer-selected-icon" aria-hidden="true"><IconUser /></span>
-                <div className="selling2-customer-selected-main">
-                  <div className="selling2-customer-selected-name">{selectedCustomer.name}</div>
-                  <div className="selling2-customer-selected-phone">{selectedCustomer.phone || ''}</div>
-                </div>
-                <button type="button" className="selling2-customer-selected-close" onClick={() => setSelectedCustomer(null)} aria-label="Remove customer">
-                  <IconX size={16} />
+                {selectedCustomer ? (
+                  <div className="selling2-customer-selected selling2-customer-selected--gem">
+                    <span className="selling2-customer-selected-icon" aria-hidden="true">
+                      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                        <circle cx="12" cy="7" r="4" />
+                      </svg>
+                    </span>
+                    <div className="selling2-customer-selected-main">
+                      <div className="selling2-customer-selected-name">{selectedCustomer.name}</div>
+                      <div className="selling2-customer-selected-phone">{selectedCustomer.phone || ''}</div>
+                    </div>
+                    <button
+                      type="button"
+                      className="selling2-customer-selected-close"
+                      onClick={() => setSelectedCustomer(null)}
+                      aria-label="Remove customer"
+                    >
+                      <IconX size={16} />
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="selling2-customer-search selling2-customer-search--gem">
+                      <span className="selling2-search-icon" aria-hidden="true">
+                        <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                          <circle cx="12" cy="7" r="4" />
+                        </svg>
+                      </span>
+                      <input
+                        type="search"
+                        value={customerSearch}
+                        onChange={(e) => setCustomerSearch(e.target.value)}
+                        className="selling2-search-input"
+                        placeholder="Search by name, phone…"
+                      />
+                    </div>
+                    {customers.length > 0 && (
+                      <div className="selling2-customer-list selling2-customer-list--gem">
+                        {customers.map(c => (
+                          <button
+                            key={c.id}
+                            type="button"
+                            className="selling2-customer-row"
+                            onClick={() => {
+                              setSelectedCustomer(c);
+                              setCustomerSearch('');
+                              setCustomers([]);
+                            }}
+                          >
+                            <div className="selling2-customer-row-name">{c.name}</div>
+                            <div className="selling2-customer-row-phone">{c.phone || ''}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                <button type="button" className="selling2-new-customer selling2-new-customer--gem" onClick={() => setNewCustomerModalOpen(true)}>
+                  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                  New customer
                 </button>
               </div>
-            ) : (
-              <>
-                <div className="selling2-customer-search">
-                  <span className="selling2-search-icon" aria-hidden="true"><IconUser /></span>
-                  <input
-                    type="search"
-                    value={customerSearch}
-                    onChange={(e) => setCustomerSearch(e.target.value)}
-                    className="selling2-search-input"
-                    placeholder="Search by name, phone..."
-                  />
-                </div>
-                {customers.length > 0 && (
-                  <div className="selling2-customer-list">
-                    {customers.map(c => (
-                      <button
-                        key={c.id}
-                        type="button"
-                        className="selling2-customer-row"
-                        onClick={() => { setSelectedCustomer(c); setCustomerSearch(''); setCustomers([]); }}
-                      >
-                        <div className="selling2-customer-row-name">{c.name}</div>
-                        <div className="selling2-customer-row-phone">{c.phone || ''}</div>
-                      </button>
+
+              <div className="selling2-panel-divider" />
+
+              <div className="selling2-panel-section">
+                <label htmlFor="sale-currency" className="selling2-panel-label">
+                  Invoice Currency
+                </label>
+                <div className="selling2-currency-select-wrap">
+                  <select
+                    id="sale-currency"
+                    className="selling2-currency-select"
+                    value={saleCurrency}
+                    onChange={e => {
+                      const next = normalizeCurrencyCode(e.target.value);
+                      setSaleCurrency(next);
+                      setItemUnitPrices(() => {
+                        const nextPrices: Record<number, number> = {};
+                        for (const it of cart) {
+                          nextPrices[it.id] = sellingUnitPrefillFromList(it, next);
+                        }
+                        return nextPrices;
+                      });
+                    }}
+                  >
+                    {SUPPORTED_CURRENCIES.map(c => (
+                      <option key={c.code} value={c.code}>
+                        {c.label}
+                      </option>
                     ))}
+                  </select>
+                </div>
+                <p className="selling2-currency-hint selling2-currency-hint--gem">
+                  Unit prices are in the invoice currency only. Changing currency refills from inventory when the list
+                  currency matches; otherwise enter prices manually (no automatic conversion).
+                </p>
+              </div>
+
+              <div className="selling2-panel-divider" />
+
+              <div className="selling2-gem-summary-lines">
+                <div className="selling2-summary-row selling2-summary-row--gem">
+                  <span className="selling2-summary-key">Subtotal</span>
+                  <strong className="selling2-summary-val">{formatMoneyAmount(cartTotal, saleCurrency)}</strong>
+                </div>
+                <div className="selling2-summary-row selling2-summary-row--gem">
+                  <span className="selling2-summary-key">Item discounts</span>
+                  <span className="selling2-summary-val selling2-neg">
+                    −{formatMoneyAmount(itemsDiscountTotal, saleCurrency)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="selling2-order-discount-box">
+                <div className="selling2-order-discount-head">
+                  <div className="selling2-order-discount-badge" aria-hidden="true">
+                    %
                   </div>
-                )}
-              </>
-            )}
-
-            <button type="button" className="ghost-button selling2-new-customer" onClick={() => setNewCustomerModalOpen(true)}>
-              <span className="btn-icon" aria-hidden="true"><IconPlusCircle /></span>
-              New customer
-            </button>
-          </section>
-
-          <section className="selling2-card selling2-summary">
-            <div className="selling2-field selling2-currency-field">
-              <label htmlFor="sale-currency" className="selling2-currency-label">
-                Invoice currency
-              </label>
-              <select
-                id="sale-currency"
-                className="selling2-currency-select"
-                value={saleCurrency}
-                onChange={e => setSaleCurrency(e.target.value)}
-              >
-                {SUPPORTED_CURRENCIES.map(c => (
-                  <option key={c.code} value={c.code}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
-              <p className="selling2-currency-hint">
-                Prices convert from each item&apos;s list currency using THB-based rates (Profile → Exchange rates).
-              </p>
-            </div>
-            {sellingFxWarning ? (
-              <div className="selling2-fx-warning" role="alert">
-                Missing rate for a currency in the cart. Set exchange rates under Profile (owner).
+                  <span className="selling2-order-discount-title">Order Discount</span>
+                </div>
+                <div className="selling2-order-discount-inputrow selling2-order-discount-inputrow--gem">
+                  <input
+                    type="number"
+                    value={discountAmount}
+                    onChange={e => setDiscountAmount(parseMoneyInput(e.target.value))}
+                    min={0}
+                  />
+                  <span className="selling2-od-preview">({formatMoneyAmount(discountAmount, saleCurrency)})</span>
+                </div>
               </div>
-            ) : null}
-            <div className="selling2-summary-row">
-              <span>Subtotal</span>
-              <strong>{formatMoneyAmount(cartTotal, saleCurrency)}</strong>
-            </div>
-            <div className="selling2-summary-row">
-              <span>Item discounts</span>
-              <span className="selling2-neg">−{formatMoneyAmount(itemsDiscountTotal, saleCurrency)}</span>
-            </div>
 
-            <div className="selling2-order-discount">
-              <div className="selling2-order-discount-label">
-                <span className="selling2-percent" aria-hidden="true">%</span>
-                <span>Order Discount</span>
+              <div className="selling2-totals-banner">
+                <span className="selling2-totals-banner-label">Total Discounts</span>
+                <span className="selling2-totals-banner-val">
+                  −{formatMoneyAmount(itemsDiscountTotal + parsedDiscount, saleCurrency)}
+                </span>
               </div>
-              <div className="selling2-order-discount-inputrow">
-                <input
-                  type="number"
-                  value={discountAmount}
-                  onChange={e => setDiscountAmount(parseMoneyInput(e.target.value))}
-                  min={0}
-                />
-                <span className="selling2-muted">({formatMoneyAmount(discountAmount, saleCurrency)})</span>
+
+              <div className="selling2-final-total-row">
+                <span className="selling2-ft-label">Final Total</span>
+                <span className="selling2-ft-value">{formatMoneyAmount(finalTotal, saleCurrency)}</span>
               </div>
-            </div>
 
-            <div className="selling2-total-discounts">
-              <span>Total Discounts</span>
-              <span className="selling2-neg">
-                −{formatMoneyAmount(itemsDiscountTotal + parsedDiscount, saleCurrency)}
-              </span>
-            </div>
+              {draftMessage && <div className="selling-state selling2-draft-message">{draftMessage}</div>}
 
-            <div className="selling2-final">
-              <span>Final Total</span>
-              <span className="selling2-final-amount">{formatMoneyAmount(finalTotal, saleCurrency)}</span>
-            </div>
-
-            {draftMessage && <div className="selling-state">{draftMessage}</div>}
-
-            <button
-              type="button"
-              className="primary-button selling2-create"
-              onClick={createInvoice}
-              disabled={creatingInvoice || cart.length === 0 || invoiceHydrateLoading}
-            >
-              {creatingInvoice
-                ? editingInvoiceId
-                  ? 'Updating…'
-                  : 'Creating…'
-                : editingInvoiceId
-                  ? 'Update invoice'
-                  : 'Create Invoice'}
-            </button>
-
-            <div className="selling2-draft-actions">
-              <button type="button" className="selling2-draft-btn selling2-draft-btn--new" onClick={resetInvoice}>
-                New Bill
-              </button>
               <button
                 type="button"
-                className="selling2-draft-btn selling2-draft-btn--save"
-                onClick={saveDraft}
-                disabled={savingDraft || cart.length === 0 || editingInvoiceId != null}
-                title={editingInvoiceId != null ? 'Save draft is disabled while editing an invoice' : undefined}
+                className="selling2-btn-primary"
+                onClick={createInvoice}
+                disabled={creatingInvoice || cart.length === 0 || invoiceHydrateLoading}
               >
-                {savingDraft ? 'Saving…' : 'Save Draft'}
+                {creatingInvoice
+                  ? editingInvoiceId
+                    ? 'Updating…'
+                    : 'Creating…'
+                  : editingInvoiceId
+                    ? 'Update invoice'
+                    : 'Create Invoice'}
               </button>
-              <button
-                type="button"
-                className="selling2-draft-btn selling2-draft-btn--load"
-                onClick={loadLatestDraft}
-                disabled={loadingDraft}
-              >
-                {loadingDraft ? 'Loading…' : 'Load Draft'}
-              </button>
+
+              <div className="selling2-draft-actions selling2-gem-btn-row">
+                <button type="button" className="selling2-draft-btn selling2-draft-btn--new" onClick={resetInvoice}>
+                  New Bill
+                </button>
+                <button
+                  type="button"
+                  className="selling2-draft-btn selling2-draft-btn--save"
+                  onClick={saveDraft}
+                  disabled={savingDraft || cart.length === 0 || editingInvoiceId != null}
+                  title={editingInvoiceId != null ? 'Save draft is disabled while editing an invoice' : undefined}
+                >
+                  {savingDraft ? 'Saving…' : 'Save Draft'}
+                </button>
+                <button
+                  type="button"
+                  className="selling2-draft-btn selling2-draft-btn--load"
+                  onClick={loadLatestDraft}
+                  disabled={loadingDraft}
+                >
+                  {loadingDraft ? 'Loading…' : 'Load Draft'}
+                </button>
+              </div>
             </div>
           </section>
         </div>
       </div>
 
-      <section className="selling-invoices-card">
-        <h3 className="selling-section-title">Recent invoices</h3>
-        {invoicesError && (
-          <div className="selling-state selling-state-error">
-            <p>{invoicesError}</p>
+      <section className="selling-invoices-card selling-invoices-gem">
+        <header className="selling-invoices-gem-head">
+          <div className="selling-invoices-gem-head-top">
+            <div className="selling-invoices-gem-title-group">
+              <div className="selling-invoices-gem-title-icon" aria-hidden="true">
+                <IconInvoiceDoc />
+              </div>
+              <h3 className="selling-invoices-gem-title">Recent Invoices</h3>
+              <span className="selling-invoices-gem-count" aria-label={`${invoices.length} invoices`}>
+                {loadingInvoices ? '…' : invoices.length}
+              </span>
+            </div>
+            <div className="selling-invoices-gem-search-wrap">
+              <span className="selling-invoices-gem-search-icon" aria-hidden="true">
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8" />
+                  <path d="m21 21-4.35-4.35" />
+                </svg>
+              </span>
+              <input
+                type="search"
+                className="selling-invoices-gem-search"
+                placeholder="Search by invoice number…"
+                value={invoiceSearch}
+                onChange={e => setInvoiceSearch(e.target.value)}
+              />
+            </div>
           </div>
-        )}
-        <div className="selling-invoices-toolbar">
-          <div className="selling-invoices-search-wrap">
-            <span className="selling-invoices-search-icon" aria-hidden="true"><IconSearch /></span>
-            <input
-              type="search"
-              className="selling-invoices-search"
-              placeholder="Search by invoice number"
-              value={invoiceSearch}
-              onChange={e => setInvoiceSearch(e.target.value)}
-            />
-          </div>
-          <div className="selling-invoices-filters" role="tablist" aria-label="Invoice status filters">
-            {['all', 'Unpaid', 'Partial', 'Paid'].map(key => {
-              const value = key as 'all' | InvoiceStatus;
-              const label = key === 'all' ? 'All' : key;
+          <div className="selling-invoices-gem-tabs" role="tablist" aria-label="Invoice status filters">
+            {(
+              [
+                ['all', 'all', 'All'],
+                ['unpaid', 'Unpaid', 'Unpaid'],
+                ['partial', 'Partial', 'Partial'],
+                ['paid', 'Paid', 'Paid'],
+              ] as const
+            ).map(([dataFilter, value, label]) => {
               const active = invoiceStatusFilter === value;
               return (
                 <button
-                  key={key}
+                  key={value}
                   type="button"
-                  className={`selling-invoices-filter${active ? ' is-active' : ''}`}
+                  className={`selling-invoices-gem-tab${active ? ' is-active' : ''}`}
+                  data-filter={dataFilter}
                   onClick={() => setInvoiceStatusFilter(value)}
                   role="tab"
                   aria-selected={active}
@@ -1451,9 +1603,15 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
               );
             })}
           </div>
-        </div>
+        </header>
 
-        <div className="selling-invoices-table-wrap">
+        {invoicesError && (
+          <div className="selling-invoices-gem-error selling-state selling-state-error">
+            <p>{invoicesError}</p>
+          </div>
+        )}
+
+        <div className="selling-invoices-table-wrap selling-invoices-gem-table-wrap">
           <table className="selling-invoices-table" aria-label="Invoices">
             <thead>
               <tr>
@@ -1487,7 +1645,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
                   return (
                     <tr key={inv.id}>
                       <td className="selling-invoice-id">{inv.invoiceNo}</td>
-                      <td>{new Date(inv.createdAt).toLocaleDateString()}</td>
+                      <td className="selling-invoice-date">{new Date(inv.createdAt).toLocaleDateString()}</td>
                       <td className="selling-invoice-customer">{inv.customerName}</td>
                       <td className="selling-invoice-total">
                         {formatMoneyAmount(inv.total, inv.currencyCode)}
@@ -1518,8 +1676,8 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
                             className="selling-invoice-action-btn selling-invoice-action-btn--pay"
                             title={hasLoan ? `Pay ${inv.invoiceNo}` : 'Fully paid — no balance'}
                             aria-label={hasLoan ? `Pay ${inv.invoiceNo}` : `Fully paid — ${inv.invoiceNo}`}
-                            disabled={!hasLoan || !onNavigate}
-                            onClick={() => handleSellingPayClick(inv.id)}
+                            disabled={!hasLoan}
+                            onClick={() => handleSellingPayClick(inv)}
                           >
                             <IconCreditCard />
                           </button>
@@ -1569,171 +1727,17 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       </section>
 
       {checkoutOpen && (
-        <div className="checkout-overlay" role="dialog" aria-modal="true" aria-labelledby="checkout-title">
-          <div className="checkout-modal">
-            <header className="checkout-header">
-              <h3 id="checkout-title" className="checkout-title">
-                Invoice Checkout
-              </h3>
-              <button
-                type="button"
-                className="checkout-close"
-                onClick={() => setCheckoutOpen(false)}
-                aria-label="Close"
-              >
-                <IconX size={20} />
-              </button>
-            </header>
-            <div className="checkout-body">
-              <div className="checkout-field">
-                <span className="checkout-field-label">Payment Method</span>
-                <div className="checkout-select-wrap">
-                  <select
-                    className="checkout-select"
-                    value={checkoutMethod}
-                    onChange={e => setCheckoutMethod(e.target.value as 'Cash' | 'Card' | 'QR')}
-                  >
-                    <option value="Cash">Cash</option>
-                    <option value="Card">Card</option>
-                    <option value="QR">QR</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="checkout-field checkout-field--currency">
-                <span className="checkout-field-label">Pay in currency</span>
-                <div className="checkout-select-wrap">
-                  <select
-                    className="checkout-select"
-                    value={checkoutDisplayCurrency}
-                    onChange={e => {
-                      const next = normalizeCurrencyCode(e.target.value);
-                      const inv = checkoutBaseCurrency;
-                      const prev = checkoutDisplayCurrency;
-                      const totalInv = checkoutInvoiceId ? checkoutDue : finalTotal;
-                      if (checkoutAmount > 0) {
-                        const inInv = convertAmountViaThb(checkoutAmount, prev, inv, thbPerUnit);
-                        setCheckoutAmount(convertAmountViaThb(inInv, inv, next, thbPerUnit));
-                      } else {
-                        setCheckoutAmount(convertAmountViaThb(totalInv, inv, next, thbPerUnit));
-                      }
-                      setCheckoutDisplayCurrency(next);
-                    }}
-                    aria-label="Currency for amounts entered at checkout"
-                  >
-                    {SUPPORTED_CURRENCIES.map(c => (
-                      <option key={c.code} value={c.code}>
-                        {c.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                {(checkoutNeedsConversion || checkoutFxMissing) && (
-                  <div className="checkout-currency-notes">
-                    {checkoutNeedsConversion && (
-                      <p className="checkout-currency-hint">
-                        You enter tender and quick amounts in <strong>{checkoutDisplayCurrency}</strong>. They are
-                        converted to <strong>{checkoutBaseCurrency}</strong> (invoice currency) using Profile exchange
-                        rates (THB base) before the payment is saved.
-                      </p>
-                    )}
-                    {checkoutFxMissing && (
-                      <p className="checkout-currency-hint checkout-currency-hint--warn">
-                        Missing rate for this pair. Set THB rates under Profile → Exchange rates so conversion is correct.
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div className="checkout-field checkout-field-total">
-                <span className="checkout-field-label">Invoice Total</span>
-                <div className="checkout-invoice-total">
-                  {formatMoneyAmount(checkoutTotalDisplay, checkoutDisplayCurrency)}
-                </div>
-                {checkoutNeedsConversion && !checkoutFxMissing && (
-                  <p className="checkout-currency-hint checkout-currency-hint--balance">
-                    Invoice total: {formatMoneyAmount(checkoutTotalInInvoice, checkoutBaseCurrency)}
-                  </p>
-                )}
-              </div>
-
-              <div className="checkout-tender-row">
-                <label className="checkout-field checkout-field-half">
-                  <span className="checkout-field-label">Amount Tendered</span>
-                  <input
-                    className="checkout-input"
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    inputMode="decimal"
-                    value={checkoutAmount || ''}
-                    onChange={e => {
-                      const v = e.target.value;
-                      setCheckoutAmount(v === '' ? 0 : parseMoneyInput(v));
-                    }}
-                    placeholder="0"
-                  />
-                </label>
-                <div className="checkout-field checkout-field-half">
-                  <span className="checkout-field-label">Change</span>
-                  <div className="checkout-change-box" aria-live="polite">
-                    {formatMoneyAmount(checkoutChangeDisplay, checkoutDisplayCurrency)}
-                  </div>
-                </div>
-              </div>
-
-              <div className="checkout-quick-section">
-                <div className="checkout-quick-header">
-                  <span className="checkout-quick-title">Quick Amount</span>
-                  <button
-                    type="button"
-                    className="checkout-quick-clear"
-                    onClick={() => setCheckoutAmount(0)}
-                  >
-                    Clear
-                  </button>
-                </div>
-                <div className="checkout-quick-buttons">
-                  {[100, 500, 1000, 5000].map(amount => (
-                    <button
-                      key={amount}
-                      type="button"
-                      className="checkout-quick-chip"
-                      onClick={() => setCheckoutAmount(prev => roundMoney2(prev + amount))}
-                    >
-                      +{formatMoneyWhole(amount, checkoutDisplayCurrency)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <footer
-              className={`checkout-footer${checkoutInvoiceId != null ? ' checkout-footer--with-print' : ''}`}
-            >
-              <button
-                type="button"
-                className="checkout-btn-back"
-                onClick={() => setCheckoutOpen(false)}
-              >
-                Back
-              </button>
-              {checkoutInvoiceId != null && (
-                <button
-                  type="button"
-                  className="ghost-button checkout-btn-print"
-                  onClick={() => printInvoiceReceiptById(checkoutInvoiceId)}
-                >
-                  <span className="btn-icon" aria-hidden="true">
-                    <IconPrinter />
-                  </span>
-                  Print receipt
-                </button>
-              )}
-              <button type="button" className="checkout-btn-proceed" onClick={completePayment}>
-                Proceed
-              </button>
-            </footer>
+        <div
+          className="pay-checkout-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Invoice checkout"
+          onMouseDown={e => {
+            if (e.target === e.currentTarget) closeCheckout();
+          }}
+        >
+          <div className="pay-checkout-modal" onMouseDown={e => e.stopPropagation()}>
+            <InvoiceCheckoutPage token={token} onNavigate={() => closeCheckout()} />
           </div>
         </div>
       )}
@@ -1809,7 +1813,15 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       {invoiceCreatedOpen && createdInvoice && (
         <div className="selling2-modal-overlay" role="dialog" aria-modal="true">
           <div className="selling2-created">
-            <button type="button" className="selling2-modal-close selling2-created-close" onClick={() => setInvoiceCreatedOpen(false)} aria-label="Close">
+            <button
+              type="button"
+              className="selling2-modal-close selling2-created-close"
+              onClick={() => {
+                setInvoiceCreatedLineOverride(null);
+                setInvoiceCreatedOpen(false);
+              }}
+              aria-label="Close"
+            >
               <IconX />
             </button>
             <div className="selling2-created-check" aria-hidden="true"><IconCheck /></div>
@@ -1827,36 +1839,35 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
               <div>
                 <span>Items</span>
                 <span>
-                  {cart.reduce((n, row) => n + (itemQuantities[row.id] ?? 1), 0)} pcs
-                  {cart.length > 1 ? ` · ${cart.length} lines` : ''}
+                  {invoiceCreatedModalItemsPcs} pcs
+                  {invoiceCreatedModalLineCount > 1 ? ` · ${invoiceCreatedModalLineCount} lines` : ''}
                 </span>
               </div>
               <div><span>Date</span><span>{new Date(createdInvoice.createdAt).toLocaleDateString()}</span></div>
             </div>
-            {cart.length > 0 && (
+            {invoiceCreatedModalLineViews.length > 0 && (
               <div className="selling2-created-lines" aria-label="Invoice line details">
                 <div className="selling2-created-lines-title">Line details</div>
                 <ul className="selling2-created-lines-list">
-                  {cart.map(row => {
-                    const q = itemQuantities[row.id] ?? 1;
-                    const gross = lineGrossForItem(row);
-                    const disc = Math.min(itemDiscounts[row.id] || 0, gross);
-                    const net = Math.max(0, gross - disc);
-                    const label = row.item_code || `#${row.id}`;
-                    return (
-                      <li key={row.id} className="selling2-created-line">
-                        <span className="selling2-created-line-name">{label}</span>
-                        <span className="selling2-created-line-amounts">
-                          <span className="selling2-created-line-gross">{formatMoneyAmount(gross, createdInvoice.currencyCode)}</span>
-                          {disc > 0 ? (
-                            <span className="selling2-created-line-disc">−{formatMoneyAmount(disc, createdInvoice.currencyCode)}</span>
-                          ) : null}
-                          <span className="selling2-created-line-net">{formatMoneyAmount(net, createdInvoice.currencyCode)}</span>
-                          <span className="selling2-created-line-qty">×{q}</span>
+                  {invoiceCreatedModalLineViews.map((row, idx) => (
+                    <li key={`${row.label}-${idx}`} className="selling2-created-line">
+                      <span className="selling2-created-line-name">{row.label}</span>
+                      <span className="selling2-created-line-amounts">
+                        <span className="selling2-created-line-gross">
+                          {formatMoneyAmount(row.gross, createdInvoice.currencyCode)}
                         </span>
-                      </li>
-                    );
-                  })}
+                        {row.disc > 0 ? (
+                          <span className="selling2-created-line-disc">
+                            −{formatMoneyAmount(row.disc, createdInvoice.currencyCode)}
+                          </span>
+                        ) : null}
+                        <span className="selling2-created-line-net">
+                          {formatMoneyAmount(row.net, createdInvoice.currencyCode)}
+                        </span>
+                        <span className="selling2-created-line-qty">×{row.qty}</span>
+                      </span>
+                    </li>
+                  ))}
                 </ul>
               </div>
             )}
@@ -1872,11 +1883,9 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
               type="button"
               className="ghost-button selling2-created-btn"
               onClick={() => {
+                setInvoiceCreatedLineOverride(null);
                 setInvoiceCreatedOpen(false);
-                if (createdInvoice) {
-                  setCheckoutDisplayCurrency(normalizeCurrencyCode(createdInvoice.currencyCode));
-                }
-                setCheckoutOpen(true);
+                if (createdInvoice) openInvoiceCheckout(createdInvoice.id);
               }}
             >
               Continue to Checkout

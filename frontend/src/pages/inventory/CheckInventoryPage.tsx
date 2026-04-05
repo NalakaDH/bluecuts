@@ -174,7 +174,6 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, o
     setError(null);
     try {
       const params = new URLSearchParams();
-      params.set('limit', '500');
       if (opts.search?.trim()) params.set('search', opts.search.trim());
       if (opts.status?.trim()) params.set('status', opts.status.trim());
       const res = await fetch(apiUrl(`/api/inventory?${params.toString()}`), {
@@ -236,6 +235,13 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, o
 
   return (
     <div className="page page-check-inventory">
+      {onNavigate && (
+        <p className="check-inventory-to-stockcount">
+          <button type="button" className="check-inventory-to-stockcount-btn" onClick={() => onNavigate('stockCount')}>
+            Stock count — quick physical check &amp; record missing stock
+          </button>
+        </p>
+      )}
       <section className="check-inventory-stats" aria-label="Inventory summary">
         <div className="check-inventory-stat-card">
           <span className="check-inventory-stat-icon check-inventory-stat-icon--total" aria-hidden="true"><IconBox /></span>
@@ -267,7 +273,9 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, o
         </div>
       </section>
 
-      <section className={`check-inventory-filters-card ${categoryOpen || statusOpen ? 'dropdown-open' : ''}`}>
+      <section
+        className={`section-card section-card--find check-inventory-filters-card ${categoryOpen || statusOpen ? 'dropdown-open' : ''}`}
+      >
         <h3 className="check-inventory-filters-title">Search & filters</h3>
         <div className="check-inventory-filters-row">
           <div className="check-inventory-search-wrap">
@@ -379,7 +387,7 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, o
         </div>
       </section>
 
-      <section className="check-inventory-results-card">
+      <section className="section-card section-card--list check-inventory-results-card">
         <div className="check-inventory-results-header">
           <h3 className="check-inventory-results-title">Inventory results</h3>
           <span className="check-inventory-count-badge" aria-live="polite">

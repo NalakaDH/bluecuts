@@ -1,16 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAlertDialog } from '../../components/AlertDialog';
+import type { PageId } from '../../components/layout/Layout';
+import { SELLING_FROM_MEMO_CONVERT_INVOICE_KEY } from '../../constants/invoiceCheckout';
 import { apiUrl, parseErrorResponse } from '../../api';
 import { openMemoReceiptWindow } from '../../lib/receiptDocument';
 import {
   DEFAULT_CURRENCY_CODE,
   SUPPORTED_CURRENCIES,
   formatMoneyAmount,
-  formatMoneyWhole,
   normalizeCurrencyCode,
+  parseMoneyInput,
   roundMoney2,
 } from '../../lib/currencies';
-import { convertAmountViaThb, hasRateFor, type ThbPerUnitMap } from '../../lib/exchangeConversion';
+import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
+import { formatUsdOnlyFromAny, formatUsdOnlyFromThb } from '../../lib/moneyUsdDisplay';
+
+/** Default memo currency for new memos (matches Selling). */
+const MEMO_DEFAULT_CURRENCY = 'USD';
 
 function memoItemImageSrc(imagePath?: string | null): string {
   if (!imagePath) return '';
@@ -111,12 +117,14 @@ interface InventoryItem {
 }
 
 interface MemoCartItem {
+  /** Set when editing an existing memo line (server `memo_items.id`). */
+  memoItemId?: number;
   inventory_item_id: number;
   label: string;
   maxQty: number;
   quantity: number;
   unit_price: number;
-  /** Original list price & currency (for recalc when memo currency changes) */
+  /** Original list price & currency (prefill when memo currency matches) */
   source_unit_price: number;
   source_currency: string;
   item_code?: string | null;
@@ -125,10 +133,27 @@ interface MemoCartItem {
   category?: string;
   item_type?: string;
   weight_carats?: number | null;
+  /** When editing an existing memo: returned quantity on this line (read-only). */
+  memoReturnedQty?: number;
+}
+
+function memoUnitPrefillFromList(item: InventoryItem, memoCur: string): number {
+  const listCur = normalizeCurrencyCode(item.selling_currency ?? DEFAULT_CURRENCY_CODE);
+  const inv = normalizeCurrencyCode(memoCur);
+  if (listCur === inv) return roundMoney2(Number(item.selling_total_price ?? 0));
+  return 0;
+}
+
+function memoUnitPrefillFromCartLine(c: MemoCartItem, memoCur: string): number {
+  const listCur = normalizeCurrencyCode(c.source_currency ?? DEFAULT_CURRENCY_CODE);
+  const inv = normalizeCurrencyCode(memoCur);
+  if (listCur === inv) return roundMoney2(Number(c.source_unit_price ?? 0));
+  return 0;
 }
 
 interface MemoPageProps {
   token: string;
+  onNavigate?: (page: PageId) => void;
 }
 
 const IconSearch: React.FC = () => (
@@ -173,8 +198,85 @@ const IconUserRounded: React.FC = () => (
   </svg>
 );
 
+const kpiIco = 15;
+const IconKpiMemoClipboard: React.FC = () => (
+  <svg
+    width={kpiIco}
+    height={kpiIco}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.25"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+    <rect x="8" y="2" width="8" height="4" rx="1" />
+    <path d="M9 14h6" />
+  </svg>
+);
+const IconKpiAlertCircle: React.FC = () => (
+  <svg
+    width={kpiIco}
+    height={kpiIco}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <circle cx="12" cy="12" r="10" />
+    <line x1="12" y1="8" x2="12" y2="12" />
+    <line x1="12" y1="16" x2="12.01" y2="16" />
+  </svg>
+);
+const IconKpiPackage: React.FC = () => (
+  <svg
+    width={kpiIco}
+    height={kpiIco}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+    <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+    <line x1="12" y1="22.08" x2="12" y2="12" />
+  </svg>
+);
+const IconKpiBanknote: React.FC = () => (
+  <svg
+    width={kpiIco}
+    height={kpiIco}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <rect x="2" y="6" width="20" height="12" rx="2" />
+    <circle cx="12" cy="12" r="3" />
+    <path d="M6 12h.01M18 12h.01" />
+  </svg>
+);
+
 const IconPlus: React.FC = () => (
   <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <line x1="12" y1="5" x2="12" y2="19" />
+    <line x1="5" y1="12" x2="19" y2="12" />
+  </svg>
+);
+
+const IconPlusSm: React.FC = () => (
+  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <line x1="12" y1="5" x2="12" y2="19" />
     <line x1="5" y1="12" x2="19" y2="12" />
   </svg>
@@ -220,14 +322,6 @@ const IconMemoListTab: React.FC = () => (
     <line x1="3" y1="6" x2="3.01" y2="6" />
     <line x1="3" y1="12" x2="3.01" y2="12" />
     <line x1="3" y1="18" x2="3.01" y2="18" />
-  </svg>
-);
-
-const IconFilePlus: React.FC = () => (
-  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-    <path d="M14 2v6h6" />
-    <path d="M12 11v6M9 14h6" />
   </svg>
 );
 
@@ -294,39 +388,140 @@ function memoLineDescription(it: MemoItemRow): string {
   return `${base} · ${typeBit}`;
 }
 
+/** Subline under item title in detail modal (mock: "40 ct · 8 g · Code B"). */
+function memoItemMetaLine(it: MemoItemRow): string {
+  const parts: string[] = [];
+  if (it.weight_carats != null && Number(it.weight_carats) > 0) parts.push(`${it.weight_carats} ct`);
+  if (it.weight_grams != null && Number(it.weight_grams) > 0) parts.push(`${it.weight_grams} g`);
+  const code = (it.item_code || '').trim();
+  if (code) parts.push(`Code ${code}`);
+  if (parts.length > 0) return parts.join(' · ');
+  return [it.category, it.item_type].filter(Boolean).join(' · ') || '—';
+}
+
+function memoDetailCustomerInitial(name: string | null | undefined): string {
+  const t = (name || 'Walk-in').trim();
+  return t ? t.charAt(0).toUpperCase() : '?';
+}
+
+function memoDetailDisplayCustomer(d: MemoDetail): string {
+  const n = (d.customer_name || '').trim();
+  if (n) return n;
+  return 'Walk-in Customer';
+}
+
+function memoItemCodeBadgeLetter(it: MemoItemRow): string {
+  const c = (it.item_code || '').trim();
+  if (c) return c.charAt(0).toUpperCase();
+  const desc = (it.description || '').trim();
+  if (desc) return desc.charAt(0).toUpperCase();
+  return '?';
+}
+
+function memoItemDetailTitle(it: MemoItemRow): string {
+  const desc = (it.description || '').trim();
+  if (desc) return desc;
+  const code = (it.item_code || '').trim();
+  if (code) return code;
+  return `Item #${it.inventory_item_id}`;
+}
+
+function detailToComposerCart(d: MemoDetail): MemoCartItem[] {
+  const cur = normalizeCurrencyCode(d.currency_code || DEFAULT_CURRENCY_CODE);
+  return d.items.map(it => {
+    const q = Math.max(1, Math.floor(Number(it.quantity) || 0));
+    const rq = Math.floor(Number(it.returned_qty) || 0);
+    const unit = roundMoney2(Number(it.unit_price || 0));
+    return {
+      memoItemId: it.id,
+      inventory_item_id: it.inventory_item_id,
+      label: memoLineDescription(it),
+      maxQty: Math.max(q, 1),
+      quantity: q,
+      unit_price: unit,
+      source_unit_price: unit,
+      source_currency: cur,
+      item_code: it.item_code,
+      description: it.description,
+      image_path: it.image_path ?? null,
+      category: it.category ?? '',
+      item_type: it.item_type ?? '',
+      weight_carats: it.weight_carats ?? null,
+      memoReturnedQty: rq > 0 ? rq : undefined,
+    };
+  });
+}
+
+const IconMemoDocHeader = () => (
+  <svg
+    width={20}
+    height={20}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <polyline points="14 2 14 8 20 8" />
+    <line x1="16" y1="13" x2="8" y2="13" />
+    <line x1="16" y1="17" x2="8" y2="17" />
+  </svg>
+);
+
+const IconPencil12 = () => (
+  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+  </svg>
+);
+
+const IconTrash12 = () => (
+  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6l-1 14H6L5 6" />
+  </svg>
+);
+
+const IconPrint12 = () => (
+  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="6 9 6 2 18 2 18 9" />
+    <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+    <rect x="6" y="14" width="12" height="8" />
+  </svg>
+);
+
+const IconReturn12 = () => (
+  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="1 4 1 10 7 10" />
+    <path d="M3.51 15a9 9 0 1 0 .49-3.48" />
+  </svg>
+);
+
+const IconConvert12 = () => (
+  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <polyline points="14 2 14 8 20 8" />
+    <line x1="12" y1="18" x2="12" y2="12" />
+    <line x1="9" y1="15" x2="15" y2="15" />
+  </svg>
+);
+
+const IconCheck10 = () => (
+  <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
+
 const IconMemoModalClose = () => (
   <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
     <path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" />
   </svg>
 );
 
-const IconPrint = () => (
-  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-    <path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z" />
-  </svg>
-);
-
-const IconUndo = () => (
-  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-    <path d="M3 7v6h6M21 17a9 9 0 00-9-9 9 9 0 00-6 2.3L3 13" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-const IconReceipt = () => (
-  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" strokeLinecap="round" />
-    <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" strokeLinecap="round" />
-  </svg>
-);
-
-const IconClipboard = () => (
-  <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-    <path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2" strokeLinecap="round" />
-    <rect x="8" y="2" width="8" height="4" rx="1" />
-  </svg>
-);
-
-export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
+export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
   const { showAlert, showConfirm } = useAlertDialog();
 
   // create memo form
@@ -353,7 +548,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
   const [itemSearch, setItemSearch] = useState('');
   const [itemSuggestions, setItemSuggestions] = useState<InventoryItem[]>([]);
   const [cart, setCart] = useState<MemoCartItem[]>([]);
-  const [memoCurrency, setMemoCurrency] = useState<string>(DEFAULT_CURRENCY_CODE);
+  const [memoCurrency, setMemoCurrency] = useState<string>(MEMO_DEFAULT_CURRENCY);
   const [thbPerUnit, setThbPerUnit] = useState<ThbPerUnitMap>({ THB: 1 });
   const [creating, setCreating] = useState(false);
   // memo list
@@ -373,15 +568,12 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
   const [returnDraft, setReturnDraft] = useState<Record<number, number>>({});
   const [memoMainTab, setMemoMainTab] = useState<'create' | 'open'>('create');
 
-  const [memoEditOpen, setMemoEditOpen] = useState(false);
-  const [memoEditSaving, setMemoEditSaving] = useState(false);
   const [memoEditDeleting, setMemoEditDeleting] = useState(false);
-  const [editMemoDate, setEditMemoDate] = useState('');
-  const [editDueDate, setEditDueDate] = useState('');
-  const [editNotes, setEditNotes] = useState('');
-  const [editCustomerSearch, setEditCustomerSearch] = useState('');
-  const [editCustomerSuggestions, setEditCustomerSuggestions] = useState<CustomerRow[]>([]);
-  const [editSelectedCustomer, setEditSelectedCustomer] = useState<CustomerRow | null>(null);
+  const [editingMemoId, setEditingMemoId] = useState<number | null>(null);
+  const [editingMemoNo, setEditingMemoNo] = useState<string | null>(null);
+  const [editingMemoConvertedInvoiceId, setEditingMemoConvertedInvoiceId] = useState<number | null>(null);
+  const [editingMemoStatus, setEditingMemoStatus] = useState<MemoStatus | null>(null);
+  const [memoUpdating, setMemoUpdating] = useState(false);
 
   const [memoKpiStats, setMemoKpiStats] = useState<MemoKpiStats | null>(null);
 
@@ -466,33 +658,6 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
   }, [customerSearch, selectedCustomer, token]);
 
   useEffect(() => {
-    if (!memoEditOpen || editSelectedCustomer) {
-      setEditCustomerSuggestions([]);
-      return;
-    }
-    if (!editCustomerSearch.trim()) {
-      setEditCustomerSuggestions([]);
-      return;
-    }
-    const id = window.setTimeout(async () => {
-      try {
-        const params = new URLSearchParams();
-        params.set('search', editCustomerSearch.trim());
-        params.set('limit', '12');
-        const res = await fetch(apiUrl(`/api/customers?${params.toString()}`), {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) return;
-        const rows = await res.json();
-        setEditCustomerSuggestions(rows);
-      } catch {
-        setEditCustomerSuggestions([]);
-      }
-    }, 250);
-    return () => window.clearTimeout(id);
-  }, [memoEditOpen, editCustomerSearch, editSelectedCustomer, token]);
-
-  useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
@@ -552,14 +717,29 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
     return { openCount: 0, overdueCount: 0, itemsOnMemo: 0, totalValueThb: 0 };
   }, [memoKpiStats]);
 
+  const memoLinesReadOnly =
+    editingMemoId != null &&
+    (editingMemoConvertedInvoiceId != null || editingMemoStatus === 'Closed');
+
   const addItemToCart = (it: InventoryItem) => {
+    if (memoLinesReadOnly) {
+      showAlert({
+        title: 'Lines cannot be changed',
+        message:
+          editingMemoConvertedInvoiceId != null
+            ? 'This memo was converted to an invoice. You can still update dates and notes.'
+            : 'This memo is closed. You can still update dates and notes.',
+        variant: 'info',
+      });
+      return;
+    }
     const remaining = typeof it.pieces_remaining === 'number' ? it.pieces_remaining : it.pieces;
     if (remaining <= 0) return;
     const code = it.item_code || it.item_sticker || '';
     const label = `${code ? `${code} • ` : ''}${it.category} • ${it.item_type}`;
     const srcCur = normalizeCurrencyCode(it.selling_currency);
     const srcPrice = Number(it.selling_total_price || 0);
-    const unit = convertAmountViaThb(srcPrice, srcCur, memoCurrency, thbPerUnit);
+    const unit = memoUnitPrefillFromList(it, memoCurrency);
     setCart(prev => {
       const exists = prev.find(p => p.inventory_item_id === it.id);
       if (exists) return prev;
@@ -586,16 +766,8 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
     setItemSuggestions([]);
   };
 
-  useEffect(() => {
-    setCart(prev =>
-      prev.map(c => ({
-        ...c,
-        unit_price: convertAmountViaThb(c.source_unit_price, c.source_currency, memoCurrency, thbPerUnit),
-      }))
-    );
-  }, [memoCurrency, thbPerUnit]);
-
   const removeCartItem = (inventory_item_id: number) => {
+    if (memoLinesReadOnly) return;
     setCart(prev => prev.filter(p => p.inventory_item_id !== inventory_item_id));
     setCartImageLoadFailed(prev => {
       const next = new Set(prev);
@@ -607,18 +779,6 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
   const cartTotal = useMemo(() => {
     return cart.reduce((sum, c) => sum + (Number(c.unit_price) || 0) * (Number(c.quantity) || 0), 0);
   }, [cart]);
-
-  const fxWarning = useMemo(() => {
-    for (const c of cart) {
-      const from = normalizeCurrencyCode(c.source_currency);
-      const to = normalizeCurrencyCode(memoCurrency);
-      if (from === to) continue;
-      if (!hasRateFor(from, thbPerUnit) || !hasRateFor(to, thbPerUnit)) {
-        return 'Missing exchange rate for this currency pair. Set THB rates in Profile → Exchange rates (owner), or amounts may be wrong.';
-      }
-    }
-    return null;
-  }, [cart, memoCurrency, thbPerUnit]);
 
   const handleNewCustomerChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -692,7 +852,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
     setMemoDate(todayIso());
     setDueDate('');
     setNotes('');
-    setMemoCurrency(DEFAULT_CURRENCY_CODE);
+    setMemoCurrency(MEMO_DEFAULT_CURRENCY);
     setCustomerSearch('');
     setSelectedCustomer(null);
     setCustomerSuggestions([]);
@@ -701,6 +861,10 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
     setItemSearch('');
     setItemSuggestions([]);
     setCart([]);
+    setEditingMemoId(null);
+    setEditingMemoNo(null);
+    setEditingMemoConvertedInvoiceId(null);
+    setEditingMemoStatus(null);
   };
 
   const createMemo = async () => {
@@ -820,32 +984,76 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
     setDetailId(null);
     setDetail(null);
     setDetailError(null);
-    setMemoEditOpen(false);
   }, []);
 
-  const openMemoEditModal = () => {
-    if (!detail) return;
-    setEditMemoDate(detail.memo_date || todayIso());
-    setEditDueDate(detail.due_date || '');
-    setEditNotes(detail.notes || '');
+  const openMemoEditInComposer = () => {
+    if (!detail || !detailId) return;
+    setMemoDate(detail.memo_date || todayIso());
+    setDueDate(detail.due_date || '');
+    setNotes(detail.notes || '');
+    setMemoCurrency(normalizeCurrencyCode(detail.currency_code || DEFAULT_CURRENCY_CODE));
     if (detail.customer_id != null) {
-      setEditSelectedCustomer({
+      setSelectedCustomer({
         id: detail.customer_id,
         name: detail.customer_name || 'Customer',
         phone: detail.customer_phone,
         email: detail.customer_email ?? null,
       });
     } else {
-      setEditSelectedCustomer(null);
+      setSelectedCustomer(null);
     }
-    setEditCustomerSearch('');
-    setEditCustomerSuggestions([]);
-    setMemoEditOpen(true);
+    setCustomerSearch('');
+    setCustomerSuggestions([]);
+    setItemSearch('');
+    setItemSuggestions([]);
+    const initialCart = detailToComposerCart(detail);
+    setCart(initialCart);
+    setCartImageLoadFailed(() => new Set());
+    const canEditLines = !detail.converted_invoice_id && detail.status !== 'Closed';
+    if (canEditLines && initialCart.length > 0) {
+      void (async () => {
+        const enriched = await Promise.all(
+          initialCart.map(async c => {
+            try {
+              const res = await fetch(apiUrl(`/api/inventory/${c.inventory_item_id}`), {
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              if (!res.ok) return c;
+              const row = (await res.json()) as InventoryItem;
+              const rem = Math.floor(
+                Number(typeof row.pieces_remaining === 'number' ? row.pieces_remaining : row.pieces ?? 0)
+              );
+              const rq = Math.floor(Number(c.memoReturnedQty || 0));
+              const q = Math.floor(Number(c.quantity) || 0);
+              const onMemo = Math.max(0, q - rq);
+              const maxQty = Math.max(1, q, onMemo + rem);
+              return { ...c, maxQty };
+            } catch {
+              return c;
+            }
+          })
+        );
+        setCart(enriched);
+      })();
+    }
+    setEditingMemoId(detailId);
+    setEditingMemoNo(detail.memo_no);
+    setEditingMemoConvertedInvoiceId(detail.converted_invoice_id);
+    setEditingMemoStatus(detail.status);
+    setMemoMainTab('create');
+    setReturnDraft({});
+    setDetailOpen(false);
+    setDetailId(null);
+    setDetail(null);
+    setDetailError(null);
+    window.setTimeout(() => {
+      document.getElementById('memo-panel-create')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 0);
   };
 
-  const saveMemoEdit = async () => {
-    if (!detailId || !detail) return;
-    if (memoDueBeforeMemoDate(editMemoDate, editDueDate)) {
+  const saveMemoUpdate = async () => {
+    if (!editingMemoId) return;
+    if (memoDueBeforeMemoDate(memoDate, dueDate)) {
       showAlert({
         title: 'Invalid dates',
         message: 'Due date cannot be before the memo date.',
@@ -853,40 +1061,106 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
       });
       return;
     }
-    setMemoEditSaving(true);
+    const linesEditable = !memoLinesReadOnly;
+    if (linesEditable) {
+      if (cart.length === 0) {
+        showAlert({
+          title: 'Memo needs lines',
+          message: 'Add at least one item before saving.',
+          variant: 'warning',
+        });
+        return;
+      }
+      for (const c of cart) {
+        const rq = Math.floor(Number(c.memoReturnedQty || 0));
+        const q = Math.floor(Number(c.quantity) || 0);
+        const p = Number(c.unit_price);
+        if (!Number.isFinite(q) || q < 1 || q < rq) {
+          showAlert({
+            title: 'Invalid quantity',
+            message:
+              rq > 0
+                ? `Quantity cannot be below ${rq} — that many pieces were already returned on this line.`
+                : 'Each line needs a valid quantity.',
+            variant: 'error',
+          });
+          return;
+        }
+        if (!Number.isFinite(p) || p < 0) {
+          showAlert({
+            title: 'Invalid price',
+            message: 'Unit prices cannot be negative.',
+            variant: 'error',
+          });
+          return;
+        }
+        if (q > c.maxQty) {
+          showAlert({
+            title: 'Not enough stock',
+            message: 'Increase a line quantity only if enough pieces are available.',
+            variant: 'error',
+          });
+          return;
+        }
+      }
+    }
+    const savedId = editingMemoId;
+    setMemoUpdating(true);
     try {
       const body: {
         memo_date: string;
         due_date: string | null;
         notes: string | null;
         customer_id?: number | null;
+        items?: Array<{
+          memo_item_id: number | null;
+          inventory_item_id: number;
+          quantity: number;
+          unit_price: number;
+          item_code: string | null;
+          description: string | null;
+        }>;
       } = {
-        memo_date: editMemoDate,
-        due_date: editDueDate.trim() || null,
-        notes: editNotes.trim() || null,
+        memo_date: memoDate,
+        due_date: dueDate.trim() || null,
+        notes: notes.trim() || null,
       };
-      if (!detail.converted_invoice_id) {
-        body.customer_id = editSelectedCustomer?.id ?? null;
+      if (!editingMemoConvertedInvoiceId) {
+        body.customer_id = selectedCustomer?.id ?? null;
       }
-      const res = await fetch(apiUrl(`/api/memos/${detailId}`), {
+      if (linesEditable) {
+        body.items = cart.map(c => ({
+          memo_item_id: c.memoItemId ?? null,
+          inventory_item_id: c.inventory_item_id,
+          quantity: Math.floor(Number(c.quantity) || 0),
+          unit_price: roundMoney2(Number(c.unit_price) || 0),
+          item_code: c.item_code ?? null,
+          description: c.description ?? null,
+        }));
+      }
+      const res = await fetch(apiUrl(`/api/memos/${savedId}`), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to update memo'));
-      setMemoEditOpen(false);
-      await openDetail(detailId);
+      resetForm();
       fetchMemos();
       showAlert({
         title: 'Memo updated',
         message: 'Your changes were saved.',
         variant: 'success',
       });
+      try {
+        await openDetail(savedId);
+      } catch {
+        /* openDetail surfaces errors */
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to update memo';
       showAlert({ title: 'Could not save memo', message: msg, variant: 'error' });
     } finally {
-      setMemoEditSaving(false);
+      setMemoUpdating(false);
     }
   };
 
@@ -1019,13 +1293,21 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
         body: JSON.stringify({}),
       });
       if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to convert memo'));
-      await openDetail(detailId);
+      const data = (await res.json()) as { invoice_id?: unknown };
+      const invoiceId = Number(data.invoice_id);
+      if (Number.isFinite(invoiceId) && invoiceId > 0) {
+        try {
+          window.sessionStorage.setItem(
+            SELLING_FROM_MEMO_CONVERT_INVOICE_KEY,
+            JSON.stringify({ invoiceId })
+          );
+        } catch {
+          // ignore storage failures
+        }
+      }
       fetchMemos();
-      showAlert({
-        title: 'Memo converted',
-        message: 'An invoice was created from this memo. You can find it under Selling or Payments.',
-        variant: 'success',
-      });
+      closeDetail();
+      onNavigate?.('selling');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to convert memo';
       setDetailError(msg);
@@ -1068,27 +1350,51 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
 
   return (
     <div className="page page-memo">
-      <section className="payments-kpi-grid" aria-label="Memo summary stats">
-        <div className="payments-kpi-card payments-kpi-card--blue">
-          <div className="payments-kpi-label">Open memos</div>
-          <div className="payments-kpi-value">{totals.openCount}</div>
-        </div>
-        <div className="payments-kpi-card payments-kpi-card--red">
-          <div className="payments-kpi-label">Overdue memos</div>
-          <div className="payments-kpi-value">{totals.overdueCount}</div>
-        </div>
-        <div className="payments-kpi-card payments-kpi-card--amber">
-          <div className="payments-kpi-label">Items on memo</div>
-          <div className="payments-kpi-value">{totals.itemsOnMemo}</div>
-        </div>
-        <div className="payments-kpi-card payments-kpi-card--green">
-          <div className="payments-kpi-label">Total memo value</div>
-          <div className="payments-kpi-value">
-            {formatMoneyAmount(totals.totalValueThb, DEFAULT_CURRENCY_CODE)}
+      <section className="payments-kpi-grid memos-kpi-grid" aria-label="Memo summary stats">
+        <div className="dashT-kpi-sum dashT-kpi-sum--blue memos-kpi-sum">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Open memos</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--blue" aria-hidden="true">
+              <IconKpiMemoClipboard />
+            </div>
           </div>
-          <div className="payments-kpi-sub">
-            Open / active memos · THB equivalent (full totals for current search & status
-            {memoListTruncated ? '; table shows first 300' : ''})
+          <div className="dashT-kpi-sum__value">{totals.openCount}</div>
+          <div className="payments-kpi-sub memos-kpi-sub">
+            {memoKpiStats?.memos_in_scope ?? 0} in scope · open & partially returned · matches search &
+            status filter
+          </div>
+        </div>
+        <div className="dashT-kpi-sum dashT-kpi-sum--pink memos-kpi-sum">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Overdue memos</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--pink" aria-hidden="true">
+              <IconKpiAlertCircle />
+            </div>
+          </div>
+          <div className="dashT-kpi-sum__value">{totals.overdueCount}</div>
+          <div className="payments-kpi-sub memos-kpi-sub">Past due date · same scope as the other tiles</div>
+        </div>
+        <div className="dashT-kpi-sum dashT-kpi-sum--orange memos-kpi-sum">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Items on memo</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--orange" aria-hidden="true">
+              <IconKpiPackage />
+            </div>
+          </div>
+          <div className="dashT-kpi-sum__value">{totals.itemsOnMemo}</div>
+          <div className="payments-kpi-sub memos-kpi-sub">Total pieces on open memos in scope</div>
+        </div>
+        <div className="dashT-kpi-sum dashT-kpi-sum--green memos-kpi-sum">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Total memo value</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--green" aria-hidden="true">
+              <IconKpiBanknote />
+            </div>
+          </div>
+          <div className="dashT-kpi-sum__value">{formatUsdOnlyFromThb(totals.totalValueThb, thbPerUnit)}</div>
+          <div className="payments-kpi-sub memos-kpi-sub">
+            Open memos · USD from Profile rates · full line totals for current search & status
+            {memoListTruncated ? ' · table lists first 300' : ''}
           </div>
         </div>
       </section>
@@ -1128,60 +1434,56 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
         </div>
 
         {memoMainTab === 'create' && (
-        <section
-          className="memo-card memo-card--create"
-          aria-labelledby="memo-create-hero-title"
-          id="memo-panel-create"
-          role="tabpanel"
-        >
-          <header className="memo-create-hero">
-            <div className="memo-create-hero-icon" aria-hidden="true">
-              <IconClipboardCreate />
+        <section className="memo-create-shell" aria-labelledby="memo-tab-create" id="memo-panel-create" role="tabpanel">
+          {editingMemoId != null && editingMemoNo ? (
+            <div className="memo-create-edit-banner" role="status">
+              Editing <strong>{editingMemoNo}</strong> — update dates, notes, and customer below. Line items are read-only; use{' '}
+              <strong>Open memos</strong> to process returns.
             </div>
-            <div className="memo-create-hero-text">
-              <h3 id="memo-create-hero-title" className="memo-create-hero-title">
-                Create memo
-              </h3>
-            </div>
-          </header>
-
-          <div className="memo-create-columns selling2-grid">
-            <div className="memo-create-col memo-create-col--left selling2-left">
-              <section className="selling2-card">
-                <h3 className="selling2-card-title">
-                  <span className="selling2-card-title-icon" aria-hidden="true">
-                    <IconPlus />
-                  </span>
-                  Search &amp; Add Items
-                </h3>
-                <div className="selling2-search">
-                  <span className="selling2-search-icon" aria-hidden="true">
-                    <IconSearch />
-                  </span>
-                  <input
-                    type="search"
-                    className="selling2-search-input"
-                    value={itemSearch}
-                    onChange={e => setItemSearch(e.target.value)}
-                    placeholder="Search by Gem ID, stone type…"
-                    aria-label="Search inventory to add to memo"
-                  />
+          ) : null}
+          <div className="memo-create-ui-grid">
+            <div className="memo-create-col memo-create-col--left">
+              <section className="memo-create-card">
+                <div className="memo-create-card-header">
+                  <div className="memo-create-card-title">
+                    <div className="memo-create-card-title-icon" aria-hidden="true">
+                      <IconPlusSm />
+                    </div>
+                    Search &amp; Add Items
+                  </div>
+                </div>
+                <div className="memo-create-search-bar">
+                  <div className="memo-create-search-wrap">
+                    <span className="memo-create-search-icon" aria-hidden="true">
+                      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="11" cy="11" r="8" />
+                        <path d="m21 21-4.35-4.35" />
+                      </svg>
+                    </span>
+                    <input
+                      type="search"
+                      className="memo-create-search-input"
+                      value={itemSearch}
+                      onChange={e => setItemSearch(e.target.value)}
+                      placeholder="Search by Gem ID, stone type, description…"
+                      aria-label="Search inventory to add to memo"
+                      disabled={memoLinesReadOnly}
+                    />
+                  </div>
                 </div>
                 {itemSearch.trim() && itemSuggestions.length > 0 ? (
-                  <div className="selling2-suggest">
+                  <div className="memo-create-suggest">
                     {itemSuggestions.map(it => {
                       const remaining = typeof it.pieces_remaining === 'number' ? it.pieces_remaining : it.pieces;
                       const code = it.item_code || it.item_sticker || '';
-                      const srcCur = normalizeCurrencyCode(it.selling_currency);
                       const list = Number(it.selling_total_price || 0);
-                      const inMemo = convertAmountViaThb(list, srcCur, memoCurrency, thbPerUnit);
                       return (
-                        <button key={it.id} type="button" className="selling2-suggest-row" onClick={() => addItemToCart(it)}>
-                          <span className="selling2-suggest-code">{code || `#${it.id}`}</span>
-                          <span className="selling2-suggest-name">{it.category}</span>
-                          <span className="selling2-suggest-meta">
-                            {it.item_type} · {remaining} pcs · {formatMoneyWhole(inMemo, memoCurrency)}
-                            {srcCur !== normalizeCurrencyCode(memoCurrency) ? ` (${formatMoneyWhole(list, srcCur)} list)` : ''}
+                        <button key={it.id} type="button" className="memo-create-suggest-row" onClick={() => addItemToCart(it)}>
+                          <span className="memo-create-suggest-code">{code || `#${it.id}`}</span>
+                          <span className="memo-create-suggest-name">{it.category}</span>
+                          <span className="memo-create-suggest-meta">
+                            {it.item_type} · {remaining} pcs · list{' '}
+                            {formatUsdOnlyFromAny(list, it.selling_currency ?? DEFAULT_CURRENCY_CODE, thbPerUnit)}
                           </span>
                         </button>
                       );
@@ -1190,31 +1492,39 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
                 ) : null}
               </section>
 
-              <section className="selling2-card selling2-card--added">
-                <h3 className="selling2-card-title">Added Items</h3>
+              <section className="memo-create-card memo-create-card--items">
+                <div className="memo-create-items-head">
+                  <span className="memo-create-items-label">Added Items</span>
+                  <span className="memo-create-count-chip">{cart.length === 1 ? '1' : String(cart.length)}</span>
+                </div>
                 {cart.length === 0 ? (
-                  <div className="selling2-empty">
-                    <div className="selling2-empty-title">No items added yet</div>
-                    <div className="selling2-empty-sub">Search and add items from the left to get started</div>
+                  <div className="memo-create-empty">
+                    <div className="memo-create-empty-title">No items added yet</div>
+                    <div className="memo-create-empty-sub">
+                      Search and add items. List prices in results are shown in USD (Profile rates). Enter unit prices in the memo currency.
+                    </div>
                   </div>
                 ) : (
                   <>
-                    <div className="selling2-table-wrap">
-                      <table className="selling2-table" aria-label="Added items">
+                    <div className="memo-create-table-wrap">
+                      <table className="memo-create-items-table" aria-label="Added items">
                         <thead>
                           <tr>
-                            <th className="selling2-item-thumb-cell" scope="col">
+                            <th className="memo-create-thumb-cell" scope="col">
                               Image
                             </th>
                             <th scope="col">Code</th>
                             <th scope="col">Description</th>
                             <th scope="col">Pcs</th>
-                            <th scope="col">Net</th>
+                            <th scope="col">Unit price ({normalizeCurrencyCode(memoCurrency)})</th>
+                            <th scope="col">Line total</th>
                             <th scope="col">Action</th>
                           </tr>
                         </thead>
                         <tbody>
                           {cart.map(c => {
+                            const rqLine = Math.floor(Number(c.memoReturnedQty || 0));
+                            const qtyMin = Math.max(1, rqLine);
                             const qty = Number(c.quantity) || 0;
                             const unit = Number(c.unit_price) || 0;
                             const lineGross = roundMoney2(unit * qty);
@@ -1223,10 +1533,10 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
                             const avail = c.maxQty;
                             return (
                               <tr key={c.inventory_item_id}>
-                                <td className="selling2-item-thumb-cell">
+                                <td className="memo-create-thumb-cell">
                                   {imgSrc && !cartImageLoadFailed.has(c.inventory_item_id) ? (
                                     <img
-                                      className="selling2-item-thumb"
+                                      className="memo-create-item-thumb"
                                       src={imgSrc}
                                       alt=""
                                       loading="lazy"
@@ -1235,17 +1545,20 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
                                       }
                                     />
                                   ) : null}
-                                  {showPlaceholder ? <span className="selling2-item-thumb-placeholder">No img</span> : null}
+                                  {showPlaceholder ? <span className="memo-create-thumb-ph">No img</span> : null}
                                 </td>
                                 <td>
-                                  <span className="selling2-code-badge">{c.item_code || `#${c.inventory_item_id}`}</span>
+                                  <span className="memo-create-code-badge">{c.item_code || `#${c.inventory_item_id}`}</span>
                                 </td>
                                 <td>
-                                  <div className="selling2-desc-title">{c.category || c.label}</div>
-                                  <div className="selling2-desc-sub">
+                                  <div className="memo-create-item-name">{c.category || c.label}</div>
+                                  <div className="memo-create-item-meta">
                                     {c.item_type}
                                     {c.weight_carats != null ? ` · ${c.weight_carats} ct` : ''}
-                                    {avail != null ? ` · ${avail} in stock` : ''}
+                                    {c.memoReturnedQty != null && c.memoReturnedQty > 0
+                                      ? ` · ${c.memoReturnedQty} returned`
+                                      : ''}
+                                    {!memoLinesReadOnly && avail != null ? ` · ${avail} max (stock + on memo)` : ''}
                                   </div>
                                 </td>
                                 <td>
@@ -1255,26 +1568,51 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
                                   <input
                                     id={`memo-qty-${c.inventory_item_id}`}
                                     type="number"
-                                    className="selling2-qty-input"
-                                    min={1}
+                                    className="memo-create-qty-input"
+                                    min={qtyMin}
                                     max={c.maxQty}
                                     value={c.quantity}
-                                    title={`Pieces on memo (1–${c.maxQty})`}
+                                    title={`Pieces on memo (${qtyMin}–${c.maxQty}${rqLine > 0 ? `; ${rqLine} already returned` : ''})`}
+                                    disabled={memoLinesReadOnly}
                                     onChange={e => {
-                                      const v = Math.max(1, Math.min(c.maxQty, Math.floor(Number(e.target.value) || 1)));
+                                      const v = Math.max(
+                                        qtyMin,
+                                        Math.min(c.maxQty, Math.floor(Number(e.target.value) || qtyMin))
+                                      );
                                       setCart(prev =>
                                         prev.map(x => (x.inventory_item_id === c.inventory_item_id ? { ...x, quantity: v } : x))
                                       );
                                     }}
                                   />
                                 </td>
-                                <td className="selling2-net">{formatMoneyAmount(lineGross, memoCurrency)}</td>
+                                <td>
+                                  <input
+                                    type="number"
+                                    className="memo-create-price-input"
+                                    min={0}
+                                    step={0.01}
+                                    value={unit}
+                                    title={`Unit price (${memoCurrency})`}
+                                    aria-label={`Unit price for ${c.item_code || c.inventory_item_id}`}
+                                    disabled={memoLinesReadOnly}
+                                    onChange={e => {
+                                      const v = Math.max(0, roundMoney2(parseMoneyInput(e.target.value)));
+                                      setCart(prev =>
+                                        prev.map(x =>
+                                          x.inventory_item_id === c.inventory_item_id ? { ...x, unit_price: v } : x
+                                        )
+                                      );
+                                    }}
+                                  />
+                                </td>
+                                <td className="memo-create-line-total">{formatMoneyAmount(lineGross, memoCurrency)}</td>
                                 <td>
                                   <button
                                     type="button"
-                                    className="selling2-trash"
+                                    className="memo-create-trash"
                                     onClick={() => removeCartItem(c.inventory_item_id)}
                                     aria-label="Remove line"
+                                    disabled={memoLinesReadOnly}
                                   >
                                     <IconTrash />
                                   </button>
@@ -1285,131 +1623,153 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
                         </tbody>
                       </table>
                     </div>
-                    <div className="memo-create-items-total" aria-live="polite">
-                      <span>Memo total</span>
-                      <strong>{formatMoneyAmount(cartTotal, memoCurrency)}</strong>
+                    <div className="memo-create-total-bar" aria-live="polite">
+                      <span className="memo-create-total-label">Memo Total</span>
+                      <span className="memo-create-total-value">{formatMoneyAmount(cartTotal, memoCurrency)}</span>
                     </div>
                   </>
                 )}
               </section>
             </div>
 
-            <div className="memo-create-col memo-create-col--right selling2-right">
-              <div className="memo-form memo-form--create">
-                <section className="selling2-card" aria-labelledby="memo-sec-customer-title">
-                  <h3 id="memo-sec-customer-title" className="selling2-card-title">
-                    <span className="selling2-card-title-icon" aria-hidden="true">
-                      <IconUserRounded />
-                    </span>
-                    Customer
-                  </h3>
-                  {selectedCustomer ? (
-                    <div className="selling2-customer-selected">
-                      <span className="selling2-customer-selected-icon" aria-hidden="true">
-                        <IconUserRounded />
-                      </span>
-                      <div className="selling2-customer-selected-main">
-                        <div className="selling2-customer-selected-name">{selectedCustomer.name}</div>
-                        <div className="selling2-customer-selected-phone">{selectedCustomer.phone || ''}</div>
-                      </div>
-                      <button
-                        type="button"
-                        className="selling2-customer-selected-close"
-                        onClick={() => setSelectedCustomer(null)}
-                        aria-label="Remove customer"
-                      >
-                        <IconX size={16} />
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="selling2-customer-search">
-                        <span className="selling2-search-icon" aria-hidden="true">
-                          <IconSearch />
-                        </span>
-                        <input
-                          type="search"
-                          className="selling2-search-input"
-                          value={customerSearch}
-                          onChange={e => setCustomerSearch(e.target.value)}
-                          placeholder="Search by name, phone…"
-                          aria-label="Search customers"
-                        />
-                      </div>
-                      {customerSuggestions.length > 0 ? (
-                        <div className="selling2-customer-list">
-                          {customerSuggestions.map(cust => (
-                            <button
-                              type="button"
-                              key={cust.id}
-                              className="selling2-customer-row"
-                              onClick={() => {
-                                setSelectedCustomer(cust);
-                                setCustomerSearch('');
-                                setCustomerSuggestions([]);
-                              }}
-                            >
-                              <div className="selling2-customer-row-name">{cust.name}</div>
-                              <div className="selling2-customer-row-phone">{cust.phone || ''}</div>
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    className="ghost-button selling2-new-customer"
-                    onClick={() => setNewCustomerModalOpen(true)}
-                  >
-                    <span className="btn-icon" aria-hidden="true">
-                      <IconPlus />
-                    </span>
-                    New customer
-                  </button>
-                </section>
-
-                <section className="selling2-card" aria-labelledby="memo-sec-schedule-title">
-                  <h3 id="memo-sec-schedule-title" className="selling2-card-title">
-                    <span className="selling2-card-title-icon" aria-hidden="true">
-                      <IconCalendarMemo />
-                    </span>
-                    Dates &amp; currency
-                  </h3>
-                  <div className="memo-form-row memo-form-row--dates">
-                    <label className="memo-field-label">
-                      <span className="memo-field-label-row">
-                        <span className="memo-field-label-icon" aria-hidden="true">
-                          <IconCalendarMemo />
-                        </span>
-                        Memo date
-                      </span>
-                      <input type="date" className="memo-date-input" value={memoDate} onChange={e => setMemoDate(e.target.value)} />
-                    </label>
-                    <label className="memo-field-label">
-                      <span className="memo-field-label-row">
-                        <span className="memo-field-label-icon" aria-hidden="true">
-                          <IconCalendarMemo />
-                        </span>
-                        Due date
-                      </span>
-                      <input type="date" className="memo-date-input" value={dueDate} onChange={e => setDueDate(e.target.value)} />
-                    </label>
-                    <label className="memo-field-label memo-field-label--currency">
-                      <span className="memo-field-label-row">
-                        <span className="memo-field-label-icon memo-field-label-icon--coin" aria-hidden="true">
-                          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                            <circle cx="12" cy="12" r="8" />
-                            <path d="M12 6v2M12 16v2M6 12h2M16 12h2" />
+            <div className="memo-create-col memo-create-col--right">
+              <div className="memo-create-panel">
+                <div className="memo-create-panel-inner">
+                  <div className="memo-create-panel-section">
+                    <div className="memo-create-panel-label">Customer</div>
+                    {editingMemoConvertedInvoiceId ? (
+                      <p className="memo-create-hint" style={{ marginBottom: '0.75rem' }}>
+                        Customer cannot be changed because this memo was converted to an invoice.
+                      </p>
+                    ) : null}
+                    {selectedCustomer ? (
+                      <div className="memo-create-customer-selected">
+                        <span className="memo-create-customer-selected-icon" aria-hidden="true">
+                          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                            <circle cx="12" cy="7" r="4" />
                           </svg>
                         </span>
-                        Currency
-                      </span>
+                        <div className="memo-create-customer-selected-main">
+                          <div className="memo-create-customer-selected-name">{selectedCustomer.name}</div>
+                          <div className="memo-create-customer-selected-phone">{selectedCustomer.phone || ''}</div>
+                        </div>
+                        <button
+                          type="button"
+                          className="memo-create-customer-selected-close"
+                          onClick={() => setSelectedCustomer(null)}
+                          aria-label="Remove customer"
+                          disabled={editingMemoConvertedInvoiceId != null}
+                        >
+                          <IconX size={16} />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="memo-create-customer-search">
+                          <span className="memo-create-customer-search-icon" aria-hidden="true">
+                            <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                              <circle cx="12" cy="7" r="4" />
+                            </svg>
+                          </span>
+                          <input
+                            type="search"
+                            className="memo-create-customer-input"
+                            value={customerSearch}
+                            onChange={e => setCustomerSearch(e.target.value)}
+                            placeholder="Search by name, phone…"
+                            aria-label="Search customers"
+                            disabled={editingMemoConvertedInvoiceId != null}
+                          />
+                        </div>
+                        {customerSuggestions.length > 0 ? (
+                          <div className="memo-create-customer-list">
+                            {customerSuggestions.map(cust => (
+                              <button
+                                type="button"
+                                key={cust.id}
+                                className="memo-create-customer-row"
+                                onClick={() => {
+                                  setSelectedCustomer(cust);
+                                  setCustomerSearch('');
+                                  setCustomerSuggestions([]);
+                                }}
+                              >
+                                <div className="memo-create-customer-row-name">{cust.name}</div>
+                                <div className="memo-create-customer-row-phone">{cust.phone || ''}</div>
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      className="memo-create-new-customer"
+                      onClick={() => setNewCustomerModalOpen(true)}
+                      disabled={editingMemoConvertedInvoiceId != null}
+                    >
+                      <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <line x1="12" y1="5" x2="12" y2="19" />
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                      </svg>
+                      New customer
+                    </button>
+                  </div>
+
+                  <div className="memo-create-panel-divider" />
+
+                  <div className="memo-create-panel-section">
+                    <div className="memo-create-panel-label">Dates &amp; Currency</div>
+                    <div className="memo-create-date-row">
+                      <div className="memo-create-date-field">
+                        <span className="memo-create-date-label">Memo date</span>
+                        <div className="memo-create-date-input-wrap">
+                          <input
+                            type="date"
+                            className="memo-create-date-input"
+                            value={memoDate}
+                            onChange={e => setMemoDate(e.target.value)}
+                            aria-label="Memo date"
+                          />
+                          <span className="memo-create-date-cal-icon" aria-hidden="true">
+                            <IconCalendarMemo />
+                          </span>
+                        </div>
+                      </div>
+                      <div className="memo-create-date-field">
+                        <span className="memo-create-date-label">Due date</span>
+                        <div className="memo-create-date-input-wrap">
+                          <input
+                            type="date"
+                            className="memo-create-date-input"
+                            value={dueDate}
+                            onChange={e => setDueDate(e.target.value)}
+                            aria-label="Due date"
+                          />
+                          <span className="memo-create-date-cal-icon" aria-hidden="true">
+                            <IconCalendarMemo />
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="memo-create-currency-wrap">
                       <select
-                        className="memo-date-input"
+                        className="memo-create-currency-select"
                         value={memoCurrency}
-                        onChange={e => setMemoCurrency(e.target.value)}
+                        onChange={e => {
+                          const next = normalizeCurrencyCode(e.target.value);
+                          setMemoCurrency(next);
+                          setCart(prev =>
+                            prev.map(c => ({
+                              ...c,
+                              unit_price: memoUnitPrefillFromCartLine(c, next),
+                            }))
+                          );
+                        }}
                         aria-label="Memo currency"
+                        disabled={editingMemoId != null}
                       >
                         {SUPPORTED_CURRENCIES.map(cur => (
                           <option key={cur.code} value={cur.code}>
@@ -1417,39 +1777,66 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
                           </option>
                         ))}
                       </select>
+                    </div>
+                    <p className="memo-create-currency-hint">
+                      Unit prices are in the memo currency. Changing currency refills from inventory when the list currency matches; otherwise enter prices manually.
+                    </p>
+                  </div>
+
+                  <div className="memo-create-panel-divider" />
+
+                  <div className="memo-create-panel-section">
+                    <div className="memo-create-panel-label">Notes</div>
+                    <label className="memo-create-notes-label">
+                      <span className="visually-hidden">Notes (optional)</span>
+                      <textarea
+                        className="memo-create-notes-textarea"
+                        value={notes}
+                        onChange={e => setNotes(e.target.value)}
+                        rows={4}
+                        placeholder="Optional notes…"
+                      />
                     </label>
                   </div>
-                  {fxWarning ? <div className="memo-fx-warning" role="alert">{fxWarning}</div> : null}
-                </section>
 
-                <section className="selling2-card" aria-labelledby="memo-sec-notes-title">
-                  <h3 id="memo-sec-notes-title" className="selling2-card-title">
-                    <span className="selling2-card-title-icon" aria-hidden="true">
-                      <IconStickyNote />
-                    </span>
-                    Notes
-                  </h3>
-                  <label className="memo-notes-field">
-                    <span className="visually-hidden">Notes (optional)</span>
-                    <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} placeholder="Optional notes…" />
-                  </label>
-                </section>
-
-                <div className="memo-form-actions memo-form-actions--create">
-                  <button type="button" className="primary-button memo-create-submit" onClick={createMemo} disabled={creating}>
+                  <button
+                    type="button"
+                    className="memo-create-btn-create"
+                    onClick={() => (editingMemoId != null ? saveMemoUpdate() : createMemo())}
+                    disabled={creating || memoUpdating}
+                  >
                     {creating ? (
                       'Creating…'
+                    ) : memoUpdating ? (
+                      'Saving…'
+                    ) : editingMemoId != null ? (
+                      <>
+                        <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                          <polyline points="17 21 17 13 7 13 7 21" />
+                          <polyline points="7 3 7 8 15 8" />
+                        </svg>
+                        Save changes
+                      </>
                     ) : (
                       <>
-                        <span className="memo-create-submit-icon" aria-hidden="true">
-                          <IconFilePlus />
-                        </span>
-                        Create memo
+                        <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                          <polyline points="14 2 14 8 20 8" />
+                          <line x1="12" y1="18" x2="12" y2="12" />
+                          <line x1="9" y1="15" x2="15" y2="15" />
+                        </svg>
+                        Create Memo
                       </>
                     )}
                   </button>
-                  <button type="button" className="ghost-button memo-create-reset" onClick={resetForm} disabled={creating}>
-                    Reset
+                  <button
+                    type="button"
+                    className="memo-create-btn-reset"
+                    onClick={resetForm}
+                    disabled={creating || memoUpdating}
+                  >
+                    {editingMemoId != null ? 'Cancel edit' : 'Reset'}
                   </button>
                 </div>
               </div>
@@ -1629,16 +2016,18 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
             <header className="memo-detail-topbar">
               <div className="memo-detail-topbar-left">
                 <div className="memo-detail-topbar-icon" aria-hidden="true">
-                  <IconClipboard />
+                  <IconMemoDocHeader />
                 </div>
                 <div className="memo-detail-topbar-text">
                   <h3 id="memo-detail-title">
                     {detailLoading ? 'Memo details' : detailError ? 'Memo' : detail?.memo_no ?? 'Memo'}
                   </h3>
                   {!detailLoading && detail && (
-                    <div className="memo-detail-sub">
-                      {detail.customer_name || 'Walk-in'}
-                      {detail.customer_phone ? ` · ${detail.customer_phone}` : ''}
+                    <div className="memo-detail-customer-row">
+                      <span className="memo-detail-customer-avatar" aria-hidden="true">
+                        {memoDetailCustomerInitial(detail.customer_name)}
+                      </span>
+                      <span className="memo-detail-sub">{memoDetailDisplayCustomer(detail)}</span>
                     </div>
                   )}
                   {!detailLoading && !detail && !detailError && <div className="memo-detail-sub">Loading…</div>}
@@ -1649,116 +2038,147 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
               </button>
             </header>
 
+            {!detailLoading && detail && (() => {
+              const detailCur = detail.currency_code || DEFAULT_CURRENCY_CODE;
+              const statusPillClass =
+                detail.status === 'Open'
+                  ? 'memo-status-pill memo-status-pill--open'
+                  : detail.status === 'Closed'
+                    ? 'memo-status-pill memo-status-pill--closed'
+                    : 'memo-status-pill memo-status-pill--partial';
+              return (
+                <div className="memo-detail-meta-strip">
+                  <div className="memo-detail-meta-cell memo-detail-meta-cell--blue">
+                    <span className="memo-detail-meta-label">Memo date</span>
+                    <strong className="memo-detail-meta-strong memo-detail-meta-strong--blue">{detail.memo_date}</strong>
+                  </div>
+                  <div className="memo-detail-meta-cell memo-detail-meta-cell--amber">
+                    <span className="memo-detail-meta-label">Due date</span>
+                    <strong className="memo-detail-meta-strong memo-detail-meta-strong--amber">{detail.due_date || '—'}</strong>
+                  </div>
+                  <div className="memo-detail-meta-cell memo-detail-meta-cell--green">
+                    <span className="memo-detail-meta-label">Status</span>
+                    <div className="memo-detail-meta-value-wrap">
+                      <span className={statusPillClass}>
+                        {detail.status === 'Closed' ? <IconCheck10 /> : null}
+                        {detail.status}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="memo-detail-meta-cell memo-detail-meta-cell--purple">
+                    <span className="memo-detail-meta-label">Total (USD)</span>
+                    <strong className="memo-detail-meta-strong memo-detail-meta-strong--total-usd">
+                      {formatUsdOnlyFromAny(
+                        detail.items.reduce(
+                          (s, it) => s + Math.max(0, (it.quantity - it.returned_qty) * it.unit_price),
+                          0
+                        ),
+                        detailCur,
+                        thbPerUnit
+                      )}
+                    </strong>
+                  </div>
+                </div>
+              );
+            })()}
+
             <div className="memo-detail-scroll">
               {detailLoading && <div className="memo-detail-state">Loading memo…</div>}
               {!detailLoading && detailError && <div className="memo-detail-state memo-detail-state--error">{detailError}</div>}
               {!detailLoading && detail && (() => {
                 const detailCur = detail.currency_code || DEFAULT_CURRENCY_CODE;
-                const statusTone =
-                  detail.status === 'Open'
-                    ? 'memo-detail-meta-tile--open'
-                    : detail.status === 'Closed'
-                      ? 'memo-detail-meta-tile--closed'
-                      : 'memo-detail-meta-tile--partial';
+                const nItems = detail.items.length;
                 return (
                   <>
-                    {detail.items.length > 4 ? (
+                    {nItems > 4 ? (
                       <p className="memo-detail-scroll-hint">
                         <span className="memo-detail-hint-icon" aria-hidden="true">
                           ↕
                         </span>
-                        Scroll to see all {detail.items.length} lines — actions stay at the bottom.
+                        Scroll to see all {nItems} lines — actions stay at the bottom.
                       </p>
                     ) : null}
 
-                    <div className="memo-detail-meta">
-                      <div className="memo-detail-meta-tile memo-detail-meta-tile--date">
-                        <span>Memo date</span>
-                        <strong>{detail.memo_date}</strong>
-                      </div>
-                      <div className="memo-detail-meta-tile memo-detail-meta-tile--due">
-                        <span>Due date</span>
-                        <strong>{detail.due_date || '—'}</strong>
-                      </div>
-                      <div className={`memo-detail-meta-tile ${statusTone}`}>
-                        <span>Status</span>
-                        <strong>{detail.status}</strong>
-                      </div>
-                      <div className="memo-detail-meta-tile memo-detail-meta-tile--total">
-                        <span>Total ({detailCur})</span>
-                        <strong>
-                          {formatMoneyAmount(
-                            detail.items.reduce(
-                              (s, it) => s + Math.max(0, (it.quantity - it.returned_qty) * it.unit_price),
-                              0
-                            ),
-                            detailCur
-                          )}
-                        </strong>
-                      </div>
-                    </div>
-
                     {detail.notes ? <div className="memo-detail-notes">{detail.notes}</div> : null}
 
-                    <div className="memo-detail-table-wrap">
-                      <table className="memo-table memo-table--detail" aria-label="Memo items">
-                        <thead>
-                          <tr>
-                            <th>Item</th>
-                            <th className="right">Qty</th>
-                            <th className="right">Returned</th>
-                            <th className="right">Remaining</th>
-                            <th className="right">Return qty</th>
-                            <th className="right">Price</th>
-                            <th className="right">Total</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {detail.items.map(it => {
-                            const remaining = Math.max(0, (it.quantity || 0) - (it.returned_qty || 0));
-                            const draft = Math.floor(Number(returnDraft[it.id] || 0));
-                            const draftClamped = Math.max(0, Math.min(remaining, draft));
-                            return (
-                              <tr key={it.id}>
-                                <td>
-                                  <div className="memo-item">
-                                    <div className="memo-thumb">
-                                      {it.image_path ? (
-                                        <img src={memoItemImageSrc(it.image_path)} alt="" />
-                                      ) : (
-                                        <div className="memo-thumb-ph" />
-                                      )}
+                    <div className="memo-detail-items-section">
+                      <div className="memo-detail-table-header-bar">
+                        <span className="memo-detail-table-section-label">Memo items</span>
+                        <span className="memo-detail-item-count">
+                          {nItems} {nItems === 1 ? 'item' : 'items'}
+                        </span>
+                      </div>
+                      <div className="memo-detail-table-wrap">
+                        <table className="memo-table memo-table--detail" aria-label="Memo items">
+                          <thead>
+                            <tr>
+                              <th>Item</th>
+                              <th className="memo-detail-th-center">Qty</th>
+                              <th className="memo-detail-th-center">Returned</th>
+                              <th className="memo-detail-th-center">Remaining</th>
+                              <th className="memo-detail-th-center">Return qty</th>
+                              <th className="memo-detail-th-center">Price</th>
+                              <th className="memo-detail-th-end">Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {detail.items.map(it => {
+                              const remaining = Math.max(0, (it.quantity || 0) - (it.returned_qty || 0));
+                              const draft = Math.floor(Number(returnDraft[it.id] || 0));
+                              const draftClamped = Math.max(0, Math.min(remaining, draft));
+                              return (
+                                <tr key={it.id}>
+                                  <td>
+                                    <div className="memo-item memo-item--detail">
+                                      <div className="memo-thumb memo-thumb--detail">
+                                        {it.image_path ? (
+                                          <img src={memoItemImageSrc(it.image_path)} alt="" />
+                                        ) : (
+                                          <span className="memo-thumb-placeholder-label">No img</span>
+                                        )}
+                                      </div>
+                                      <div className="memo-item-text">
+                                        <span className="memo-item-code-badge">{memoItemCodeBadgeLetter(it)}</span>
+                                        <div className="memo-item-title">{memoItemDetailTitle(it)}</div>
+                                        <div className="memo-item-sub">{memoItemMetaLine(it)}</div>
+                                      </div>
                                     </div>
-                                    <div>
-                                      <div className="memo-item-title">{it.item_code || `#${it.inventory_item_id}`}</div>
-                                      <div className="memo-item-sub">{(it.category || '')} {(it.item_type || '')}</div>
-                                    </div>
-                                  </div>
-                                </td>
-                                <td className="right">{it.quantity}</td>
-                                <td className="right">{it.returned_qty}</td>
-                                <td className="right">{remaining}</td>
-                                <td className="right">
-                                  <input
-                                    className="memo-qty memo-qty--small"
-                                    type="number"
-                                    min={0}
-                                    max={remaining}
-                                    disabled={actionBusy || detail.status === 'Closed' || remaining === 0}
-                                    value={Number.isFinite(draftClamped) ? draftClamped : 0}
-                                    onChange={e => {
-                                      const v = Math.max(0, Math.min(remaining, Math.floor(Number(e.target.value) || 0)));
-                                      setReturnDraft(prev => ({ ...prev, [it.id]: v }));
-                                    }}
-                                  />
-                                </td>
-                                <td className="right">{formatMoneyAmount(it.unit_price, detailCur)}</td>
-                                <td className="right">{formatMoneyAmount(remaining * it.unit_price, detailCur)}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                                  </td>
+                                  <td className="memo-detail-td-center">
+                                    <span className="memo-qty-chip memo-qty-chip--qty">{it.quantity}</span>
+                                  </td>
+                                  <td className="memo-detail-td-center">
+                                    <span className="memo-qty-chip memo-qty-chip--returned">{it.returned_qty}</span>
+                                  </td>
+                                  <td className="memo-detail-td-center">
+                                    <span className="memo-qty-chip memo-qty-chip--remaining">{remaining}</span>
+                                  </td>
+                                  <td className="memo-detail-td-center">
+                                    <input
+                                      className="memo-return-qty-input"
+                                      type="number"
+                                      min={0}
+                                      max={remaining}
+                                      disabled={actionBusy || detail.status === 'Closed' || remaining === 0}
+                                      value={Number.isFinite(draftClamped) ? draftClamped : 0}
+                                      onChange={e => {
+                                        const v = Math.max(0, Math.min(remaining, Math.floor(Number(e.target.value) || 0)));
+                                        setReturnDraft(prev => ({ ...prev, [it.id]: v }));
+                                      }}
+                                    />
+                                  </td>
+                                  <td className="memo-detail-td-center">
+                                    <span className="memo-detail-price-cell">{formatMoneyAmount(it.unit_price, detailCur)}</span>
+                                  </td>
+                                  <td className="memo-detail-td-end">
+                                    <span className="memo-detail-line-total">{formatMoneyAmount(remaining * it.unit_price, detailCur)}</span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   </>
                 );
@@ -1767,60 +2187,67 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
 
             {!detailLoading && detail && (
               <footer className="memo-detail-footer">
-                <div className="memo-detail-footer-actions">
-                  <button
+                <div className="memo-detail-footer-row">
+                  <div className="memo-detail-footer-group">
+                    <button
                     type="button"
-                    className="memo-footer-btn ghost-button"
-                    onClick={openMemoEditModal}
-                    disabled={actionBusy || memoEditDeleting}
-                  >
-                    <span>Edit memo</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="memo-footer-btn memo-footer-btn--danger"
-                    onClick={deleteMemo}
-                    disabled={actionBusy || memoEditDeleting || !!detail.converted_invoice_id}
-                    title={detail.converted_invoice_id ? 'Converted memos cannot be deleted' : 'Delete memo and restock remaining pieces'}
-                  >
-                    <span>Delete memo</span>
-                  </button>
-                  <button type="button" className="memo-footer-btn memo-footer-btn--primary" onClick={() => printMemo(detail)}>
-                    <IconPrint />
-                    <span>Print</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="memo-footer-btn memo-footer-btn--amber"
-                    onClick={returnSelected}
-                    disabled={actionBusy || detail.status === 'Closed'}
-                    title="Return only the quantities you entered in the table"
-                  >
-                    <IconUndo />
-                    <span>Return selected</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="memo-footer-btn memo-footer-btn--amber"
-                    onClick={returnAll}
-                    disabled={actionBusy || detail.status === 'Closed'}
-                  >
-                    <IconUndo />
-                    <span>Return all</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="memo-footer-btn memo-footer-btn--violet"
-                    onClick={convertToInvoice}
-                    disabled={actionBusy || detail.status === 'Closed' || !!detail.converted_invoice_id}
-                  >
-                    <IconReceipt />
-                    <span>Convert to invoice</span>
+                      className="memo-footer-btn memo-footer-btn--edit"
+                      onClick={openMemoEditInComposer}
+                      disabled={actionBusy || memoEditDeleting}
+                    >
+                      <IconPencil12 />
+                      <span>Edit memo</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="memo-footer-btn memo-footer-btn--delete"
+                      onClick={deleteMemo}
+                      disabled={actionBusy || memoEditDeleting || !!detail.converted_invoice_id}
+                      title={detail.converted_invoice_id ? 'Converted memos cannot be deleted' : 'Delete memo and restock remaining pieces'}
+                    >
+                      <IconTrash12 />
+                      <span>Delete</span>
+                    </button>
+                    <button type="button" className="memo-footer-btn memo-footer-btn--print-solid" onClick={() => printMemo(detail)}>
+                      <IconPrint12 />
+                      <span>Print</span>
+                    </button>
+                  </div>
+                  <span className="memo-detail-footer-dot" aria-hidden="true" />
+                  <div className="memo-detail-footer-group memo-detail-footer-group--mid">
+                    <button
+                      type="button"
+                      className="memo-footer-btn memo-footer-btn--return"
+                      onClick={returnSelected}
+                      disabled={actionBusy || detail.status === 'Closed'}
+                      title="Return only the quantities you entered in the table"
+                    >
+                      <IconReturn12 />
+                      <span>Return selected</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="memo-footer-btn memo-footer-btn--return-all"
+                      onClick={returnAll}
+                      disabled={actionBusy || detail.status === 'Closed'}
+                    >
+                      <IconReturn12 />
+                      <span>Return all</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="memo-footer-btn memo-footer-btn--convert"
+                      onClick={convertToInvoice}
+                      disabled={actionBusy || detail.status === 'Closed' || !!detail.converted_invoice_id}
+                    >
+                      <IconConvert12 />
+                      <span>Convert to invoice</span>
+                    </button>
+                  </div>
+                  <button type="button" className="memo-footer-btn memo-footer-btn--close-window" onClick={closeDetail}>
+                    Close window
                   </button>
                 </div>
-                <button type="button" className="memo-detail-close-footer ghost-button" onClick={closeDetail}>
-                  Close window
-                </button>
               </footer>
             )}
 
@@ -1831,105 +2258,6 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token }) => {
                 </button>
               </footer>
             )}
-          </div>
-        </div>
-      )}
-
-      {memoEditOpen && detail && (
-        <div className="selling2-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="memo-edit-title">
-          <div className="selling2-modal memo-edit-modal">
-            <div className="selling2-modal-header">
-              <h3 id="memo-edit-title">Edit memo {detail.memo_no}</h3>
-              <button
-                type="button"
-                className="selling2-modal-close"
-                onClick={() => setMemoEditOpen(false)}
-                aria-label="Close"
-              >
-                <IconX />
-              </button>
-            </div>
-            <div className="selling2-modal-body">
-              <label>
-                <span>Memo date</span>
-                <input type="date" value={editMemoDate} onChange={e => setEditMemoDate(e.target.value)} />
-              </label>
-              <label>
-                <span>Due date (optional)</span>
-                <input type="date" value={editDueDate} onChange={e => setEditDueDate(e.target.value)} />
-              </label>
-              <label>
-                <span>Notes (optional)</span>
-                <textarea value={editNotes} onChange={e => setEditNotes(e.target.value)} rows={3} placeholder="Notes…" />
-              </label>
-              <p className="selling2-modal-section-label">Customer</p>
-              {detail.converted_invoice_id ? (
-                <p className="memo-edit-hint">
-                  Customer cannot be changed because this memo was converted to an invoice.
-                </p>
-              ) : editSelectedCustomer ? (
-                <div className="selling2-customer-selected">
-                  <span className="selling2-customer-selected-icon" aria-hidden="true">
-                    <IconUserRounded />
-                  </span>
-                  <div className="selling2-customer-selected-main">
-                    <div className="selling2-customer-selected-name">{editSelectedCustomer.name}</div>
-                    <div className="selling2-customer-selected-phone">{editSelectedCustomer.phone || ''}</div>
-                  </div>
-                  <button
-                    type="button"
-                    className="selling2-customer-selected-close"
-                    onClick={() => setEditSelectedCustomer(null)}
-                    aria-label="Remove customer"
-                  >
-                    <IconX size={16} />
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <div className="selling2-customer-search">
-                    <span className="selling2-search-icon" aria-hidden="true">
-                      <IconSearch />
-                    </span>
-                    <input
-                      type="search"
-                      className="selling2-search-input"
-                      value={editCustomerSearch}
-                      onChange={e => setEditCustomerSearch(e.target.value)}
-                      placeholder="Search by name, phone…"
-                      aria-label="Search customers"
-                    />
-                  </div>
-                  {editCustomerSuggestions.length > 0 ? (
-                    <div className="selling2-customer-list">
-                      {editCustomerSuggestions.map(cust => (
-                        <button
-                          type="button"
-                          key={cust.id}
-                          className="selling2-customer-row"
-                          onClick={() => {
-                            setEditSelectedCustomer(cust);
-                            setEditCustomerSearch('');
-                            setEditCustomerSuggestions([]);
-                          }}
-                        >
-                          <div className="selling2-customer-row-name">{cust.name}</div>
-                          <div className="selling2-customer-row-phone">{cust.phone || ''}</div>
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </>
-              )}
-            </div>
-            <div className="selling2-modal-footer">
-              <button type="button" className="ghost-button" onClick={() => setMemoEditOpen(false)} disabled={memoEditSaving}>
-                Cancel
-              </button>
-              <button type="button" className="primary-button" onClick={saveMemoEdit} disabled={memoEditSaving}>
-                {memoEditSaving ? 'Saving…' : 'Save changes'}
-              </button>
-            </div>
           </div>
         </div>
       )}

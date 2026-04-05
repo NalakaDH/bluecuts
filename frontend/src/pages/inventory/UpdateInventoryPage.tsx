@@ -262,7 +262,6 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
     setListError(null);
     try {
       const params = new URLSearchParams();
-      params.set('limit', '100');
       if (search.trim()) params.set('search', search.trim());
       if (status.trim()) params.set('status', status.trim());
       const res = await fetch(apiUrl(`/api/inventory?${params.toString()}`), {
@@ -385,7 +384,10 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
 
   useEffect(() => {
     fetchItems({ search: '', status: '' });
-  }, [fetchItems]);
+    // This should run once on mount. Including `fetchItems` here causes filter/search resets
+    // because `fetchItems` is recreated when listSearch/listStatusFilter change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -691,6 +693,8 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
     setFieldErrors({});
   };
 
+  // (No auto-focus) Avoid triggering the Category combobox dropdown unexpectedly.
+
   const handleDelete = async (item: InventoryItem) => {
     const ok = await showConfirm({
       title: 'Delete item?',
@@ -724,7 +728,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
 
   return (
     <div className="page page-update-inventory">
-      <div className="section-card section-card--form">
+      <div className={`section-card section-card--form ${categoryOpen ? 'section-card--form-dropdown-open' : ''}`}>
         <div className="inventory-form-section">
           {!formOpen ? (
             <button
@@ -964,6 +968,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
                     type="file"
                     accept="image/*"
                     className="drop-zone-input"
+                    onClick={(e) => e.stopPropagation()}
                     onChange={async e => {
                       const f = e.target.files?.[0];
                       if (f) {
@@ -1134,7 +1139,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
           </div>
         </div>
 
-        <div className="form-actions form-actions-end form-actions-sticky">
+        <div className="form-actions form-actions-end">
           <span className="form-actions-hint" aria-hidden="true">
             Ctrl+Enter to save
           </span>
@@ -1282,7 +1287,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
       </section>
 
       {/* Card 2: Items list */}
-      <section className="section-card section-card--list inventory-list-section" aria-label="Items">
+      <section className="section-card section-card--list" aria-label="Items">
         <div className="inventory-list-card-header">
           <h3 className="inventory-list-title">
             <span className="section-title-icon section-title-icon--list"><IconList /></span>

@@ -189,13 +189,32 @@ function roundMoney2(n) {
   return Math.round(x * 100) / 100;
 }
 
+function roundRate6(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return null;
+  return Math.round(x * 1_000_000) / 1_000_000;
+}
+
 /** Owner-facing aggregates: convert to THB using exchange_rates (missing row → factor 1). */
 const SQL_INV_FX_JOIN = `LEFT JOIN exchange_rates er_i ON er_i.currency_code = COALESCE(NULLIF(TRIM(i.currency_code), ''), 'THB')`;
 const SQL_THB_PER_INV = `COALESCE(er_i.thb_per_unit, 1.0)`;
+/** Cents-rounded native amounts before × THB rate (avoids aggregate FX drift vs invoice face amounts). */
+const SQL_INV_TOTAL_NATIVE = `ROUND(IFNULL(i.total, 0), 2)`;
+const SQL_INV_PAID_NATIVE = `ROUND(IFNULL(ip.paid, 0), 2)`;
+const SQL_INV_OUTSTANDING_NATIVE = `ROUND(MAX(0, IFNULL(i.total, 0) - IFNULL(ip.paid, 0)), 2)`;
 const SQL_MEMO_FX_JOIN = `LEFT JOIN exchange_rates er_m ON er_m.currency_code = COALESCE(NULLIF(TRIM(m.currency_code), ''), 'THB')`;
 const SQL_THB_PER_MEMO = `COALESCE(er_m.thb_per_unit, 1.0)`;
 const SQL_INVITEM_FX_JOIN = `LEFT JOIN exchange_rates er_inv ON er_inv.currency_code = COALESCE(NULLIF(TRIM(inv.selling_currency), ''), 'THB')`;
 const SQL_THB_PER_INVITEM = `COALESCE(er_inv.thb_per_unit, 1.0)`;
+/** Per-invoice paid sum, cents-rounded (stable balance vs payment rows). Alias `ip`. */
+const SQL_PAYMENTS_AGG_IP = `(SELECT invoice_id, ROUND(SUM(amount), 2) AS paid FROM payments GROUP BY invoice_id) ip`;
+/** Same subquery with alias `p` for queries that join as `p`. */
+const SQL_PAYMENTS_AGG_P = `(SELECT invoice_id, ROUND(SUM(amount), 2) AS paid FROM payments GROUP BY invoice_id) p`;
+/** THB equivalent for one invoice row, rounded to satang before outer SUM (reduces KPI drift). */
+const sqlInvThbOutstandingRow = () =>
+  `ROUND(${SQL_INV_OUTSTANDING_NATIVE} * ${SQL_THB_PER_INV}, 2)`;
+const sqlInvThbPaidRow = () => `ROUND(${SQL_INV_PAID_NATIVE} * ${SQL_THB_PER_INV}, 2)`;
+const sqlInvThbTotalRow = () => `ROUND(${SQL_INV_TOTAL_NATIVE} * ${SQL_THB_PER_INV}, 2)`;
 
 // ===== DB schema =====
 db.serialize(() => {
@@ -362,7 +381,8 @@ db.serialize(() => {
   ensureColumn('memo_items', 'returned_qty', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('invoice_items', 'returned_qty', 'INTEGER NOT NULL DEFAULT 0');
 
-  // THB base: thb_per_unit = how many THB for 1 unit of currency (owner edits via API).
+  // Internal: thb_per_unit = THB per 1 unit of each ISO code (bridge for SQL + convertAmountViaThb).
+  // Profile UI is USD-centric; client derives these values from USD anchor + per-currency USD rates.
   const defaultFx = [
     ['THB', 1],
     ['USD', 34],
@@ -1068,11 +1088,11 @@ async function loadExchangeRatesThbPerUnit() {
   return m;
 }
 
-/** How many THB one unit of each currency is worth (shop base = THB). Owner maintains rates. */
+/** thb_per_unit = THB per 1 unit of currency (bridge). Profile edits are USD-based in the app. */
 app.get('/api/exchange-rates', authMiddleware, requireRole(['owner', 'staff']), async (req, res) => {
   try {
     const thb_per_unit = await loadExchangeRatesThbPerUnit();
-    res.json({ base: 'THB', thb_per_unit });
+    res.json({ base: 'USD', thb_per_unit });
   } catch (e) {
     console.error('GET /api/exchange-rates', e);
     res.status(500).json({ error: 'Internal server error' });
@@ -1095,15 +1115,15 @@ app.put('/api/exchange-rates', authMiddleware, requireRole(['owner', 'staff']), 
     for (const [k, val] of Object.entries(raw)) {
       const code = normalizeCurrencyCode(String(k));
       if (code === 'THB' || !ALLOWED_CURRENCIES.has(code)) continue;
-      const num = Number(val);
-      if (!Number.isFinite(num) || num <= 0) continue;
+      const rounded = roundRate6(val);
+      if (rounded == null || rounded <= 0) continue;
       await dbRun('INSERT OR REPLACE INTO exchange_rates (currency_code, thb_per_unit) VALUES (?, ?)', [
         code,
-        num,
+        rounded,
       ]);
     }
     const thb_per_unit = await loadExchangeRatesThbPerUnit();
-    res.json({ base: 'THB', thb_per_unit });
+    res.json({ base: 'USD', thb_per_unit });
   } catch (e) {
     console.error('PUT /api/exchange-rates', e);
     res.status(500).json({ error: 'Internal server error' });
@@ -1114,7 +1134,8 @@ app.put('/api/exchange-rates', authMiddleware, requireRole(['owner', 'staff']), 
 app.get('/api/inventory', authMiddleware, requireRole(['owner', 'staff']), (req, res) => {
   const status = req.query.status ? String(req.query.status) : null;
   const search = req.query.search ? String(req.query.search).trim() : '';
-  const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 200));
+  const limitStr =
+    req.query.limit !== undefined && req.query.limit !== null ? String(req.query.limit).trim() : '';
 
   const where = [];
   const params = [];
@@ -1129,6 +1150,16 @@ app.get('/api/inventory', authMiddleware, requireRole(['owner', 'staff']), (req,
   }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  let limitSql = '';
+  if (limitStr !== '') {
+    const n = Number(limitStr);
+    if (Number.isFinite(n) && n > 0) {
+      const capped = Math.min(Math.floor(n), 1_000_000);
+      limitSql = ' LIMIT ?';
+      params.push(capped);
+    }
+  }
+
   const sql = `
     SELECT
       id, category, item_type,
@@ -1145,10 +1176,10 @@ app.get('/api/inventory', authMiddleware, requireRole(['owner', 'staff']), (req,
     FROM inventory_items
     ${whereSql}
     ORDER BY updated_at DESC
-    LIMIT ?
+    ${limitSql}
   `;
 
-  db.all(sql, [...params, limit], (err, rows) => {
+  db.all(sql, params, (err, rows) => {
     if (err) return res.status(500).json({ error: 'Internal server error' });
     res.json(rows);
   });
@@ -1888,7 +1919,7 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
 
   try {
     const memo = await dbGet(
-      `SELECT id, memo_date, due_date, notes, customer_id, converted_invoice_id FROM memos WHERE id = ?`,
+      `SELECT id, memo_date, due_date, notes, customer_id, converted_invoice_id, status, memo_no FROM memos WHERE id = ?`,
       [memoId]
     );
     if (!memo) return res.status(404).json({ error: 'Memo not found' });
@@ -1936,10 +1967,265 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
       }
     }
 
+    const wantsItemUpdate = body.items !== undefined;
+    if (wantsItemUpdate) {
+      if (memo.converted_invoice_id) {
+        return res.status(400).json({ error: 'Cannot edit memo lines after conversion to an invoice' });
+      }
+      if (memo.status === 'Closed') {
+        return res.status(400).json({ error: 'Cannot edit lines on a closed memo' });
+      }
+    }
+
+    const memoNo = String(memo.memo_no || `MEM-${memoId}`);
+
+    await dbRun('BEGIN TRANSACTION');
+
     await dbRun(
       `UPDATE memos SET memo_date = ?, due_date = ?, notes = ?, customer_id = ?, updated_at = datetime('now') WHERE id = ?`,
       [nextMemoDate, nextDue, nextNotes, nextCustomerId, memoId]
     );
+
+    if (wantsItemUpdate) {
+      const rawItems = Array.isArray(body.items) ? body.items : [];
+      if (!rawItems.length) {
+        await dbRun('ROLLBACK');
+        return res.status(400).json({ error: 'At least one memo line is required' });
+      }
+
+      const existingLines = await dbAll(`SELECT * FROM memo_items WHERE memo_id = ? ORDER BY id ASC`, [memoId]);
+      const existingById = new Map(existingLines.map(row => [row.id, row]));
+
+      const requestedIds = new Set();
+      for (const it of rawItems) {
+        const midRaw = it.memo_item_id != null && it.memo_item_id !== '' ? Number(it.memo_item_id) : null;
+        if (midRaw != null && Number.isFinite(midRaw) && midRaw > 0) requestedIds.add(midRaw);
+      }
+
+      for (const line of existingLines) {
+        if (requestedIds.has(line.id)) continue;
+        const qDel = Math.floor(Number(line.quantity || 0));
+        const rqDel = Math.floor(Number(line.returned_qty || 0));
+        const out = Math.max(0, qDel - rqDel);
+        if (out > 0) {
+          await dbRun(
+            `
+            UPDATE inventory_items
+            SET
+              pieces_remaining = pieces_remaining + ?,
+              status = CASE WHEN (pieces_remaining + ?) > 0 THEN 'Available' ELSE status END,
+              updated_at = datetime('now')
+            WHERE id = ?
+          `,
+            [out, out, line.inventory_item_id]
+          );
+          await dbRun(
+            `
+            INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
+            VALUES (?, 'MEMO_VOID', 'MEMO', ?, ?, ?, ?)
+          `,
+            [line.inventory_item_id, memoId, out, `Memo ${memoNo} line removed — restocked ${out} pc(s)`, req.user.id]
+          );
+        }
+        await dbRun(`DELETE FROM memo_items WHERE id = ? AND memo_id = ?`, [line.id, memoId]);
+      }
+
+      for (const it of rawItems) {
+        const invId = Number(it.inventory_item_id);
+        const newQ = Math.floor(Number(it.quantity ?? 0));
+        const newP = Number(it.unit_price || 0);
+        if (!Number.isFinite(invId) || invId <= 0) {
+          await dbRun('ROLLBACK');
+          return res.status(400).json({ error: 'Invalid inventory_item_id' });
+        }
+        if (!Number.isFinite(newQ) || newQ < 1) {
+          await dbRun('ROLLBACK');
+          return res.status(400).json({ error: 'Each line must have a quantity of at least 1' });
+        }
+        if (!Number.isFinite(newP) || newP < 0) {
+          await dbRun('ROLLBACK');
+          return res.status(400).json({ error: 'Invalid item price' });
+        }
+
+        const midRaw = it.memo_item_id != null && it.memo_item_id !== '' ? Number(it.memo_item_id) : null;
+        const mid = midRaw != null && Number.isFinite(midRaw) && midRaw > 0 ? midRaw : null;
+
+        if (mid != null) {
+          const row = existingById.get(mid);
+          if (!row || Number(row.memo_id) !== memoId) {
+            await dbRun('ROLLBACK');
+            return res.status(400).json({ error: 'Memo line not found' });
+          }
+          const still = await dbGet(`SELECT id FROM memo_items WHERE id = ? AND memo_id = ?`, [mid, memoId]);
+          if (!still) {
+            await dbRun('ROLLBACK');
+            return res.status(400).json({ error: 'Memo line was removed' });
+          }
+          if (Number(row.inventory_item_id) !== invId) {
+            await dbRun('ROLLBACK');
+            return res.status(400).json({ error: 'Cannot change inventory item on an existing line' });
+          }
+          const oldQ = Math.floor(Number(row.quantity || 0));
+          const oldR = Math.floor(Number(row.returned_qty || 0));
+          if (newQ < oldR) {
+            await dbRun('ROLLBACK');
+            return res.status(400).json({
+              error: `Quantity cannot be less than returned quantity (${oldR}) on this line`,
+            });
+          }
+          const delta = newQ - oldQ;
+          if (delta > 0) {
+            const stockRow = await dbGet(
+              `SELECT id, pieces_remaining, status, item_code, item_sticker FROM inventory_items WHERE id = ?`,
+              [invId]
+            );
+            if (!stockRow) {
+              await dbRun('ROLLBACK');
+              return res.status(400).json({ error: `Inventory item ${invId} not found` });
+            }
+            const rem = Math.floor(Number(stockRow.pieces_remaining || 0));
+            if (rem < delta) {
+              await dbRun('ROLLBACK');
+              return res.status(400).json({
+                error: `Not enough pieces for ${stockRow.item_code || stockRow.item_sticker || `#${invId}`}: need ${delta} more, ${rem} available`,
+              });
+            }
+            await dbRun(
+              `
+              UPDATE inventory_items
+              SET
+                pieces_remaining = pieces_remaining - ?,
+                status = CASE WHEN (pieces_remaining - ?) <= 0 THEN 'Out of stock' ELSE 'Available' END,
+                updated_at = datetime('now')
+              WHERE id = ?
+            `,
+              [delta, delta, invId]
+            );
+            await dbRun(
+              `
+              INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
+              VALUES (?, 'MEMO_OUT', 'MEMO', ?, ?, ?, ?)
+            `,
+              [
+                invId,
+                memoId,
+                -delta,
+                `Memo ${memoNo} line qty +${delta} pc (${newQ} total)`,
+                req.user.id,
+              ]
+            );
+          } else if (delta < 0) {
+            const back = -delta;
+            await dbRun(
+              `
+              UPDATE inventory_items
+              SET
+                pieces_remaining = pieces_remaining + ?,
+                status = CASE WHEN (pieces_remaining + ?) > 0 THEN 'Available' ELSE status END,
+                updated_at = datetime('now')
+              WHERE id = ?
+            `,
+              [back, back, invId]
+            );
+            await dbRun(
+              `
+              INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
+              VALUES (?, 'MEMO_RETURN', 'MEMO', ?, ?, ?, ?)
+            `,
+              [invId, memoId, back, `Memo ${memoNo} line qty reduced (${newQ} total)`, req.user.id]
+            );
+          }
+
+          const lineTotal = newP * newQ;
+          const reqCode = it.item_code != null ? String(it.item_code).trim() || null : null;
+          const reqDesc = it.description != null ? String(it.description) : null;
+          const stockRow2 = await dbGet(
+            `
+            SELECT id, pieces_remaining, status, category, item_type, weight_grams, weight_carats,
+                   item_code, item_sticker, description
+            FROM inventory_items
+            WHERE id = ?
+          `,
+            [invId]
+          );
+          const itemCode = reqCode || stockRow2.item_code || stockRow2.item_sticker || row.item_code;
+          const description = buildInventoryLineDescription(stockRow2, reqDesc);
+
+          await dbRun(
+            `
+            UPDATE memo_items
+            SET item_code = ?, description = ?, quantity = ?, unit_price = ?, line_total = ?
+            WHERE id = ? AND memo_id = ?
+          `,
+            [itemCode, description, newQ, newP, lineTotal, mid, memoId]
+          );
+        } else {
+          const reqCode = it.item_code != null ? String(it.item_code).trim() || null : null;
+          const reqDesc = it.description != null ? String(it.description) : null;
+
+          const stockRow = await dbGet(
+            `
+            SELECT id, pieces_remaining, status, category, item_type, weight_grams, weight_carats,
+                   item_code, item_sticker, description
+            FROM inventory_items
+            WHERE id = ?
+          `,
+            [invId]
+          );
+          if (!stockRow) {
+            await dbRun('ROLLBACK');
+            return res.status(400).json({ error: `Inventory item ${invId} not found` });
+          }
+          const remaining = Number(stockRow.pieces_remaining || 0);
+          const itemCode = reqCode || stockRow.item_code || stockRow.item_sticker || null;
+          if (remaining <= 0) {
+            await dbRun('ROLLBACK');
+            return res.status(400).json({ error: `Item ${itemCode || `#${invId}`} is out of stock` });
+          }
+          if (newQ > remaining) {
+            await dbRun('ROLLBACK');
+            return res.status(400).json({
+              error: `Not enough pieces for ${itemCode || `#${invId}`}: requested ${newQ}, available ${remaining}`,
+            });
+          }
+
+          const description = buildInventoryLineDescription(stockRow, reqDesc);
+          const lineTotal = newP * newQ;
+
+          await dbRun(
+            `
+            INSERT INTO memo_items (
+              memo_id, inventory_item_id, item_code, description, quantity, returned_qty, unit_price, line_total
+            )
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+          `,
+            [memoId, invId, itemCode, description, newQ, newP, lineTotal]
+          );
+
+          await dbRun(
+            `
+            UPDATE inventory_items
+            SET
+              pieces_remaining = MAX(0, pieces_remaining - ?),
+              status = CASE WHEN MAX(0, pieces_remaining - ?) <= 0 THEN 'Out of stock' ELSE 'Available' END,
+              updated_at = datetime('now')
+            WHERE id = ?
+          `,
+            [newQ, newQ, invId]
+          );
+
+          await dbRun(
+            `
+            INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
+            VALUES (?, 'MEMO_OUT', 'MEMO', ?, ?, ?, ?)
+          `,
+            [invId, memoId, -newQ, `On memo ${memoNo} (${newQ} pc) — added while editing`, req.user.id]
+          );
+        }
+      }
+    }
+
+    await dbRun('COMMIT');
 
     const updated = await dbGet(
       `
@@ -1963,6 +2249,11 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
     );
     return res.json(updated);
   } catch (err) {
+    try {
+      await dbRun('ROLLBACK');
+    } catch (_e) {
+      // ignore
+    }
     const msg = err instanceof Error ? err.message : 'Failed to update memo';
     return res.status(400).json({ error: msg });
   }
@@ -2259,7 +2550,7 @@ app.get('/api/invoices', authMiddleware, requireRole(['owner', 'staff']), (req, 
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-  const paymentsAgg = `(SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) ip`;
+  const paymentsAgg = SQL_PAYMENTS_AGG_IP;
 
   const sql = `
     SELECT
@@ -2309,7 +2600,7 @@ app.get('/api/invoices/stats', authMiddleware, requireRole(['owner', 'staff']), 
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-  const paymentsAgg = `(SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) ip`;
+  const paymentsAgg = SQL_PAYMENTS_AGG_IP;
 
   const sql = `
     SELECT
@@ -2318,8 +2609,8 @@ app.get('/api/invoices/stats', authMiddleware, requireRole(['owner', 'staff']), 
       SUM(CASE WHEN i.status = 'Partial' THEN 1 ELSE 0 END) AS partial_count,
       SUM(CASE WHEN i.status = 'Paid' THEN 1 ELSE 0 END) AS paid_count,
       SUM(CASE WHEN i.status IN ('Unpaid', 'Partial') THEN 1 ELSE 0 END) AS return_eligible_count,
-      IFNULL(SUM(MAX(0, i.total - IFNULL(ip.paid, 0)) * ${SQL_THB_PER_INV}), 0) AS outstanding_thb,
-      IFNULL(SUM(IFNULL(ip.paid, 0) * ${SQL_THB_PER_INV}), 0) AS collected_thb
+      IFNULL(SUM(${sqlInvThbOutstandingRow()}), 0) AS outstanding_thb,
+      IFNULL(SUM(${sqlInvThbPaidRow()}), 0) AS collected_thb
     FROM invoices i
     LEFT JOIN customers c ON c.id = i.customer_id
     LEFT JOIN ${paymentsAgg} ON ip.invoice_id = i.id
@@ -2338,8 +2629,8 @@ app.get('/api/invoices/stats', authMiddleware, requireRole(['owner', 'staff']), 
       partial_count: Number(row?.partial_count || 0),
       paid_count: Number(row?.paid_count || 0),
       return_eligible_count: Number(row?.return_eligible_count || 0),
-      outstanding_thb: Number(row?.outstanding_thb || 0),
-      collected_thb: Number(row?.collected_thb || 0),
+      outstanding_thb: roundMoney2(Number(row?.outstanding_thb || 0)),
+      collected_thb: roundMoney2(Number(row?.collected_thb || 0)),
     });
   });
 });
@@ -2348,7 +2639,7 @@ app.get('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), (r
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid invoice id' });
 
-  const paymentsAgg = `(SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) ip`;
+  const paymentsAgg = SQL_PAYMENTS_AGG_IP;
 
   const sqlInvoice = `
     SELECT
@@ -2576,6 +2867,79 @@ app.post('/api/restock', authMiddleware, requireRole(['owner', 'staff']), async 
     return res.json({ ok: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to restock';
+    return res.status(400).json({ error: msg });
+  }
+});
+
+/**
+ * Record missing / damaged / shrinkage on hand (audit in stock_movements as SHRINKAGE).
+ * Reduces both pieces and pieces_remaining. Only for shop stock not on memo/sold.
+ */
+app.post('/api/inventory/:id/shrinkage', authMiddleware, requireRole(['owner', 'staff']), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid inventory id' });
+
+    const body = req.body || {};
+    const qty = Math.max(0, Math.floor(Number(body.quantity || 0)));
+    const noteRaw = body.note != null ? String(body.note).trim() : '';
+    if (qty <= 0) return res.status(400).json({ error: 'quantity must be a positive integer' });
+    if (!noteRaw) return res.status(400).json({ error: 'note is required (reason for adjustment)' });
+
+    const row = await dbGet(
+      `SELECT id, pieces, pieces_remaining, status, item_code, item_sticker FROM inventory_items WHERE id = ?`,
+      [id]
+    );
+    if (!row) return res.status(404).json({ error: 'Inventory item not found' });
+
+    const status = String(row.status || '');
+    if (status !== 'Available' && status !== 'Out of stock') {
+      return res.status(400).json({
+        error: 'Shrinkage applies only to Available or Out of stock items (not On Memo or Sold).',
+      });
+    }
+
+    const pieces = Math.floor(Number(row.pieces || 0));
+    const rem = Math.floor(Number(row.pieces_remaining || 0));
+    if (qty > rem) {
+      return res.status(400).json({ error: `Cannot remove ${qty} pcs; only ${rem} on hand (remaining).` });
+    }
+    if (pieces - qty < 1) {
+      return res.status(400).json({
+        error:
+          'Removing this many would delete the last piece in the system for this item. Delete the item in Update Inventory instead (if allowed), or reduce the quantity.',
+      });
+    }
+
+    const code = row.item_code || row.item_sticker || `#${id}`;
+    const note = `${noteRaw} (${code})`;
+
+    await dbRun(
+      `
+      UPDATE inventory_items
+      SET
+        pieces = pieces - ?,
+        pieces_remaining = pieces_remaining - ?,
+        status = CASE WHEN (pieces_remaining - ?) <= 0 THEN 'Out of stock' ELSE 'Available' END,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `,
+      [qty, qty, qty, id]
+    );
+
+    await dbRun(
+      `
+      INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
+      VALUES (?, 'SHRINKAGE', NULL, NULL, ?, ?, ?)
+    `,
+      [id, -qty, note, req.user.id]
+    );
+
+    const updated = await dbGet(`SELECT * FROM inventory_items WHERE id = ?`, [id]);
+    return res.json(updated);
+  } catch (err) {
+    console.error('POST /api/inventory/:id/shrinkage', err);
+    const msg = err instanceof Error ? err.message : 'Failed to record shrinkage';
     return res.status(400).json({ error: msg });
   }
 });
@@ -2917,7 +3281,7 @@ app.put('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), as
         IFNULL(i.currency_code, 'THB') AS currency_code
       FROM invoices i
       LEFT JOIN customers c ON c.id = i.customer_id
-      LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p ON p.invoice_id = i.id
+      LEFT JOIN ${SQL_PAYMENTS_AGG_P} ON p.invoice_id = i.id
       WHERE i.id = ?
     `,
       [id]
@@ -3024,7 +3388,7 @@ app.patch('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), 
         i.created_at
       FROM invoices i
       LEFT JOIN customers c ON c.id = i.customer_id
-      LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) p ON p.invoice_id = i.id
+      LEFT JOIN ${SQL_PAYMENTS_AGG_P} ON p.invoice_id = i.id
       WHERE i.id = ?
     `,
       [id]
@@ -3208,7 +3572,7 @@ app.get('/api/customers/stats', authMiddleware, requireRole(['owner', 'staff']),
   const onlyBalance =
     req.query.only_with_balance === '1' || req.query.only_with_balance === 'true';
 
-  const paymentsAgg = `(SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) ip`;
+  const paymentsAgg = SQL_PAYMENTS_AGG_IP;
 
   const whereCustomer = [];
   const params = [];
@@ -3224,12 +3588,9 @@ app.get('/api/customers/stats', authMiddleware, requireRole(['owner', 'staff']),
   const innerSql = `
     SELECT
       c.id,
-      IFNULL(SUM(i.total * ${SQL_THB_PER_INV}), 0) AS total_invoiced,
-      IFNULL(SUM(IFNULL(ip.paid, 0) * ${SQL_THB_PER_INV}), 0) AS total_paid,
-      IFNULL(
-        SUM(MAX(0, IFNULL(i.total, 0) - IFNULL(ip.paid, 0)) * ${SQL_THB_PER_INV}),
-        0
-      ) AS total_owed
+      IFNULL(SUM(${sqlInvThbTotalRow()}), 0) AS total_invoiced,
+      IFNULL(SUM(${sqlInvThbPaidRow()}), 0) AS total_paid,
+      IFNULL(SUM(${sqlInvThbOutstandingRow()}), 0) AS total_owed
     FROM customers c
     LEFT JOIN invoices i ON i.customer_id = c.id
     LEFT JOIN ${paymentsAgg} ON ip.invoice_id = i.id
@@ -3298,10 +3659,10 @@ app.get('/api/customers', authMiddleware, requireRole(['owner', 'staff']), (req,
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const havingSql = onlyBalance
-    ? `HAVING IFNULL(SUM(MAX(0, IFNULL(i.total, 0) - IFNULL(ip.paid, 0)) * ${SQL_THB_PER_INV}), 0) > 0.0001`
+    ? `HAVING IFNULL(SUM(${sqlInvThbOutstandingRow()}), 0) > 0.0001`
     : '';
 
-  const paymentsAgg = `(SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) ip`;
+  const paymentsAgg = SQL_PAYMENTS_AGG_IP;
 
   const sql = `
     SELECT
@@ -3318,12 +3679,9 @@ app.get('/api/customers', authMiddleware, requireRole(['owner', 'staff']), (req,
       c.created_at,
       c.updated_at,
       COUNT(i.id) AS invoices_count,
-      IFNULL(SUM(i.total * ${SQL_THB_PER_INV}), 0) AS total_invoiced,
-      IFNULL(SUM(IFNULL(ip.paid, 0) * ${SQL_THB_PER_INV}), 0) AS total_paid,
-      IFNULL(
-        SUM(MAX(0, IFNULL(i.total, 0) - IFNULL(ip.paid, 0)) * ${SQL_THB_PER_INV}),
-        0
-      ) AS total_owed,
+      IFNULL(SUM(${sqlInvThbTotalRow()}), 0) AS total_invoiced,
+      IFNULL(SUM(${sqlInvThbPaidRow()}), 0) AS total_paid,
+      IFNULL(SUM(${sqlInvThbOutstandingRow()}), 0) AS total_owed,
       MAX(i.created_at) AS last_invoice_at
     FROM customers c
     LEFT JOIN invoices i ON i.customer_id = c.id
@@ -3346,7 +3704,7 @@ app.get('/api/customers/:id', authMiddleware, requireRole(['owner', 'staff']), (
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid customer id' });
 
-  const paymentsAgg = `(SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) ip`;
+  const paymentsAgg = SQL_PAYMENTS_AGG_IP;
 
   const sqlCustomer = `
     SELECT
@@ -3363,12 +3721,9 @@ app.get('/api/customers/:id', authMiddleware, requireRole(['owner', 'staff']), (
       c.created_at,
       c.updated_at,
       COUNT(i.id) AS invoices_count,
-      IFNULL(SUM(i.total * ${SQL_THB_PER_INV}), 0) AS total_invoiced,
-      IFNULL(SUM(IFNULL(ip.paid, 0) * ${SQL_THB_PER_INV}), 0) AS total_paid,
-      IFNULL(
-        SUM(MAX(0, IFNULL(i.total, 0) - IFNULL(ip.paid, 0)) * ${SQL_THB_PER_INV}),
-        0
-      ) AS total_owed,
+      IFNULL(SUM(${sqlInvThbTotalRow()}), 0) AS total_invoiced,
+      IFNULL(SUM(${sqlInvThbPaidRow()}), 0) AS total_paid,
+      IFNULL(SUM(${sqlInvThbOutstandingRow()}), 0) AS total_owed,
       MAX(i.created_at) AS last_invoice_at
     FROM customers c
     LEFT JOIN invoices i ON i.customer_id = c.id
@@ -3632,14 +3987,14 @@ app.get('/api/reports/summary', authMiddleware, requireRole(['owner', 'staff']),
   const dateWhereInvoices = 'date(i.created_at) BETWEEN date(?) AND date(?)';
   const dateWhereMemos = 'date(m.memo_date) BETWEEN date(?) AND date(?)';
 
-  const paymentsAgg = `(SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) ip`;
+  const paymentsAgg = SQL_PAYMENTS_AGG_IP;
 
   const salesSql = `
     SELECT
       COUNT(i.id) AS invoices_count,
-      IFNULL(SUM(i.total * ${SQL_THB_PER_INV}), 0) AS sales_total,
-      IFNULL(SUM(IFNULL(ip.paid, 0) * ${SQL_THB_PER_INV}), 0) AS collected_total,
-      IFNULL(SUM(MAX(0, i.total - IFNULL(ip.paid, 0)) * ${SQL_THB_PER_INV}), 0) AS outstanding_total,
+      IFNULL(SUM(${sqlInvThbTotalRow()}), 0) AS sales_total,
+      IFNULL(SUM(${sqlInvThbPaidRow()}), 0) AS collected_total,
+      IFNULL(SUM(${sqlInvThbOutstandingRow()}), 0) AS outstanding_total,
       SUM(CASE WHEN i.status = 'Paid' THEN 1 ELSE 0 END) AS paid_invoices,
       SUM(CASE WHEN i.status = 'Partial' THEN 1 ELSE 0 END) AS partial_invoices,
       SUM(CASE WHEN i.status = 'Unpaid' THEN 1 ELSE 0 END) AS unpaid_invoices
@@ -3708,9 +4063,9 @@ app.get('/api/reports/summary', authMiddleware, requireRole(['owner', 'staff']),
       c.name,
       c.phone,
       COUNT(i.id) AS invoices_count,
-      IFNULL(SUM(i.total * ${SQL_THB_PER_INV}), 0) AS total_invoiced,
-      IFNULL(SUM(IFNULL(ip.paid, 0) * ${SQL_THB_PER_INV}), 0) AS total_paid,
-      IFNULL(SUM(MAX(0, i.total - IFNULL(ip.paid, 0)) * ${SQL_THB_PER_INV}), 0) AS total_owed,
+      IFNULL(SUM(${sqlInvThbTotalRow()}), 0) AS total_invoiced,
+      IFNULL(SUM(${sqlInvThbPaidRow()}), 0) AS total_paid,
+      IFNULL(SUM(${sqlInvThbOutstandingRow()}), 0) AS total_owed,
       MAX(i.created_at) AS last_invoice_at
     FROM customers c
     JOIN invoices i ON i.customer_id = c.id
@@ -3814,15 +4169,15 @@ app.get('/api/reports/sales-trend', authMiddleware, requireRole(['owner', 'staff
   const to = normalizeDateParam(req.query.to) || today;
 
   const periodExpr = group === 'monthly' ? `strftime('%Y-%m', i.created_at)` : `date(i.created_at)`;
-  const paymentsAgg = `(SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) ip`;
+  const paymentsAgg = SQL_PAYMENTS_AGG_IP;
 
   const sql = `
     SELECT
       ${periodExpr} AS period,
       COUNT(i.id) AS invoices_count,
-      IFNULL(SUM(i.total * ${SQL_THB_PER_INV}), 0) AS sales_total,
-      IFNULL(SUM(IFNULL(ip.paid, 0) * ${SQL_THB_PER_INV}), 0) AS collected_total,
-      IFNULL(SUM(MAX(0, i.total - IFNULL(ip.paid, 0)) * ${SQL_THB_PER_INV}), 0) AS outstanding_total
+      IFNULL(SUM(${sqlInvThbTotalRow()}), 0) AS sales_total,
+      IFNULL(SUM(${sqlInvThbPaidRow()}), 0) AS collected_total,
+      IFNULL(SUM(${sqlInvThbOutstandingRow()}), 0) AS outstanding_total
     FROM invoices i
     LEFT JOIN ${paymentsAgg} ON ip.invoice_id = i.id
     ${SQL_INV_FX_JOIN}
@@ -3890,14 +4245,14 @@ app.get('/api/dashboard/overview', authMiddleware, requireRole(['owner', 'staff'
   const todayStartSql = sqliteUtcFromMs(todayBounds.startMs);
   const todayEndSql = sqliteUtcFromMs(todayBounds.endMs);
 
-  const paymentsAgg = `(SELECT invoice_id, SUM(amount) AS paid FROM payments GROUP BY invoice_id) ip`;
+  const paymentsAgg = SQL_PAYMENTS_AGG_IP;
 
   const todaySalesSql = `
     SELECT
       COUNT(i.id) AS invoices_count,
-      IFNULL(SUM(i.total * ${SQL_THB_PER_INV}), 0) AS sales_total,
-      IFNULL(SUM(IFNULL(ip.paid, 0) * ${SQL_THB_PER_INV}), 0) AS collected_total,
-      IFNULL(SUM(MAX(0, i.total - IFNULL(ip.paid, 0)) * ${SQL_THB_PER_INV}), 0) AS outstanding_total,
+      IFNULL(SUM(${sqlInvThbTotalRow()}), 0) AS sales_total,
+      IFNULL(SUM(${sqlInvThbPaidRow()}), 0) AS collected_total,
+      IFNULL(SUM(${sqlInvThbOutstandingRow()}), 0) AS outstanding_total,
       SUM(CASE WHEN i.status = 'Paid' THEN 1 ELSE 0 END) AS paid_invoices,
       SUM(CASE WHEN i.status = 'Partial' THEN 1 ELSE 0 END) AS partial_invoices,
       SUM(CASE WHEN i.status = 'Unpaid' THEN 1 ELSE 0 END) AS unpaid_invoices
@@ -3916,12 +4271,12 @@ app.get('/api/dashboard/overview', authMiddleware, requireRole(['owner', 'staff'
 
   const outstandingAllSql = `
     SELECT
-      IFNULL(SUM(MAX(0, i.total - IFNULL(ip.paid, 0)) * ${SQL_THB_PER_INV}), 0) AS outstanding_total,
+      IFNULL(SUM(${sqlInvThbOutstandingRow()}), 0) AS outstanding_total,
       COUNT(*) AS outstanding_invoice_count
     FROM invoices i
     LEFT JOIN ${paymentsAgg} ON ip.invoice_id = i.id
     ${SQL_INV_FX_JOIN}
-    WHERE (i.total - IFNULL(ip.paid, 0)) > 0.0001
+    WHERE ${SQL_INV_OUTSTANDING_NATIVE} > 0.0001
   `;
 
   const openMemosSql = `
@@ -3942,9 +4297,9 @@ app.get('/api/dashboard/overview', authMiddleware, requireRole(['owner', 'staff'
     SELECT
       date(i.created_at) AS period,
       COUNT(i.id) AS invoices_count,
-      IFNULL(SUM(i.total * ${SQL_THB_PER_INV}), 0) AS sales_total,
-      IFNULL(SUM(IFNULL(ip.paid, 0) * ${SQL_THB_PER_INV}), 0) AS collected_total,
-      IFNULL(SUM(MAX(0, i.total - IFNULL(ip.paid, 0)) * ${SQL_THB_PER_INV}), 0) AS outstanding_total
+      IFNULL(SUM(${sqlInvThbTotalRow()}), 0) AS sales_total,
+      IFNULL(SUM(${sqlInvThbPaidRow()}), 0) AS collected_total,
+      IFNULL(SUM(${sqlInvThbOutstandingRow()}), 0) AS outstanding_total
     FROM invoices i
     LEFT JOIN ${paymentsAgg} ON ip.invoice_id = i.id
     ${SQL_INV_FX_JOIN}

@@ -56,6 +56,7 @@ export function staffCanAccessPage(
   const pages =
     allowedPages && allowedPages.length > 0 ? allowedPages : DEFAULT_STAFF_ALLOWED_PAGES;
   if (page === 'invoiceCheckout' && pages.includes('payments')) return true;
+  if (page === 'stockCount') return pages.includes('checkInventory');
   return pages.includes(page);
 }
 

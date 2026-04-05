@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { useAlertDialog } from '../../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../../api';
+import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
+import { formatUsdOnlyFromThb } from '../../lib/moneyUsdDisplay';
 import { DEFAULT_CURRENCY_CODE, formatMoneyAmount } from '../../lib/currencies';
 
 const IconSearch: React.FC = () => (
   <svg
-    width={16}
-    height={16}
+    width={13}
+    height={13}
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
@@ -19,6 +21,96 @@ const IconSearch: React.FC = () => (
     <line x1="21" y1="21" x2="16.65" y2="16.65" />
   </svg>
 );
+
+const IconPlusSm: React.FC = () => (
+  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <line x1="12" y1="5" x2="12" y2="19" />
+    <line x1="5" y1="12" x2="19" y2="12" />
+  </svg>
+);
+
+const IconPencil: React.FC = () => (
+  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+  </svg>
+);
+
+const IconTrash: React.FC = () => (
+  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6l-1 14H6L5 6" />
+  </svg>
+);
+
+const IconGlobe: React.FC = () => (
+  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="10" />
+    <line x1="2" y1="12" x2="22" y2="12" />
+    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+  </svg>
+);
+
+const kpiIconSize = 15;
+
+const IconKpiUsers: React.FC = () => (
+  <svg width={kpiIconSize} height={kpiIconSize} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+    <circle cx="9" cy="7" r="4" />
+    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+  </svg>
+);
+
+const IconKpiInvoice: React.FC = () => (
+  <svg width={kpiIconSize} height={kpiIconSize} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <polyline points="14 2 14 8 20 8" />
+    <line x1="16" y1="13" x2="8" y2="13" />
+    <line x1="16" y1="17" x2="8" y2="17" />
+  </svg>
+);
+
+const IconKpiCheck: React.FC = () => (
+  <svg width={kpiIconSize} height={kpiIconSize} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
+
+const IconKpiAlert: React.FC = () => (
+  <svg width={kpiIconSize} height={kpiIconSize} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="10" />
+    <line x1="12" y1="8" x2="12" y2="12" />
+    <line x1="12" y1="16" x2="12.01" y2="16" />
+  </svg>
+);
+
+/** Matches reference “detail empty” / Customers nav icon */
+const IconCustomersEmpty: React.FC = () => (
+  <svg
+    width={24}
+    height={24}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+    <circle cx="9" cy="7" r="4" />
+    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+  </svg>
+);
+
+type CustAvatarTone = 'blue' | 'teal' | 'amber' | 'rose';
+
+function customerAvatarTone(id: number): CustAvatarTone {
+  const tones: CustAvatarTone[] = ['blue', 'teal', 'amber', 'rose'];
+  return tones[Math.abs(id) % 4];
+}
 
 interface CustomerRow {
   id: number;
@@ -174,6 +266,7 @@ function formatStoredCalendarDate(raw: string | null | undefined): string {
 
 export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
   const { showAlert, showConfirm } = useAlertDialog();
+  const [thbPerUnit, setThbPerUnit] = useState<ThbPerUnitMap>({ THB: 1 });
   const [search, setSearch] = useState('');
   const [filterOwed, setFilterOwed] = useState<'all' | 'withBalance'>('all');
   const [customers, setCustomers] = useState<CustomerRow[]>([]);
@@ -196,7 +289,9 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
     country: '',
   });
   const [form, setForm] = useState(emptyAddForm);
-  const [detailOpen, setDetailOpen] = useState(false);
+  const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
+  const [detailTab, setDetailTab] = useState<'invoices' | 'memos' | 'contact'>('invoices');
+  const [detailRefresh, setDetailRefresh] = useState(0);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detail, setDetail] = useState<CustomerDetailResponse | null>(null);
@@ -306,74 +401,83 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- debounced search; showAlert is stable
   }, [search, filterOwed, token]);
 
-  const openDetail = async (id: number) => {
-    setDetailOpen(true);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(apiUrl('/api/exchange-rates'), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (data?.thb_per_unit && typeof data.thb_per_unit === 'object') {
+          setThbPerUnit(data.thb_per_unit as ThbPerUnitMap);
+        }
+      } catch {
+        // keep defaults
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    setDetailTab('invoices');
+  }, [selectedCustomerId]);
+
+  useEffect(() => {
+    if (selectedCustomerId == null) {
+      setDetail(null);
+      setDetailError(null);
+      setDetailLoading(false);
+      return;
+    }
+    let cancelled = false;
     setDetailLoading(true);
     setDetailError(null);
     setDetail(null);
-    try {
-      const res = await fetch(apiUrl(`/api/customers/${id}`), {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) {
-        const msg = await parseErrorResponse(res, 'Failed to load customer');
-        throw new Error(msg);
+    (async () => {
+      try {
+        const res = await fetch(apiUrl(`/api/customers/${selectedCustomerId}`), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) {
+          const msg = await parseErrorResponse(res, 'Failed to load customer');
+          throw new Error(msg);
+        }
+        const data: CustomerDetailResponse = await res.json();
+        if (cancelled) return;
+        setDetail({
+          ...data,
+          memos: Array.isArray(data.memos) ? data.memos : [],
+        });
+      } catch (err: unknown) {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : 'Failed to load customer';
+        setDetailError(msg);
+        showAlert({ title: 'Could not load customer', message: msg, variant: 'error' });
+      } finally {
+        if (!cancelled) setDetailLoading(false);
       }
-      const data: CustomerDetailResponse = await res.json();
-      setDetail({
-        ...data,
-        memos: Array.isArray(data.memos) ? data.memos : [],
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to load customer';
-      setDetailError(msg);
-      showAlert({ title: 'Could not load customer', message: msg, variant: 'error' });
-    } finally {
-      setDetailLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCustomerId, detailRefresh, token, showAlert]);
+
+  useEffect(() => {
+    if (selectedCustomerId == null || loading) return;
+    const exists = customers.some(c => c.id === selectedCustomerId);
+    if (!exists) {
+      setSelectedCustomerId(null);
     }
-  };
+  }, [customers, selectedCustomerId, loading]);
 
   useEffect(() => {
     setDuplicateMatches([]);
     setForceDuplicateAck(false);
   }, [form.name, form.phone, form.email]);
-
-  const openEditCustomer = async (id: number) => {
-    setEditOpen(true);
-    setEditingId(id);
-    setEditError(null);
-    setEditLoading(true);
-    try {
-      const res = await fetch(apiUrl(`/api/customers/${id}`), {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) {
-        const msg = await parseErrorResponse(res, 'Failed to load customer');
-        throw new Error(msg);
-      }
-      const data: CustomerDetailResponse = await res.json();
-      const c = data.customer;
-      setEditForm({
-        name: c.name || '',
-        phone: c.phone || '',
-        email: c.email || '',
-        notes: c.notes || '',
-        address_line1: c.address_line1 || '',
-        address_line2: c.address_line2 || '',
-        city: c.city || '',
-        postal_code: c.postal_code || '',
-        country: c.country || '',
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to load customer';
-      setEditError(msg);
-      showAlert({ title: 'Could not load customer', message: msg, variant: 'error' });
-      setEditOpen(false);
-      setEditingId(null);
-    } finally {
-      setEditLoading(false);
-    }
-  };
 
   const openEditFromDetail = () => {
     if (!detail?.customer?.id) return;
@@ -438,8 +542,8 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
         variant: 'success',
       });
       fetchCustomers(search, filterOwed === 'withBalance');
-      if (detailOpen && detail?.customer?.id === savedId) {
-        openDetail(savedId);
+      if (selectedCustomerId === savedId) {
+        setDetailRefresh(r => r + 1);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to update customer';
@@ -475,8 +579,8 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
         variant: 'success',
       });
       fetchCustomers(search, filterOwed === 'withBalance');
-      if (detailOpen && detail?.customer?.id === id) {
-        setDetailOpen(false);
+      if (selectedCustomerId === id) {
+        setSelectedCustomerId(null);
         setDetail(null);
       }
       if (editOpen && editingId === id) {
@@ -589,161 +693,574 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
 
   return (
     <div className="page page-customers">
-      <section className="payments-kpi-grid" aria-label="Customer summary stats">
-        <div className="payments-kpi-card payments-kpi-card--blue">
-          <div className="payments-kpi-label">Total Customers</div>
-          <div className="payments-kpi-value">{kpiStats?.customer_count ?? 0}</div>
-          <div className="payments-kpi-sub">
-            Full count for current search & balance filter (not capped by the table)
-            {listTruncated ? ' · Table shows first 500 rows; refine search to narrow' : ''}
+      <section className="payments-kpi-grid customers-kpi-grid" aria-label="Customer summary stats">
+        <div className="dashT-kpi-sum dashT-kpi-sum--blue customers-kpi-sum">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Total customers</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--blue" aria-hidden="true">
+              <IconKpiUsers />
+            </div>
+          </div>
+          <div className="dashT-kpi-sum__value">{kpiStats?.customer_count ?? 0}</div>
+          <div className="payments-kpi-sub customers-kpi-sub">
+            Matches search &amp; balance filter · not limited to the table
+            {listTruncated ? ' · table lists first 500; narrow search to see all rows' : ''}
           </div>
         </div>
-        <div className="payments-kpi-card payments-kpi-card--amber">
-          <div className="payments-kpi-label">Total invoiced</div>
-          <div className="payments-kpi-value">
-            {formatMoneyAmount(kpiStats?.total_invoiced ?? 0, DEFAULT_CURRENCY_CODE)}
+        <div className="dashT-kpi-sum dashT-kpi-sum--orange customers-kpi-sum">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Total invoiced</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--orange" aria-hidden="true">
+              <IconKpiInvoice />
+            </div>
           </div>
-          <div className="payments-kpi-sub">
-            THB equivalent · Red card = this minus &quot;Applied&quot; (green)
+          <div className="dashT-kpi-sum__value">
+            {formatUsdOnlyFromThb(kpiStats?.total_invoiced ?? 0, thbPerUnit)}
+          </div>
+          <div className="payments-kpi-sub customers-kpi-sub">
+            USD from Profile exchange rates · invoice face totals in scope
           </div>
         </div>
-        <div className="payments-kpi-card payments-kpi-card--green">
-          <div className="payments-kpi-label">Applied to invoices</div>
-          <div className="payments-kpi-value">
-            {formatMoneyAmount(kpiStats?.applied_to_invoices_thb ?? 0, DEFAULT_CURRENCY_CODE)}
+        <div className="dashT-kpi-sum dashT-kpi-sum--green customers-kpi-sum">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Applied to invoices</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--green" aria-hidden="true">
+              <IconKpiCheck />
+            </div>
           </div>
-          <div className="payments-kpi-sub">
-            Amount counted against invoice totals (THB equiv.) · All payments logged:{' '}
-            {formatMoneyAmount(kpiStats?.total_paid ?? 0, DEFAULT_CURRENCY_CODE)}
+          <div className="dashT-kpi-sum__value">
+            {formatUsdOnlyFromThb(kpiStats?.applied_to_invoices_thb ?? 0, thbPerUnit)}
+          </div>
+          <div className="payments-kpi-sub customers-kpi-sub">
+            Credited against invoice totals · all payments logged{' '}
+            {formatUsdOnlyFromThb(kpiStats?.total_paid ?? 0, thbPerUnit)}
             {(kpiStats?.overpayment_thb ?? 0) > 0.005
-              ? ` · includes ${formatMoneyAmount(kpiStats?.overpayment_thb ?? 0, DEFAULT_CURRENCY_CODE)} paid beyond invoice totals`
+              ? ` · includes ${formatUsdOnlyFromThb(kpiStats?.overpayment_thb ?? 0, thbPerUnit)} beyond invoice face`
               : ''}
           </div>
         </div>
-        <div className="payments-kpi-card payments-kpi-card--red">
-          <div className="payments-kpi-label">Outstanding balance</div>
-          <div className="payments-kpi-value">
-            {formatMoneyAmount(kpiStats?.total_owed ?? 0, DEFAULT_CURRENCY_CODE)}
+        <div className="dashT-kpi-sum dashT-kpi-sum--pink customers-kpi-sum">
+          <div className="dashT-kpi-sum__top">
+            <span className="dashT-kpi-sum__label">Outstanding balance</span>
+            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--pink" aria-hidden="true">
+              <IconKpiAlert />
+            </div>
           </div>
-          <div className="payments-kpi-sub">
-            Still due on open balances (THB equiv.) · Walk-in invoices without a customer are excluded
+          <div className="dashT-kpi-sum__value">
+            {formatUsdOnlyFromThb(kpiStats?.total_owed ?? 0, thbPerUnit)}
+          </div>
+          <div className="payments-kpi-sub customers-kpi-sub">
+            Still due on open balances · walk-in invoices without a customer are excluded
           </div>
         </div>
       </section>
 
-      <section className="customers-toolbar-card">
-        <div className="customers-toolbar-row customers-toolbar-row--top">
-          <div className="selling-invoices-search-wrap customers-search-wrap">
-            <span className="selling-invoices-search-icon" aria-hidden="true">
-              <IconSearch />
-            </span>
-            <input
-              type="search"
-              className="selling-invoices-search"
-              placeholder="Search by name, phone, or email"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              aria-label="Search customers"
-            />
+      <section className="payments-layout payments-layout--inv-ui page-customers-split" aria-label="Customer list and details">
+        <div className="pay-inv-list-panel">
+          <div className="pay-inv-list-card">
+            <div className="cust-ui-list-header">
+              <div className="cust-ui-list-top">
+                <div className="cust-ui-list-title">
+                  Customers <span className="cust-ui-list-count">{customers.length}</span>
+                </div>
+                <button
+                  type="button"
+                  className="cust-ui-btn-add"
+                  onClick={() => {
+                    setAddOpen(true);
+                    setSaveError(null);
+                    setDuplicateMatches([]);
+                    setForceDuplicateAck(false);
+                  }}
+                >
+                  <IconPlusSm /> Add Customer
+                </button>
+              </div>
+              <div className="cust-ui-list-search">
+                <IconSearch />
+                <input
+                  type="search"
+                  placeholder="Search by name, phone, or email…"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  aria-label="Search customers"
+                />
+              </div>
+              <label className="cust-ui-filter">
+                <input
+                  type="checkbox"
+                  checked={filterOwed === 'withBalance'}
+                  onChange={e => setFilterOwed(e.target.checked ? 'withBalance' : 'all')}
+                />
+                <span className="cust-ui-filter-label">
+                  Show only customers with <span className="cust-ui-filter-em">outstanding balance</span>
+                </span>
+              </label>
+            </div>
+            <div className="cust-ui-list-scroll" role="list" aria-label="Customers">
+            {loading ? (
+              <p className="cust-ui-list-msg">Loading customers…</p>
+            ) : error ? (
+              <p className="cust-ui-list-msg cust-ui-list-msg--err">{error}</p>
+            ) : customers.length === 0 ? (
+              <p className="cust-ui-list-msg">No customers found.</p>
+            ) : (
+              customers.map(c => {
+                const tone = customerAvatarTone(c.id);
+                const selected = selectedCustomerId === c.id;
+                const sub =
+                  c.email?.trim() ||
+                  c.phone?.trim() ||
+                  '—';
+                const invMeta =
+                  (c.lastInvoiceAt
+                    ? `${c.invoices} invoice${c.invoices === 1 ? '' : 's'} · ${formatStoredCalendarDate(c.lastInvoiceAt)}`
+                    : `${c.invoices} invoice${c.invoices === 1 ? '' : 's'}`);
+                return (
+                  <button
+                    type="button"
+                    key={c.id}
+                    role="listitem"
+                    className={`cust-ui-cust-card${selected ? ' cust-ui-cust-card--selected' : ''}`}
+                    onClick={() => setSelectedCustomerId(c.id)}
+                  >
+                    <div className={`cust-ui-avatar cust-ui-avatar--${tone}`}>
+                      {(c.name.trim().charAt(0) || '?').toUpperCase()}
+                    </div>
+                    <div className="cust-ui-cust-main">
+                      <div className="cust-ui-cust-name">{c.name}</div>
+                      <div className="cust-ui-cust-sub">{sub}</div>
+                    </div>
+                    <div className="cust-ui-cust-right">
+                      {c.totalOwed > 0 ? (
+                        <div className="cust-ui-card-balance cust-ui-card-balance--owed">
+                          {formatUsdOnlyFromThb(c.totalOwed, thbPerUnit)} due
+                        </div>
+                      ) : (
+                        <div className="cust-ui-card-balance cust-ui-card-balance--clear">Cleared</div>
+                      )}
+                      <div className="cust-ui-cust-meta">{invMeta}</div>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+            </div>
           </div>
-          <button
-            type="button"
-            className="primary-button"
-            onClick={() => {
-              setAddOpen(true);
-              setSaveError(null);
-              setDuplicateMatches([]);
-              setForceDuplicateAck(false);
-            }}
-          >
-            + Add Customer
-          </button>
         </div>
-        <div className="customers-toolbar-row customers-toolbar-row--bottom">
-          <label className="customers-toggle">
-            <input
-              type="checkbox"
-              checked={filterOwed === 'withBalance'}
-              onChange={e => setFilterOwed(e.target.checked ? 'withBalance' : 'all')}
-            />
-            <span>Show only customers with an outstanding balance</span>
-          </label>
-        </div>
-      </section>
 
-      <section className="customers-list-card">
-        <h3 className="selling-section-title">Customer List</h3>
-        <div className="customers-table-wrap">
-          <table className="customers-table" aria-label="Customers">
-            <thead>
-              <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Phone</th>
-                <th scope="col">Email</th>
-                <th scope="col">Invoices</th>
-                <th scope="col">Invoiced (THB)</th>
-                <th scope="col">Paid (THB)</th>
-                <th scope="col">Balance (THB)</th>
-                <th scope="col">Last invoice</th>
-                <th scope="col">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={9} className="customers-empty-cell">
-                    Loading customers…
-                  </td>
-                </tr>
-              ) : error ? (
-                <tr>
-                  <td colSpan={9} className="customers-empty-cell">
-                    {error}
-                  </td>
-                </tr>
-              ) : customers.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="customers-empty-cell">
-                    No customers found.
-                  </td>
-                </tr>
-              ) : (
-                customers.map(c => (
-                  <tr key={c.id}>
-                    <td className="customers-name">{c.name}</td>
-                    <td>{c.phone || '?'}</td>
-                    <td>{c.email || '?'}</td>
-                    <td>{c.invoices}</td>
-                    <td>{formatMoneyAmount(c.totalInvoiced, DEFAULT_CURRENCY_CODE)}</td>
-                    <td className="customers-paid">{formatMoneyAmount(c.totalPaid, DEFAULT_CURRENCY_CODE)}</td>
-                    <td className={c.totalOwed > 0 ? 'customers-balance customers-balance--neg' : 'customers-balance'}>
-                      {formatMoneyAmount(c.totalOwed, DEFAULT_CURRENCY_CODE)}
-                    </td>
-                    <td>{c.lastInvoiceAt ? formatStoredCalendarDate(c.lastInvoiceAt) : '?'}</td>
-                    <td className="customers-actions customers-actions--split">
-                      <button type="button" className="ghost-button small" onClick={() => openDetail(c.id)}>
-                        View
-                      </button>
-                      <button type="button" className="ghost-button small" onClick={() => openEditCustomer(c.id)}>
-                        Edit
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+        <aside className="pay-inv-detail-aside">
+          {selectedCustomerId == null ? (
+            <div className="pay-inv-detail-empty">
+              <div className="pay-inv-detail-empty-icon" aria-hidden="true">
+                <IconCustomersEmpty />
+              </div>
+              <h3 className="pay-inv-detail-empty-title">Select a customer</h3>
+              <p className="pay-inv-detail-empty-text">
+                Choose someone from the list to see invoices, memos, and contact details.
+              </p>
+            </div>
+          ) : detailLoading ? (
+            <div className="pay-inv-detail-placeholder">Loading customer…</div>
+          ) : detailError ? (
+            <div className="pay-inv-detail-placeholder pay-inv-detail-placeholder--error">{detailError}</div>
+          ) : detail ? (
+            <div className="pay-inv-detail-card page-customers-detail-card">
+              <div className="cust-ui-detail-inner">
+              <header className="cust-ui-profile-header">
+                <div className="cust-ui-profile-left">
+                  <div
+                    className={`cust-ui-avatar cust-ui-profile-avatar cust-ui-avatar--${customerAvatarTone(detail.customer.id)}`}
+                  >
+                    {(detail.customer.name.trim().charAt(0) || '?').toUpperCase()}
+                  </div>
+                  <div>
+                    <h2 className="cust-ui-profile-name" id="customers-detail-title">
+                      {detail.customer.name}
+                    </h2>
+                    {detail.customer.email ? (
+                      <div className="cust-ui-profile-email">
+                        <a href={`mailto:${detail.customer.email}`}>{detail.customer.email}</a>
+                      </div>
+                    ) : null}
+                    {detail.customer.country?.trim() ? (
+                      <div className="cust-ui-profile-country">
+                        <IconGlobe /> {detail.customer.country}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="cust-ui-profile-actions">
+                  <button type="button" className="cust-ui-btn-edit" onClick={openEditFromDetail}>
+                    <IconPencil /> Edit Details
+                  </button>
+                  <button
+                    type="button"
+                    className="cust-ui-btn-delete"
+                    onClick={() => deleteCustomer(detail.customer.id, detail.customer.name)}
+                  >
+                    <IconTrash /> Delete
+                  </button>
+                </div>
+              </header>
+
+              <div className="customers-detail-stats cust-ui-detail-stats">
+                <div className="customers-detail-stat">
+                  <span>Total Invoices</span>
+                  <strong>{Number(detail.customer.invoices_count) || 0}</strong>
+                </div>
+                <div className="customers-detail-stat">
+                  <span>Total Invoiced (USD)</span>
+                  <strong>
+                    {formatUsdOnlyFromThb(Number(detail.customer.total_invoiced || 0), thbPerUnit)}
+                  </strong>
+                </div>
+                <div className="customers-detail-stat customers-detail-stat--paid">
+                  <span>Total Paid (USD)</span>
+                  <strong>{formatUsdOnlyFromThb(Number(detail.customer.total_paid || 0), thbPerUnit)}</strong>
+                </div>
+                <div className="customers-detail-stat customers-detail-stat--owed">
+                  <span>Outstanding (USD)</span>
+                  <strong>{formatUsdOnlyFromThb(Number(detail.customer.total_owed || 0), thbPerUnit)}</strong>
+                </div>
+              </div>
+
+              <div className="cust-ui-profile-tabs" role="tablist">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={detailTab === 'invoices'}
+                  className={`cust-ui-ptab${detailTab === 'invoices' ? ' cust-ui-ptab--active' : ''}`}
+                  onClick={() => setDetailTab('invoices')}
+                >
+                  Invoice History
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={detailTab === 'memos'}
+                  className={`cust-ui-ptab${detailTab === 'memos' ? ' cust-ui-ptab--active' : ''}`}
+                  onClick={() => setDetailTab('memos')}
+                >
+                  Memos
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={detailTab === 'contact'}
+                  className={`cust-ui-ptab${detailTab === 'contact' ? ' cust-ui-ptab--active' : ''}`}
+                  onClick={() => setDetailTab('contact')}
+                >
+                  Contact Info
+                </button>
+              </div>
+
+              <div className="cust-ui-profile-body">
+                {detailTab === 'invoices' && (
+                  <div className="cust-ui-tab-pane" role="tabpanel">
+                    <div className="cust-ui-section-heading">All Invoices</div>
+                    <div className="customers-detail-table-wrap">
+                      <table className="customers-detail-table inv-hist-table" aria-labelledby="customers-detail-title">
+                        <thead>
+                          <tr>
+                            <th>Invoice #</th>
+                            <th>Date</th>
+                            <th>Items</th>
+                            <th>Total</th>
+                            <th>Paid</th>
+                            <th>Balance</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {detail.invoices.length === 0 ? (
+                            <tr>
+                              <td colSpan={7} className="customers-empty-cell">
+                                No invoices.
+                              </td>
+                            </tr>
+                          ) : (
+                            detail.invoices.map(inv => (
+                              <tr key={inv.id}>
+                                <td className="customers-detail-invoice">
+                                  <span className="cust-inv-link">{inv.invoice_no}</span>
+                                </td>
+                                <td>{formatStoredCalendarDate(inv.created_at)}</td>
+                                <td>{inv.items_count}</td>
+                                <td>{formatMoneyAmount(Number(inv.total), inv.currency_code || DEFAULT_CURRENCY_CODE)}</td>
+                                <td className="customers-paid">
+                                  {formatMoneyAmount(Number(inv.paid), inv.currency_code || DEFAULT_CURRENCY_CODE)}
+                                </td>
+                                <td
+                                  className={
+                                    inv.balance > 0
+                                      ? 'customers-balance customers-balance--neg'
+                                      : 'customers-balance'
+                                  }
+                                >
+                                  {formatMoneyAmount(Number(inv.balance), inv.currency_code || DEFAULT_CURRENCY_CODE)}
+                                </td>
+                                <td>
+                                  <span
+                                    className={`customers-status customers-status--${String(inv.status).toLowerCase()}`}
+                                  >
+                                    {inv.status}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {detailTab === 'memos' && (
+                  <div className="cust-ui-tab-pane" role="tabpanel">
+                    <div className="cust-ui-section-heading">Current Memos</div>
+                    <div className="customers-detail-table-wrap">
+                      <table className="customers-detail-table" aria-label="Current memos">
+                        <thead>
+                          <tr>
+                            <th>Memo #</th>
+                            <th>Date</th>
+                            <th>Due</th>
+                            <th>Items</th>
+                            <th>Value (memo ccy)</th>
+                            <th>Status</th>
+                            <th />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(detail.memos || []).filter(m => m.status === 'Open' || m.status === 'Partially Returned')
+                            .length === 0 ? (
+                            <tr>
+                              <td colSpan={7} className="customers-empty-cell">
+                                No active memos.
+                              </td>
+                            </tr>
+                          ) : (
+                            (detail.memos || [])
+                              .filter(m => m.status === 'Open' || m.status === 'Partially Returned')
+                              .map(m => (
+                                <tr key={m.id}>
+                                  <td className="customers-detail-invoice">{m.memo_no}</td>
+                                  <td>{formatStoredCalendarDate(m.memo_date)}</td>
+                                  <td>{formatStoredCalendarDate(m.due_date)}</td>
+                                  <td>{m.items_count}</td>
+                                  <td>{formatMoneyAmount(Number(m.total_value || 0), m.currency_code)}</td>
+                                  <td>
+                                    <span className={memoStatusClass(m.status)}>{m.status}</span>
+                                  </td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="ghost-button small"
+                                      onClick={() => openMemoDetail(m.id)}
+                                    >
+                                      Details
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="cust-ui-section-heading cust-ui-section-heading--spaced">Completed Memos</div>
+                    <div className="customers-detail-table-wrap">
+                      <table className="customers-detail-table" aria-label="Completed memos">
+                        <thead>
+                          <tr>
+                            <th>Memo #</th>
+                            <th>Date</th>
+                            <th>Items</th>
+                            <th>Value</th>
+                            <th>Status</th>
+                            <th />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(detail.memos || []).filter(m => m.status === 'Closed').length === 0 ? (
+                            <tr>
+                              <td colSpan={6} className="customers-empty-cell">
+                                No completed memos.
+                              </td>
+                            </tr>
+                          ) : (
+                            (detail.memos || [])
+                              .filter(m => m.status === 'Closed')
+                              .map(m => (
+                                <tr key={m.id}>
+                                  <td className="customers-detail-invoice">{m.memo_no}</td>
+                                  <td>{formatStoredCalendarDate(m.memo_date)}</td>
+                                  <td>{m.items_count}</td>
+                                  <td>{formatMoneyAmount(Number(m.total_value || 0), m.currency_code)}</td>
+                                  <td>
+                                    <span className={memoStatusClass(m.status)}>{m.status}</span>
+                                  </td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="ghost-button small"
+                                      onClick={() => openMemoDetail(m.id)}
+                                    >
+                                      Details
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="cust-ui-memo-footnote">
+                      Open and partially returned memos are active; closed memos are finished (e.g. fully returned or
+                      converted to invoice).
+                    </p>
+                  </div>
+                )}
+
+                {detailTab === 'contact' && (
+                  <div className="cust-ui-tab-pane" role="tabpanel">
+                    <div className="cust-ui-section-heading">Contact Details</div>
+                    <div className="cust-contact-grid">
+                      <div className="cust-contact-item">
+                        <div className="cust-contact-key">Full name</div>
+                        <div className="cust-contact-val">{detail.customer.name}</div>
+                      </div>
+                      <div className="cust-contact-item">
+                        <div className="cust-contact-key">Phone</div>
+                        <div
+                          className={
+                            detail.customer.phone?.trim()
+                              ? 'cust-contact-val'
+                              : 'cust-contact-val cust-contact-val--empty'
+                          }
+                        >
+                          {detail.customer.phone?.trim() || 'Not provided'}
+                        </div>
+                      </div>
+                      <div className="cust-contact-item cust-contact-item--full">
+                        <div className="cust-contact-key">Email</div>
+                        <div
+                          className={
+                            detail.customer.email?.trim()
+                              ? 'cust-contact-val cust-contact-val--link'
+                              : 'cust-contact-val cust-contact-val--empty'
+                          }
+                        >
+                          {detail.customer.email?.trim() ? (
+                            <a href={`mailto:${detail.customer.email}`}>{detail.customer.email}</a>
+                          ) : (
+                            'Not provided'
+                          )}
+                        </div>
+                      </div>
+                      <div className="cust-contact-item cust-contact-item--full">
+                        <div className="cust-contact-key">Address</div>
+                        <div
+                          className={
+                            [detail.customer.address_line1, detail.customer.address_line2]
+                              .filter(Boolean)
+                              .join(', ')
+                              .trim()
+                              ? 'cust-contact-val'
+                              : 'cust-contact-val cust-contact-val--empty'
+                          }
+                        >
+                          {[detail.customer.address_line1, detail.customer.address_line2]
+                            .filter(Boolean)
+                            .join(', ')
+                            .trim() || 'Not provided'}
+                        </div>
+                      </div>
+                      <div className="cust-contact-item">
+                        <div className="cust-contact-key">City</div>
+                        <div
+                          className={
+                            detail.customer.city?.trim()
+                              ? 'cust-contact-val'
+                              : 'cust-contact-val cust-contact-val--empty'
+                          }
+                        >
+                          {detail.customer.city?.trim() || '—'}
+                        </div>
+                      </div>
+                      <div className="cust-contact-item">
+                        <div className="cust-contact-key">Postal / ZIP</div>
+                        <div
+                          className={
+                            detail.customer.postal_code?.trim()
+                              ? 'cust-contact-val'
+                              : 'cust-contact-val cust-contact-val--empty'
+                          }
+                        >
+                          {detail.customer.postal_code?.trim() || '—'}
+                        </div>
+                      </div>
+                      <div className="cust-contact-item cust-contact-item--full">
+                        <div className="cust-contact-key">Country</div>
+                        <div
+                          className={
+                            detail.customer.country?.trim()
+                              ? 'cust-contact-val'
+                              : 'cust-contact-val cust-contact-val--empty'
+                          }
+                        >
+                          {detail.customer.country?.trim() || '—'}
+                        </div>
+                      </div>
+                      <div className="cust-contact-item cust-contact-item--full">
+                        <div className="cust-contact-key">Internal notes</div>
+                        <div
+                          className={
+                            detail.customer.notes?.trim()
+                              ? 'cust-contact-val'
+                              : 'cust-contact-val cust-contact-val--empty'
+                          }
+                        >
+                          {detail.customer.notes?.trim() || 'No notes'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          ) : null}
+        </aside>
       </section>
 
       {addOpen && (
-        <div className="customers-modal-overlay" role="dialog" aria-modal="true">
-          <div className="customers-modal">
-            <div className="customers-modal-header">
-              <h3>Add New Customer</h3>
+        <>
+          <button
+            type="button"
+            className="cust-drawer-backdrop"
+            aria-label="Close add customer"
+            onClick={() => {
+              setAddOpen(false);
+              setDuplicateMatches([]);
+              setForceDuplicateAck(false);
+              setSaveError(null);
+            }}
+          />
+          <div
+            className="cust-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cust-drawer-add-title"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="cust-drawer-header">
+              <h2 id="cust-drawer-add-title" className="cust-drawer-title">
+                Add New Customer
+              </h2>
               <button
                 type="button"
-                className="customers-modal-close"
+                className="cust-drawer-close"
                 onClick={() => {
                   setAddOpen(false);
                   setDuplicateMatches([]);
@@ -755,11 +1272,11 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
                 ✕
               </button>
             </div>
-            <div className="customers-modal-body">
+            <div className="cust-drawer-body customers-modal-body">
               <div className="customers-form-section">
-                <p className="customers-form-section-title">Contact</p>
+                <p className="cust-form-section-label">Contact information</p>
                 <label>
-                  <span>Customer name</span>
+                  <span>Customer name *</span>
                   <input
                     value={form.name}
                     onChange={e => setForm(prev => ({ ...prev, name: e.target.value }))}
@@ -767,29 +1284,31 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
                     autoComplete="name"
                   />
                 </label>
-                <label>
-                  <span>Phone</span>
-                  <input
-                    value={form.phone}
-                    onChange={e => setForm(prev => ({ ...prev, phone: e.target.value }))}
-                    placeholder="e.g. 0771234567"
-                    autoComplete="tel"
-                  />
-                </label>
-                <label>
-                  <span>Email</span>
-                  <input
-                    type="email"
-                    value={form.email}
-                    onChange={e => setForm(prev => ({ ...prev, email: e.target.value }))}
-                    placeholder="customer@example.com"
-                    autoComplete="email"
-                  />
-                </label>
+                <div className="customers-form-row-2">
+                  <label>
+                    <span>Phone</span>
+                    <input
+                      value={form.phone}
+                      onChange={e => setForm(prev => ({ ...prev, phone: e.target.value }))}
+                      placeholder="e.g. 0771234567"
+                      autoComplete="tel"
+                    />
+                  </label>
+                  <label>
+                    <span>Email</span>
+                    <input
+                      type="email"
+                      value={form.email}
+                      onChange={e => setForm(prev => ({ ...prev, email: e.target.value }))}
+                      placeholder="customer@example.com"
+                      autoComplete="email"
+                    />
+                  </label>
+                </div>
               </div>
 
               <div className="customers-form-section">
-                <p className="customers-form-section-title">Mailing address</p>
+                <p className="cust-form-section-label cust-form-section-label--teal">Mailing address</p>
                 <p className="customers-form-hint">
                   Used on invoices and memos. All fields are optional but filling them avoids retyping later.
                 </p>
@@ -843,14 +1362,14 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
               </div>
 
               <div className="customers-form-section">
-                <p className="customers-form-section-title">Notes</p>
+                <p className="cust-form-section-label cust-form-section-label--amber">Internal notes</p>
                 <label>
-                  <span>Internal notes (optional)</span>
+                  <span>Notes (optional)</span>
                   <textarea
                     value={form.notes}
                     onChange={e => setForm(prev => ({ ...prev, notes: e.target.value }))}
                     rows={3}
-                    placeholder="Payment preferences, VIP, sourcing notes…"
+                    placeholder="Payment preferences, VIP status, sourcing notes…"
                   />
                 </label>
               </div>
@@ -880,10 +1399,10 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
 
               {saveError && <p className="customers-modal-error">{saveError}</p>}
             </div>
-            <div className="customers-modal-footer">
+            <div className="cust-drawer-footer">
               <button
                 type="button"
-                className="ghost-button"
+                className="cust-drawer-btn-cancel"
                 onClick={() => {
                   setAddOpen(false);
                   setDuplicateMatches([]);
@@ -893,22 +1412,40 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
               >
                 Cancel
               </button>
-              <button type="button" className="primary-button" onClick={saveCustomer} disabled={saving}>
+              <button type="button" className="cust-drawer-btn-save" onClick={saveCustomer} disabled={saving}>
                 {saving ? 'Adding…' : 'Add Customer'}
               </button>
             </div>
           </div>
-        </div>
+        </>
       )}
 
       {editOpen && (
-        <div className="customers-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="customers-edit-title">
-          <div className="customers-modal">
-            <div className="customers-modal-header">
-              <h3 id="customers-edit-title">Edit Customer</h3>
+        <>
+          <button
+            type="button"
+            className="cust-drawer-backdrop"
+            aria-label="Close edit customer"
+            onClick={() => {
+              setEditOpen(false);
+              setEditingId(null);
+              setEditError(null);
+            }}
+          />
+          <div
+            className="cust-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="customers-edit-title"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="cust-drawer-header">
+              <h2 id="customers-edit-title" className="cust-drawer-title">
+                Edit Customer
+              </h2>
               <button
                 type="button"
-                className="customers-modal-close"
+                className="cust-drawer-close"
                 onClick={() => {
                   setEditOpen(false);
                   setEditingId(null);
@@ -919,15 +1456,15 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
                 ✕
               </button>
             </div>
-            <div className="customers-modal-body">
+            <div className="cust-drawer-body customers-modal-body">
               {editLoading ? (
                 <p className="customers-empty-cell">Loading…</p>
               ) : (
                 <>
                   <div className="customers-form-section">
-                    <p className="customers-form-section-title">Contact</p>
+                    <p className="cust-form-section-label">Contact information</p>
                     <label>
-                      <span>Customer name</span>
+                      <span>Customer name *</span>
                       <input
                         value={editForm.name}
                         onChange={e => setEditForm(prev => ({ ...prev, name: e.target.value }))}
@@ -935,29 +1472,31 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
                         autoComplete="name"
                       />
                     </label>
-                    <label>
-                      <span>Phone</span>
-                      <input
-                        value={editForm.phone}
-                        onChange={e => setEditForm(prev => ({ ...prev, phone: e.target.value }))}
-                        placeholder="e.g. 0771234567"
-                        autoComplete="tel"
-                      />
-                    </label>
-                    <label>
-                      <span>Email</span>
-                      <input
-                        type="email"
-                        value={editForm.email}
-                        onChange={e => setEditForm(prev => ({ ...prev, email: e.target.value }))}
-                        placeholder="customer@example.com"
-                        autoComplete="email"
-                      />
-                    </label>
+                    <div className="customers-form-row-2">
+                      <label>
+                        <span>Phone</span>
+                        <input
+                          value={editForm.phone}
+                          onChange={e => setEditForm(prev => ({ ...prev, phone: e.target.value }))}
+                          placeholder="e.g. 0771234567"
+                          autoComplete="tel"
+                        />
+                      </label>
+                      <label>
+                        <span>Email</span>
+                        <input
+                          type="email"
+                          value={editForm.email}
+                          onChange={e => setEditForm(prev => ({ ...prev, email: e.target.value }))}
+                          placeholder="customer@example.com"
+                          autoComplete="email"
+                        />
+                      </label>
+                    </div>
                   </div>
 
                   <div className="customers-form-section">
-                    <p className="customers-form-section-title">Mailing address</p>
+                    <p className="cust-form-section-label cust-form-section-label--teal">Mailing address</p>
                     <label>
                       <span>Address line 1</span>
                       <input
@@ -1008,14 +1547,14 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
                   </div>
 
                   <div className="customers-form-section">
-                    <p className="customers-form-section-title">Notes</p>
+                    <p className="cust-form-section-label cust-form-section-label--amber">Internal notes</p>
                     <label>
-                      <span>Internal notes (optional)</span>
+                      <span>Notes (optional)</span>
                       <textarea
                         value={editForm.notes}
                         onChange={e => setEditForm(prev => ({ ...prev, notes: e.target.value }))}
                         rows={3}
-                        placeholder="Payment preferences, VIP, sourcing notes…"
+                        placeholder="Payment preferences, VIP status, sourcing notes…"
                       />
                     </label>
                   </div>
@@ -1023,10 +1562,10 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
               )}
               {editError && <p className="customers-modal-error">{editError}</p>}
             </div>
-            <div className="customers-modal-footer">
+            <div className="cust-drawer-footer">
               <button
                 type="button"
-                className="ghost-button"
+                className="cust-drawer-btn-cancel"
                 onClick={() => {
                   setEditOpen(false);
                   setEditingId(null);
@@ -1035,263 +1574,17 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
               >
                 Cancel
               </button>
-              <button type="button" className="primary-button" onClick={saveEditCustomer} disabled={editSaving || editLoading}>
+              <button
+                type="button"
+                className="cust-drawer-btn-save"
+                onClick={saveEditCustomer}
+                disabled={editSaving || editLoading}
+              >
                 {editSaving ? 'Saving…' : 'Save changes'}
               </button>
             </div>
           </div>
-        </div>
-      )}
-
-      {detailOpen && (
-        <div
-          className="customers-modal-overlay"
-          role="dialog"
-          aria-modal="true"
-          onClick={e => {
-            if (e.target === e.currentTarget) setDetailOpen(false);
-          }}
-        >
-          <div className="customers-detail" onClick={e => e.stopPropagation()}>
-            {detailLoading && (
-              <>
-                <button type="button" className="customers-modal-close customers-detail-close" onClick={() => setDetailOpen(false)} aria-label="Close">
-                  ✕
-                </button>
-                <p className="customers-empty-cell customers-detail-loading-msg">Loading…</p>
-              </>
-            )}
-            {!detailLoading && detailError && (
-              <>
-                <button type="button" className="customers-modal-close customers-detail-close" onClick={() => setDetailOpen(false)} aria-label="Close">
-                  ✕
-                </button>
-                <p className="customers-empty-cell customers-detail-loading-msg">{detailError}</p>
-              </>
-            )}
-            {!detailLoading && detail && (
-              <>
-                <header className="customers-detail-header-row">
-                  <h3 className="customers-detail-title" id="customers-detail-title">
-                    {detail.customer.name}
-                  </h3>
-                  <div className="customers-detail-header-actions">
-                    <button type="button" className="ghost-button small" onClick={openEditFromDetail}>
-                      Edit details
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-button small customers-btn-danger"
-                      onClick={() => deleteCustomer(detail.customer.id, detail.customer.name)}
-                    >
-                      Delete
-                    </button>
-                    <button type="button" className="customers-modal-close customers-detail-close-inline" onClick={() => setDetailOpen(false)} aria-label="Close">
-                      ✕
-                    </button>
-                  </div>
-                </header>
-                <div className="customers-detail-scroll">
-                  <div className="customers-detail-contact">
-                    {detail.customer.phone ? <p className="customers-detail-line">{detail.customer.phone}</p> : null}
-                    {detail.customer.email ? (
-                      <p className="customers-detail-line">
-                        <a href={`mailto:${detail.customer.email}`}>{detail.customer.email}</a>
-                      </p>
-                    ) : null}
-                    {[
-                      detail.customer.address_line1,
-                      detail.customer.address_line2,
-                      [detail.customer.city, detail.customer.postal_code].filter(Boolean).join(' ').trim() || null,
-                      detail.customer.country,
-                    ]
-                      .filter((line): line is string => Boolean(line && String(line).trim()))
-                      .map((line, i) => (
-                        <p key={i} className="customers-detail-line customers-detail-line--addr">
-                          {line}
-                        </p>
-                      ))}
-                    {detail.customer.notes?.trim() ? (
-                      <p className="customers-detail-notes">{detail.customer.notes.trim()}</p>
-                    ) : null}
-                  </div>
-                  <div className="customers-detail-stats">
-                    <div className="customers-detail-stat">
-                      <span>Total Invoices</span>
-                      <strong>{Number(detail.customer.invoices_count) || 0}</strong>
-                    </div>
-                    <div className="customers-detail-stat">
-                      <span>Total Invoiced (THB)</span>
-                      <strong>
-                        {formatMoneyAmount(Number(detail.customer.total_invoiced || 0), DEFAULT_CURRENCY_CODE)}
-                      </strong>
-                    </div>
-                    <div className="customers-detail-stat customers-detail-stat--paid">
-                      <span>Total Paid (THB)</span>
-                      <strong>{formatMoneyAmount(Number(detail.customer.total_paid || 0), DEFAULT_CURRENCY_CODE)}</strong>
-                    </div>
-                    <div className="customers-detail-stat customers-detail-stat--owed">
-                      <span>Outstanding (THB)</span>
-                      <strong>{formatMoneyAmount(Number(detail.customer.total_owed || 0), DEFAULT_CURRENCY_CODE)}</strong>
-                    </div>
-                  </div>
-
-                  <h4 className="customers-detail-section">Memos</h4>
-                  <p className="customers-detail-memo-intro">
-                    Open and partially returned memos are active; closed memos are finished (e.g. fully returned or converted).
-                  </p>
-
-                  <h5 className="customers-detail-subsection">Current</h5>
-                  <div className="customers-detail-table-wrap">
-                    <table className="customers-detail-table" aria-label="Current memos">
-                      <thead>
-                        <tr>
-                          <th>Memo #</th>
-                          <th>Date</th>
-                          <th>Due</th>
-                          <th>Items</th>
-                          <th>Value (memo ccy)</th>
-                          <th>Status</th>
-                          <th />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(detail.memos || []).filter(m => m.status === 'Open' || m.status === 'Partially Returned')
-                          .length === 0 ? (
-                          <tr>
-                            <td colSpan={7} className="customers-empty-cell">
-                              No active memos.
-                            </td>
-                          </tr>
-                        ) : (
-                          (detail.memos || [])
-                            .filter(m => m.status === 'Open' || m.status === 'Partially Returned')
-                            .map(m => (
-                              <tr key={m.id}>
-                                <td className="customers-detail-invoice">{m.memo_no}</td>
-                                <td>{formatStoredCalendarDate(m.memo_date)}</td>
-                                <td>{formatStoredCalendarDate(m.due_date)}</td>
-                                <td>{m.items_count}</td>
-                                <td>{formatMoneyAmount(Number(m.total_value || 0), m.currency_code)}</td>
-                                <td>
-                                  <span className={memoStatusClass(m.status)}>{m.status}</span>
-                                </td>
-                                <td>
-                                  <button
-                                    type="button"
-                                    className="ghost-button small"
-                                    onClick={() => openMemoDetail(m.id)}
-                                  >
-                                    Details
-                                  </button>
-                                </td>
-                              </tr>
-                            ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <h5 className="customers-detail-subsection">Completed</h5>
-                  <div className="customers-detail-table-wrap">
-                    <table className="customers-detail-table" aria-label="Completed memos">
-                      <thead>
-                        <tr>
-                          <th>Memo #</th>
-                          <th>Date</th>
-                          <th>Items</th>
-                          <th>Value</th>
-                          <th>Status</th>
-                          <th />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(detail.memos || []).filter(m => m.status === 'Closed').length === 0 ? (
-                          <tr>
-                            <td colSpan={6} className="customers-empty-cell">
-                              No completed memos.
-                            </td>
-                          </tr>
-                        ) : (
-                          (detail.memos || [])
-                            .filter(m => m.status === 'Closed')
-                            .map(m => (
-                              <tr key={m.id}>
-                                <td className="customers-detail-invoice">{m.memo_no}</td>
-                                <td>{formatStoredCalendarDate(m.memo_date)}</td>
-                                <td>{m.items_count}</td>
-                                <td>{formatMoneyAmount(Number(m.total_value || 0), m.currency_code)}</td>
-                                <td>
-                                  <span className={memoStatusClass(m.status)}>{m.status}</span>
-                                </td>
-                                <td>
-                                  <button
-                                    type="button"
-                                    className="ghost-button small"
-                                    onClick={() => openMemoDetail(m.id)}
-                                  >
-                                    Details
-                                  </button>
-                                </td>
-                              </tr>
-                            ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <h4 className="customers-detail-section">Invoice History</h4>
-                  <div className="customers-detail-table-wrap">
-                    <table className="customers-detail-table" aria-labelledby="customers-detail-title">
-                      <thead>
-                        <tr>
-                          <th>Invoice #</th>
-                          <th>Date</th>
-                          <th>Items</th>
-                          <th>Total</th>
-                          <th>Paid</th>
-                          <th>Balance</th>
-                          <th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {detail.invoices.length === 0 ? (
-                          <tr>
-                            <td colSpan={7} className="customers-empty-cell">No invoices.</td>
-                          </tr>
-                        ) : (
-                          detail.invoices.map(inv => (
-                            <tr key={inv.id}>
-                              <td className="customers-detail-invoice">{inv.invoice_no}</td>
-                              <td>{formatStoredCalendarDate(inv.created_at)}</td>
-                              <td>{inv.items_count}</td>
-                              <td>{formatMoneyAmount(Number(inv.total), inv.currency_code || DEFAULT_CURRENCY_CODE)}</td>
-                              <td className="customers-paid">
-                                {formatMoneyAmount(Number(inv.paid), inv.currency_code || DEFAULT_CURRENCY_CODE)}
-                              </td>
-                              <td className={inv.balance > 0 ? 'customers-balance customers-balance--neg' : 'customers-balance'}>
-                                {formatMoneyAmount(Number(inv.balance), inv.currency_code || DEFAULT_CURRENCY_CODE)}
-                              </td>
-                              <td>
-                                <span className={`customers-status customers-status--${String(inv.status).toLowerCase()}`}>
-                                  {inv.status}
-                                </span>
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                <div className="customers-detail-footer">
-                  <button type="button" className="ghost-button" onClick={() => setDetailOpen(false)}>Close</button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+        </>
       )}
 
       {memoDetailOpen && (
