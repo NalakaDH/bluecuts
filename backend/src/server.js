@@ -4,10 +4,25 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+// Load local env file if present (Windows-friendly).
+// This enables backend/.env to configure cloud sync secrets on shop machines.
+try {
+  const dotenvPath = path.join(__dirname, '..', '.env');
+  if (fs.existsSync(dotenvPath)) {
+    // eslint-disable-next-line global-require
+    require('dotenv').config({ path: dotenvPath });
+  } else {
+    // eslint-disable-next-line global-require
+    require('dotenv').config();
+  }
+} catch (_e) {
+  // ignore dotenv failures; env vars may still come from the OS/process manager
+}
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
+const { syncToFirestore } = require('./cloud/syncToFirestore');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -206,6 +221,8 @@ const SQL_MEMO_FX_JOIN = `LEFT JOIN exchange_rates er_m ON er_m.currency_code = 
 const SQL_THB_PER_MEMO = `COALESCE(er_m.thb_per_unit, 1.0)`;
 const SQL_INVITEM_FX_JOIN = `LEFT JOIN exchange_rates er_inv ON er_inv.currency_code = COALESCE(NULLIF(TRIM(inv.selling_currency), ''), 'THB')`;
 const SQL_THB_PER_INVITEM = `COALESCE(er_inv.thb_per_unit, 1.0)`;
+/** COGS: purchasing_total_price is stored in the same currency as list price (`selling_currency`), not invoice currency. */
+const SQL_LINE_PURCH_COST_THB = `(ii.quantity * IFNULL(inv.purchasing_total_price, 0) * ${SQL_THB_PER_INVITEM})`;
 /** Per-invoice paid sum, cents-rounded (stable balance vs payment rows). Alias `ip`. */
 const SQL_PAYMENTS_AGG_IP = `(SELECT invoice_id, ROUND(SUM(amount), 2) AS paid FROM payments GROUP BY invoice_id) ip`;
 /** Same subquery with alias `p` for queries that join as `p`. */
@@ -215,6 +232,14 @@ const sqlInvThbOutstandingRow = () =>
   `ROUND(${SQL_INV_OUTSTANDING_NATIVE} * ${SQL_THB_PER_INV}, 2)`;
 const sqlInvThbPaidRow = () => `ROUND(${SQL_INV_PAID_NATIVE} * ${SQL_THB_PER_INV}, 2)`;
 const sqlInvThbTotalRow = () => `ROUND(${SQL_INV_TOTAL_NATIVE} * ${SQL_THB_PER_INV}, 2)`;
+
+/**
+ * Invoice items store line_total after line discounts only; i.total also subtracts order-level discount.
+ * SUM(line_total) can exceed i.total. Scale each line to the invoice net so profit/sales match KPI totals.
+ */
+const SQL_INV_LINES_SUM_JOIN = `JOIN (SELECT invoice_id, IFNULL(SUM(line_total), 0) AS lines_sum FROM invoice_items GROUP BY invoice_id) ls ON ls.invoice_id = i.id`;
+const SQL_INV_LINE_NET = `(ii.line_total * (i.total / NULLIF(ls.lines_sum, 0)))`;
+const sqlInvLineThbGrossRow = () => `ROUND((${SQL_INV_LINE_NET}) * ${SQL_THB_PER_INV}, 2)`;
 
 // ===== DB schema =====
 db.serialize(() => {
@@ -540,6 +565,168 @@ const dbAll = (sql, params = []) =>
       resolve(rows);
     });
   });
+
+async function buildInventoryMonthlyReport(year, month) {
+  const nowY = new Date().getFullYear();
+  if (!Number.isFinite(year) || year < 2000 || year > nowY + 5) {
+    throw new Error('Invalid year');
+  }
+  if (!Number.isFinite(month) || month < 1 || month > 12) {
+    throw new Error('Invalid month (use 1–12)');
+  }
+  const ym = `${year}-${String(month).padStart(2, '0')}`;
+
+  const sql = `
+      SELECT
+        i.id,
+        i.category,
+        i.item_type,
+        i.item_code,
+        i.description,
+        i.pieces_remaining AS remaining,
+        i.selling_total_price AS unit_price,
+        IFNULL(i.selling_currency, 'THB') AS selling_currency,
+        i.status,
+        CASE
+          WHEN (i.pieces_remaining - IFNULL(after_start.sum_q, 0)) < 0 THEN 0
+          ELSE (i.pieces_remaining - IFNULL(after_start.sum_q, 0))
+        END AS opening,
+        IFNULL(sale_m.sold, 0) AS sold,
+        IFNULL(ret_m.ret, 0) AS returned,
+        IFNULL(sh_m.shrink, 0) AS shrinkage,
+        IFNULL(rst_m.rest, 0) AS restocked,
+        IFNULL(rev_m.rev_thb, 0) AS revenue_thb,
+        ROUND(
+          i.pieces_remaining * IFNULL(i.selling_total_price, 0) * COALESCE(er_sell.thb_per_unit, 1.0),
+          2
+        ) AS stock_value_thb
+      FROM inventory_items i
+      LEFT JOIN exchange_rates er_sell ON er_sell.currency_code = COALESCE(NULLIF(TRIM(i.selling_currency), ''), 'THB')
+      LEFT JOIN (
+        SELECT inventory_item_id, SUM(qty_change) AS sum_q
+        FROM stock_movements
+        WHERE date(created_at) >= date(printf('%04d-%02d-01', ?, ?))
+        GROUP BY inventory_item_id
+      ) after_start ON after_start.inventory_item_id = i.id
+      LEFT JOIN (
+        SELECT inventory_item_id, SUM(-qty_change) AS sold
+        FROM stock_movements
+        WHERE type = 'SALE' AND strftime('%Y-%m', created_at) = ?
+        GROUP BY inventory_item_id
+      ) sale_m ON sale_m.inventory_item_id = i.id
+      LEFT JOIN (
+        SELECT inventory_item_id, SUM(qty_change) AS ret
+        FROM stock_movements
+        WHERE type = 'INVOICE_RETURN' AND strftime('%Y-%m', created_at) = ?
+        GROUP BY inventory_item_id
+      ) ret_m ON ret_m.inventory_item_id = i.id
+      LEFT JOIN (
+        SELECT inventory_item_id, SUM(ABS(qty_change)) AS shrink
+        FROM stock_movements
+        WHERE type = 'SHRINKAGE' AND strftime('%Y-%m', created_at) = ?
+        GROUP BY inventory_item_id
+      ) sh_m ON sh_m.inventory_item_id = i.id
+      LEFT JOIN (
+        SELECT inventory_item_id, SUM(qty_change) AS rest
+        FROM stock_movements
+        WHERE type = 'RESTOCK' AND strftime('%Y-%m', created_at) = ?
+        GROUP BY inventory_item_id
+      ) rst_m ON rst_m.inventory_item_id = i.id
+      LEFT JOIN (
+        SELECT
+          sm.inventory_item_id,
+          SUM(
+            ROUND(
+              CASE
+                WHEN IFNULL(ii.quantity, 0) > 0
+                THEN IFNULL(ii.line_total, 0) * (ABS(sm.qty_change) * 1.0 / ii.quantity)
+                ELSE ABS(sm.qty_change) * IFNULL(ii.unit_price, 0)
+              END,
+              2
+            ) * COALESCE(er_rev.thb_per_unit, 1.0)
+          ) AS rev_thb
+        FROM stock_movements sm
+        JOIN invoice_items ii ON ii.invoice_id = sm.ref_id AND ii.inventory_item_id = sm.inventory_item_id
+        JOIN invoices inv_rev ON inv_rev.id = sm.ref_id
+        LEFT JOIN exchange_rates er_rev ON er_rev.currency_code = COALESCE(NULLIF(TRIM(inv_rev.currency_code), ''), 'THB')
+        WHERE sm.type = 'SALE'
+          AND IFNULL(sm.ref_type, '') = 'INVOICE'
+          AND strftime('%Y-%m', sm.created_at) = ?
+        GROUP BY sm.inventory_item_id
+      ) rev_m ON rev_m.inventory_item_id = i.id
+      ORDER BY i.category ASC, i.item_code ASC, i.id ASC
+    `;
+
+  const rows = await dbAll(sql, [year, month, ym, ym, ym, ym, ym]);
+
+  const erUsdRow = await dbGet(`SELECT thb_per_unit FROM exchange_rates WHERE currency_code = 'USD'`);
+  const thbPerUsd = erUsdRow && Number(erUsdRow.thb_per_unit) > 0 ? Number(erUsdRow.thb_per_unit) : null;
+  const thbToUsd = thb => {
+    if (thbPerUsd == null || thbPerUsd <= 0) return null;
+    const n = Number(thb) || 0;
+    return Math.round((n / thbPerUsd) * 100) / 100;
+  };
+
+  const items = (rows || []).map(r => {
+    const remaining = Math.max(0, Math.round(Number(r.remaining) || 0));
+    const opening = Math.max(0, Math.round(Number(r.opening) || 0));
+    const sold = Math.max(0, Math.round(Number(r.sold) || 0));
+    const returned = Math.max(0, Math.round(Number(r.returned) || 0));
+    const shrinkage = Math.max(0, Math.round(Number(r.shrinkage) || 0));
+    const restocked = Math.max(0, Math.round(Number(r.restocked) || 0));
+    const unit_price = Number(r.unit_price);
+    const revenueThb = Math.round((Number(r.revenue_thb) || 0) * 100) / 100;
+    const stockValueThb = Math.round((Number(r.stock_value_thb) || 0) * 100) / 100;
+    return {
+      id: r.id,
+      category: r.category,
+      item_type: r.item_type,
+      item_code: r.item_code,
+      description: r.description,
+      opening,
+      sold,
+      returned,
+      shrinkage,
+      restocked,
+      remaining,
+      unit_price: Number.isFinite(unit_price) ? unit_price : null,
+      selling_currency: r.selling_currency || 'THB',
+      revenue_thb: revenueThb,
+      revenue_usd: thbToUsd(revenueThb),
+      stock_value_thb: stockValueThb,
+      stock_value_usd: thbToUsd(stockValueThb),
+      status: r.status,
+    };
+  });
+
+  const totalSold = items.reduce((s, i) => s + i.sold, 0);
+  const totalRevenueThb = Math.round(items.reduce((s, i) => s + i.revenue_thb, 0) * 100) / 100;
+  const totalStockValueThb = Math.round(items.reduce((s, i) => s + i.stock_value_thb, 0) * 100) / 100;
+  const noMovement = items.filter(i => i.sold === 0).length;
+  const totalShrinkage = items.reduce((s, i) => s + i.shrinkage, 0);
+  const outOfStock = items.filter(i => i.remaining === 0).length;
+
+  return {
+    year,
+    month,
+    ym,
+    fx: {
+      thb_per_usd: thbPerUsd,
+      usd_available: thbPerUsd != null && thbPerUsd > 0,
+    },
+    items,
+    summary: {
+      totalSold,
+      totalRevenueThb,
+      totalRevenueUsd: thbToUsd(totalRevenueThb),
+      stockValueThb: totalStockValueThb,
+      stockValueUsd: thbToUsd(totalStockValueThb),
+      noMovement,
+      totalShrinkage,
+      outOfStock,
+    },
+  };
+}
 
 /** YYYY-MM-DD → DD + M (no leading zero for 1–9) + YY, e.g. 2026-03-23 → 23326 */
 function docDateSuffixFromYmd(ymd) {
@@ -1088,7 +1275,83 @@ async function loadExchangeRatesThbPerUnit() {
   return m;
 }
 
-/** thb_per_unit = THB per 1 unit of currency (bridge). Profile edits are USD-based in the app. */
+/**
+ * Persist THB-per-unit factors (internal bridge for aggregates). Primary shop reference is USD in the UI.
+ * @param {Record<string, unknown>} raw
+ */
+async function persistExchangeRatesFromObject(raw) {
+  await dbRun('INSERT OR REPLACE INTO exchange_rates (currency_code, thb_per_unit) VALUES (?, ?)', [
+    'THB',
+    1,
+  ]);
+  for (const [k, val] of Object.entries(raw)) {
+    const code = normalizeCurrencyCode(String(k));
+    if (code === 'THB' || !ALLOWED_CURRENCIES.has(code)) continue;
+    const rounded = roundRate6(val);
+    if (rounded == null || rounded <= 0) continue;
+    await dbRun('INSERT OR REPLACE INTO exchange_rates (currency_code, thb_per_unit) VALUES (?, ?)', [
+      code,
+      rounded,
+    ]);
+  }
+}
+
+const FRANKFURTER_LATEST_URL =
+  process.env.FRANKFURTER_API_URL && String(process.env.FRANKFURTER_API_URL).trim()
+    ? String(process.env.FRANKFURTER_API_URL).trim().replace(/\/$/, '')
+    : 'https://api.frankfurter.app/latest';
+
+/**
+ * Frankfurter returns rates with USD as base: rates[X] = how many units of X per 1 USD.
+ * Stored thb_per_unit.USD = THB per 1 USD = rates.THB.
+ * For X ≠ USD: thb_per_unit[X] = THB per 1 X = rates.THB / rates[X].
+ */
+async function fetchFrankfurterThbPerUnitFromUsdBase() {
+  const others = [...ALLOWED_CURRENCIES].filter(c => c !== 'USD' && c !== 'THB');
+  const toList = ['THB', ...others];
+  const url = `${FRANKFURTER_LATEST_URL}?from=USD&to=${toList.join(',')}`;
+  const res = await fetch(url, {
+    headers: { Accept: 'application/json' },
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Frankfurter HTTP ${res.status}: ${text.slice(0, 240)}`);
+  }
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error('Frankfurter response was not JSON');
+  }
+  const rates = data.rates && typeof data.rates === 'object' ? data.rates : {};
+  const thbPerUsd = Number(rates.THB);
+  if (!Number.isFinite(thbPerUsd) || thbPerUsd <= 0) {
+    throw new Error('Frankfurter did not return a valid THB rate (need USD→THB for bridge)');
+  }
+  /** @type {Record<string, number>} */
+  const thb_per_unit = { THB: 1, USD: roundRate6(thbPerUsd) };
+  for (const code of others) {
+    const perUsd = Number(rates[code]);
+    if (!Number.isFinite(perUsd) || perUsd <= 0) {
+      console.warn(`[Frankfurter] missing or invalid rate for ${code}, keeping previous DB value on sync`);
+      continue;
+    }
+    thb_per_unit[code] = roundRate6(thbPerUsd / perUsd);
+  }
+  return { date: data.date ? String(data.date) : null, thb_per_unit };
+}
+
+async function mergeAndPersistFrankfurterRates() {
+  const { date, thb_per_unit: fresh } = await fetchFrankfurterThbPerUnitFromUsdBase();
+  const existing = await loadExchangeRatesThbPerUnit();
+  const merged = { ...existing, ...fresh };
+  merged.THB = 1;
+  await persistExchangeRatesFromObject(merged);
+  const thb_per_unit = await loadExchangeRatesThbPerUnit();
+  return { date, thb_per_unit };
+}
+
+/** thb_per_unit = THB per 1 unit of currency (bridge). Shop reference currency in the UI is USD. */
 app.get('/api/exchange-rates', authMiddleware, requireRole(['owner', 'staff']), async (req, res) => {
   try {
     const thb_per_unit = await loadExchangeRatesThbPerUnit();
@@ -1108,20 +1371,7 @@ app.put('/api/exchange-rates', authMiddleware, requireRole(['owner', 'staff']), 
         ? body.rates
         : body;
   try {
-    await dbRun('INSERT OR REPLACE INTO exchange_rates (currency_code, thb_per_unit) VALUES (?, ?)', [
-      'THB',
-      1,
-    ]);
-    for (const [k, val] of Object.entries(raw)) {
-      const code = normalizeCurrencyCode(String(k));
-      if (code === 'THB' || !ALLOWED_CURRENCIES.has(code)) continue;
-      const rounded = roundRate6(val);
-      if (rounded == null || rounded <= 0) continue;
-      await dbRun('INSERT OR REPLACE INTO exchange_rates (currency_code, thb_per_unit) VALUES (?, ?)', [
-        code,
-        rounded,
-      ]);
-    }
+    await persistExchangeRatesFromObject(raw);
     const thb_per_unit = await loadExchangeRatesThbPerUnit();
     res.json({ base: 'USD', thb_per_unit });
   } catch (e) {
@@ -1129,6 +1379,28 @@ app.put('/api/exchange-rates', authMiddleware, requireRole(['owner', 'staff']), 
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+/** Fetch ECB spot rates via Frankfurter (free), USD base → stored THB-per-unit bridge. */
+app.post(
+  '/api/exchange-rates/sync-frankfurter',
+  authMiddleware,
+  requireRole(['owner', 'staff']),
+  async (req, res) => {
+    try {
+      const { date, thb_per_unit } = await mergeAndPersistFrankfurterRates();
+      res.json({
+        base: 'USD',
+        thb_per_unit,
+        source: 'frankfurter',
+        rate_date: date,
+      });
+    } catch (e) {
+      console.error('POST /api/exchange-rates/sync-frankfurter', e);
+      const msg = e instanceof Error ? e.message : 'Frankfurter sync failed';
+      res.status(502).json({ error: msg });
+    }
+  }
+);
 
 // Inventory list (supports status + search)
 app.get('/api/inventory', authMiddleware, requireRole(['owner', 'staff']), (req, res) => {
@@ -1185,9 +1457,43 @@ app.get('/api/inventory', authMiddleware, requireRole(['owner', 'staff']), (req,
   });
 });
 
+/** Per-item shrinkage totals, last movement time, manual-edit flag (Check Inventory UI). */
+app.get('/api/inventory/activity-summary', authMiddleware, requireRole(['owner', 'staff']), (_req, res) => {
+  const sql = `
+    SELECT
+      i.id AS id,
+      COALESCE(
+        (SELECT SUM(ABS(sm.qty_change)) FROM stock_movements sm
+         WHERE sm.inventory_item_id = i.id AND sm.type = 'SHRINKAGE'),
+        0
+      ) AS shrink_units,
+      (SELECT MAX(sm2.created_at) FROM stock_movements sm2 WHERE sm2.inventory_item_id = i.id) AS last_activity,
+      EXISTS(
+        SELECT 1 FROM stock_movements sm3
+        WHERE sm3.inventory_item_id = i.id AND sm3.type = 'INVENTORY_EDIT' LIMIT 1
+      ) AS has_manual_edit
+    FROM inventory_items i
+  `;
+  db.all(sql, [], (err, rows) => {
+    if (err) {
+      console.error('GET /api/inventory/activity-summary', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+    const map = {};
+    for (const r of rows || []) {
+      map[String(r.id)] = {
+        shrink_units: Number(r.shrink_units) || 0,
+        last_activity: r.last_activity || null,
+        has_manual_edit: Boolean(r.has_manual_edit),
+      };
+    }
+    res.json(map);
+  });
+});
+
 app.get('/api/inventory/:id/stock-history', authMiddleware, requireRole(['owner', 'staff']), (req, res) => {
   const id = Number(req.params.id);
-  const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 20));
+  const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 20));
   if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid inventory id' });
 
   const sql = `
@@ -1382,6 +1688,17 @@ app.put('/api/inventory/:id', authMiddleware, requireRole(['owner', 'staff']), a
         id,
       ]
     );
+    if (oldP !== newP || oldRem !== newRem) {
+      const remDelta = newRem - oldRem;
+      const note = `Manual inventory update: pieces ${oldP}→${newP}, remaining ${oldRem}→${newRem}`;
+      await dbRun(
+        `
+        INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
+        VALUES (?, 'INVENTORY_EDIT', NULL, NULL, ?, ?, ?)
+      `,
+        [id, remDelta, note, req.user.id]
+      );
+    }
     const row = await dbGet('SELECT * FROM inventory_items WHERE id = ?', [id]);
     res.json(row);
   } catch (e) {
@@ -4006,14 +4323,14 @@ app.get('/api/reports/summary', authMiddleware, requireRole(['owner', 'staff']),
 
   const profitSql = `
     SELECT
-      IFNULL(SUM(ii.line_total * ${SQL_THB_PER_INV}), 0) AS selling_total,
-      IFNULL(SUM(ii.quantity * IFNULL(inv.purchasing_total_price, 0) * ${SQL_THB_PER_INV}), 0) AS cost_total,
-      IFNULL(SUM((ii.line_total - (ii.quantity * IFNULL(inv.purchasing_total_price, 0))) * ${SQL_THB_PER_INV}), 0) AS profit_total,
+      IFNULL(SUM(${sqlInvLineThbGrossRow()}), 0) AS selling_total,
+      IFNULL(SUM(${SQL_LINE_PURCH_COST_THB}), 0) AS cost_total,
+      IFNULL(SUM((${SQL_INV_LINE_NET}) * ${SQL_THB_PER_INV} - ${SQL_LINE_PURCH_COST_THB}), 0) AS profit_total,
       CASE
-        WHEN IFNULL(SUM(ii.line_total * ${SQL_THB_PER_INV}), 0) > 0
+        WHEN IFNULL(SUM((${SQL_INV_LINE_NET}) * ${SQL_THB_PER_INV}), 0) > 0
         THEN ROUND(
-          (SUM((ii.line_total - (ii.quantity * IFNULL(inv.purchasing_total_price, 0))) * ${SQL_THB_PER_INV}) * 100.0)
-          / SUM(ii.line_total * ${SQL_THB_PER_INV}),
+          (SUM((${SQL_INV_LINE_NET}) * ${SQL_THB_PER_INV} - ${SQL_LINE_PURCH_COST_THB}) * 100.0)
+          / SUM((${SQL_INV_LINE_NET}) * ${SQL_THB_PER_INV}),
           2
         )
         ELSE 0
@@ -4021,7 +4338,9 @@ app.get('/api/reports/summary', authMiddleware, requireRole(['owner', 'staff']),
     FROM invoices i
     JOIN invoice_items ii ON ii.invoice_id = i.id
     JOIN inventory_items inv ON inv.id = ii.inventory_item_id
+    ${SQL_INV_LINES_SUM_JOIN}
     ${SQL_INV_FX_JOIN}
+    ${SQL_INVITEM_FX_JOIN}
     WHERE ${dateWhereInvoices}
   `;
 
@@ -4084,13 +4403,15 @@ app.get('/api/reports/summary', authMiddleware, requireRole(['owner', 'staff']),
       inv.category,
       inv.item_type,
       IFNULL(SUM(ii.quantity), 0) AS qty_sold,
-      IFNULL(SUM(ii.line_total * ${SQL_THB_PER_INV}), 0) AS sales_value,
-      IFNULL(SUM(ii.quantity * IFNULL(inv.purchasing_total_price, 0) * ${SQL_THB_PER_INV}), 0) AS cost_total,
-      IFNULL(SUM((ii.line_total - (ii.quantity * IFNULL(inv.purchasing_total_price, 0))) * ${SQL_THB_PER_INV}), 0) AS profit_value
+      IFNULL(SUM((${SQL_INV_LINE_NET}) * ${SQL_THB_PER_INV}), 0) AS sales_value,
+      IFNULL(SUM(${SQL_LINE_PURCH_COST_THB}), 0) AS cost_total,
+      IFNULL(SUM((${SQL_INV_LINE_NET}) * ${SQL_THB_PER_INV} - ${SQL_LINE_PURCH_COST_THB}), 0) AS profit_value
     FROM invoices i
     JOIN invoice_items ii ON ii.invoice_id = i.id
     JOIN inventory_items inv ON inv.id = ii.inventory_item_id
+    ${SQL_INV_LINES_SUM_JOIN}
     ${SQL_INV_FX_JOIN}
+    ${SQL_INVITEM_FX_JOIN}
     WHERE ${dateWhereInvoices}
     GROUP BY inv.id
     ORDER BY qty_sold DESC, sales_value DESC
@@ -4208,13 +4529,15 @@ app.get('/api/reports/profit-trend', authMiddleware, requireRole(['owner', 'staf
   const sql = `
     SELECT
       ${periodExpr} AS period,
-      IFNULL(SUM(ii.line_total * ${SQL_THB_PER_INV}), 0) AS selling_total,
-      IFNULL(SUM(ii.quantity * IFNULL(inv.purchasing_total_price, 0) * ${SQL_THB_PER_INV}), 0) AS cost_total,
-      IFNULL(SUM((ii.line_total - (ii.quantity * IFNULL(inv.purchasing_total_price, 0))) * ${SQL_THB_PER_INV}), 0) AS profit_total
+      IFNULL(SUM(${sqlInvLineThbGrossRow()}), 0) AS selling_total,
+      IFNULL(SUM(${SQL_LINE_PURCH_COST_THB}), 0) AS cost_total,
+      IFNULL(SUM((${SQL_INV_LINE_NET}) * ${SQL_THB_PER_INV} - ${SQL_LINE_PURCH_COST_THB}), 0) AS profit_total
     FROM invoices i
     JOIN invoice_items ii ON ii.invoice_id = i.id
     JOIN inventory_items inv ON inv.id = ii.inventory_item_id
+    ${SQL_INV_LINES_SUM_JOIN}
     ${SQL_INV_FX_JOIN}
+    ${SQL_INVITEM_FX_JOIN}
     WHERE date(i.created_at) BETWEEN date(?) AND date(?)
     GROUP BY period
     ORDER BY period ASC
@@ -4227,6 +4550,27 @@ app.get('/api/reports/profit-trend', authMiddleware, requireRole(['owner', 'staf
     }
     res.json({ range: { from, to }, group, rows });
   });
+});
+
+/**
+ * Owner-only: per-line inventory movement stats for a calendar month (from stock_movements).
+ * opening ≈ remaining at month start: current remaining minus sum(qty_change) from month start onward.
+ */
+app.get('/api/reports/inventory-monthly', authMiddleware, requireRole(['owner']), async (req, res) => {
+  try {
+    const year = Math.floor(Number(req.query.year));
+    const month = Math.floor(Number(req.query.month));
+    const payload = await buildInventoryMonthlyReport(year, month);
+    res.json(payload);
+  } catch (err) {
+    console.error('GET /api/reports/inventory-monthly', err);
+    const msg = err instanceof Error ? err.message : 'Internal server error';
+    if (String(msg || '').toLowerCase().includes('invalid year')) return res.status(400).json({ error: 'Invalid year' });
+    if (String(msg || '').toLowerCase().includes('invalid month')) {
+      return res.status(400).json({ error: 'Invalid month (use 1–12)' });
+    }
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // Dashboard overview (Collected + Outstanding + trends + latest stock movements)
@@ -4491,17 +4835,109 @@ app.post(
   }
 );
 
+// ===== Cloud sync (one-way SQLite -> Firestore) =====
+function requireCloudSyncSecret(req, res, next) {
+  const expected = String(process.env.BLUECUTS_CLOUD_SYNC_SECRET || '').trim();
+  if (!expected) return res.status(503).json({ error: 'Cloud sync not configured (missing BLUECUTS_CLOUD_SYNC_SECRET)' });
+  const got = String(req.headers['x-bluecuts-sync-secret'] || '').trim();
+  if (!got || got !== expected) return res.status(401).json({ error: 'Unauthorized' });
+  return next();
+}
+
+app.post('/api/cloud/sync', requireCloudSyncSecret, async (req, res) => {
+  try {
+    const shopId = String(process.env.BLUECUTS_SHOP_ID || '').trim();
+    if (!shopId) return res.status(400).json({ error: 'Missing BLUECUTS_SHOP_ID' });
+
+    const now = new Date();
+    const yearDefault = Math.floor(Number(req.body?.year ?? now.getFullYear()));
+    const monthDefault = Math.floor(Number(req.body?.month ?? now.getMonth() + 1));
+    if (!Number.isFinite(yearDefault) || !Number.isFinite(monthDefault)) {
+      return res.status(400).json({ error: 'Invalid year/month' });
+    }
+
+    const result = await syncToFirestore(
+      {
+        dbAll,
+        dbGet,
+        loadExchangeRatesThbPerUnit,
+        buildInventoryMonthlyReport,
+        businessTodayYmd,
+        businessZonedDayBoundsUtc,
+        businessYmdAddCalendarDays,
+        sqliteUtcFromMs,
+        BUSINESS_TZ,
+        sqlPieces: {
+          SQL_PAYMENTS_AGG_IP,
+          SQL_INV_FX_JOIN,
+          SQL_INV_OUTSTANDING_NATIVE,
+          SQL_INV_LINES_SUM_JOIN,
+          SQL_INVITEM_FX_JOIN,
+          SQL_THB_PER_INV,
+          SQL_LINE_PURCH_COST_THB,
+          SQL_INV_LINE_NET,
+          SQL_THB_PER_INVITEM,
+          SQL_THB_PER_MEMO,
+          SQL_MEMO_FX_JOIN,
+          sqlInvThbTotalRow,
+          sqlInvThbPaidRow,
+          sqlInvThbOutstandingRow,
+          sqlInvLineThbGrossRow,
+        },
+      },
+      {
+        shopId,
+        reportsTop: 5,
+        reportsRangeDays: 30,
+        dashboardDays: 30,
+        monthlyYear: yearDefault,
+        monthlyMonth: monthDefault,
+      }
+    );
+
+    return res.json(result);
+  } catch (e) {
+    console.error('POST /api/cloud/sync', e);
+    const msg = e instanceof Error ? e.message : 'Cloud sync failed';
+    return res.status(500).json({ error: msg });
+  }
+});
+
 const allowLanForMobileUpload = String(process.env.BLUECUTS_ALLOW_LAN || '').trim() === '1';
 const listenHost = bluecutsUserData
   ? (allowLanForMobileUpload ? '0.0.0.0' : '127.0.0.1')
   : undefined;
+
+function scheduleFrankfurterBackgroundSync() {
+  const ms = Number(process.env.FRANKFURTER_SYNC_MS ?? 86400000);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    console.log('[exchange-rates] Frankfurter automatic sync disabled (FRANKFURTER_SYNC_MS<=0)');
+    return;
+  }
+  const run = () => {
+    mergeAndPersistFrankfurterRates()
+      .then(({ date }) => {
+        console.log(`[exchange-rates] Frankfurter background sync OK (${date || 'unknown date'})`);
+      })
+      .catch(err => {
+        console.error('[exchange-rates] Frankfurter background sync failed:', err.message || err);
+      });
+  };
+  if (String(process.env.FRANKFURTER_SYNC_ON_START ?? '1').trim() !== '0') {
+    setTimeout(run, 25000);
+  }
+  setInterval(run, ms);
+}
+
+const onServerListen = () => {
+  const hostLabel = listenHost || 'localhost';
+  console.log(`Backend API running on http://${hostLabel}:${PORT}`);
+  scheduleFrankfurterBackgroundSync();
+};
+
 if (listenHost) {
-  app.listen(PORT, listenHost, () => {
-    console.log(`Backend API running on http://${listenHost}:${PORT}`);
-  });
+  app.listen(PORT, listenHost, onServerListen);
 } else {
-  app.listen(PORT, () => {
-    console.log(`Backend API running on http://localhost:${PORT}`);
-  });
+  app.listen(PORT, onServerListen);
 }
 

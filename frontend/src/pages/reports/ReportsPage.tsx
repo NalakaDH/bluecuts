@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAlertDialog } from '../../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../../api';
+import { isCloudFirestoreMode } from '../../cloud/cloudMode';
+import { readPublicDoc } from '../../cloud/firestoreDocs';
 import { DEFAULT_CURRENCY_CODE } from '../../lib/currencies';
 import {
   formatUsdOnlyFromAny,
@@ -674,6 +676,7 @@ function MetricCard({
 
 export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
   const { showAlert } = useAlertDialog();
+  const cloud = isCloudFirestoreMode();
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const defaultFrom = useMemo(() => {
     const d = new Date();
@@ -709,6 +712,20 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
     setLoading(true);
     setError(null);
     try {
+      if (cloud) {
+        const [summaryData, trendsData, rates] = await Promise.all([
+          readPublicDoc<ReportsSummaryResponse>('reportsSummary'),
+          readPublicDoc<any>('reportsTrends'),
+          readPublicDoc<any>('exchangeRates'),
+        ]);
+        setSummary(summaryData);
+        setSalesTrend(Array.isArray(trendsData?.sales) ? trendsData.sales : []);
+        setProfitTrend(Array.isArray(trendsData?.profit) ? trendsData.profit : []);
+        if (rates?.thb_per_unit && typeof rates.thb_per_unit === 'object') {
+          setThbPerUnit(rates.thb_per_unit as ThbPerUnitMap);
+        }
+        return;
+      }
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
@@ -802,6 +819,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
   }, [from, to, group, token]);
 
   useEffect(() => {
+    if (cloud) return;
     let cancelled = false;
     (async () => {
       try {
@@ -820,9 +838,10 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, cloud]);
 
   const resetRange = () => {
+    if (cloud) return;
     setFrom(defaultFrom);
     setTo(today);
     setGroup('daily');
@@ -927,11 +946,25 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
             <div className="rep2-controls-grid">
               <div className="rep2-field">
                 <label htmlFor="rep-from">From</label>
-                <input id="rep-from" type="date" value={from} onChange={e => setFrom(e.target.value)} />
+                <input
+                  id="rep-from"
+                  type="date"
+                  value={from}
+                  onChange={e => setFrom(e.target.value)}
+                  disabled={cloud}
+                  title={cloud ? 'Cloud snapshot mode uses the last synced range' : undefined}
+                />
               </div>
               <div className="rep2-field">
                 <label htmlFor="rep-to">To</label>
-                <input id="rep-to" type="date" value={to} onChange={e => setTo(e.target.value)} />
+                <input
+                  id="rep-to"
+                  type="date"
+                  value={to}
+                  onChange={e => setTo(e.target.value)}
+                  disabled={cloud}
+                  title={cloud ? 'Cloud snapshot mode uses the last synced range' : undefined}
+                />
               </div>
               <div className="rep2-field">
                 <label htmlFor="rep-group">Grouping</label>
@@ -939,6 +972,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                   id="rep-group"
                   value={group}
                   onChange={e => setGroup(e.target.value as GroupMode)}
+                  disabled={cloud}
                 >
                   <option value="daily">Daily</option>
                   <option value="monthly">Monthly</option>

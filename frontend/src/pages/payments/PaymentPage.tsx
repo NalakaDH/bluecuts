@@ -341,7 +341,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
     };
   }, [token]);
 
-  const fetchInvoiceDetail = async (id: number) => {
+  const fetchInvoiceDetail = useCallback(async (id: number) => {
     setDetailLoading(true);
     setDetailError(null);
     setSelectedInvoice(null);
@@ -366,7 +366,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
     } finally {
       setDetailLoading(false);
     }
-  };
+  }, [token, showAlert]);
 
   const handleRowClick = (id: number) => {
     setSelectedInvoiceId(id);
@@ -397,7 +397,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
     if (selectedInvoiceId != null) {
       void fetchInvoiceDetail(selectedInvoiceId);
     }
-  }, [fetchInvoices, selectedInvoiceId]);
+  }, [fetchInvoices, selectedInvoiceId, fetchInvoiceDetail]);
 
   useEffect(() => {
     if (!checkoutOpen) return;

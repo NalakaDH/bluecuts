@@ -53,6 +53,7 @@ export function staffCanAccessPage(
 ): boolean {
   if (page === 'profile') return true;
   if (role === 'owner') return true;
+  if (page === 'inventoryReport') return false;
   const pages =
     allowedPages && allowedPages.length > 0 ? allowedPages : DEFAULT_STAFF_ALLOWED_PAGES;
   if (page === 'invoiceCheckout' && pages.includes('payments')) return true;

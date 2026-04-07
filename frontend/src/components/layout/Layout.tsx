@@ -48,6 +48,7 @@ export type PageId =
   | 'memo'
   | 'returns'
   | 'reports'
+  | 'inventoryReport'
   | 'profile';
 type UserRole = 'owner' | 'staff';
 
@@ -125,6 +126,7 @@ const navIcons: Record<PageId, React.FC> = {
   memo: NavIconMemo,
   returns: NavIconReturns,
   reports: NavIconReports,
+  inventoryReport: NavIconReports,
   profile: NavIconProfile,
 };
 
@@ -140,6 +142,7 @@ const TOPBAR_NAV_ORDER: { id: PageId; label: string }[] = [
   { id: 'memo', label: 'Memos' },
   { id: 'returns', label: 'Return & Restock' },
   { id: 'reports', label: 'Reports' },
+  { id: 'inventoryReport', label: 'Inventory report' },
 ];
 
 /** `allowedPages` is staff’s server list; omit or pass null for owner (all pages). */
@@ -217,7 +220,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
         { id: 'returns', label: 'Return & Restock' },
       ],
     },
-    { title: 'Reports', items: [{ id: 'reports', label: 'Reports' }] },
+    {
+      title: 'Reports',
+      items: [
+        { id: 'reports', label: 'Reports & Analytics' },
+        { id: 'inventoryReport', label: 'Inventory report' },
+      ],
+    },
   ];
 
   return (
@@ -327,6 +336,7 @@ export function Topbar(props: TopbarProps) {
     memo: 'Memos',
     returns: 'Return & Restock',
     reports: 'Reports & Analytics',
+    inventoryReport: 'Monthly inventory report',
     profile: 'Profile',
   };
 

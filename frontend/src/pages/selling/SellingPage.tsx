@@ -129,12 +129,6 @@ interface InvoiceDetailForEdit {
   }[];
 }
 
-const iconSize = 20;
-const IconSearch = () => (
-  <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
-  </svg>
-);
 const IconPlus = () => (
   <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
@@ -156,12 +150,6 @@ const IconCheck = () => (
     <path d="M20 6L9 17l-5-5" />
   </svg>
 );
-const IconUser = () => (
-  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
-  </svg>
-);
-
 const IconX = ({ size = 18 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M18 6 6 18" /><path d="M6 6l12 12" />
@@ -279,7 +267,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     return apiUrl(path);
   };
 
-  const fetchAvailable = async (searchTerm?: string) => {
+  const fetchAvailable = useCallback(async (searchTerm?: string) => {
     setLoading(true);
     setError(null);
     try {
@@ -311,11 +299,11 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     } finally {
       setLoading(false);
     }
-  };
+  }, [token, showAlert, cart]);
 
   useEffect(() => {
-    fetchAvailable();
-  }, [token]);
+    void fetchAvailable();
+  }, [fetchAvailable]);
 
   useEffect(() => {
     let cancelled = false;
@@ -477,17 +465,34 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
 
   useEffect(() => {
     const id = setTimeout(() => {
-      fetchAvailable(search);
+      void fetchAvailable(search);
     }, 300);
     return () => clearTimeout(id);
-  }, [search]);
+  }, [search, fetchAvailable]);
+
+  const fetchCustomers = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+      params.set('limit', '250');
+      if (customerSearch.trim()) params.set('search', customerSearch.trim());
+      const res = await fetch(apiUrl(`/api/customers?${params.toString()}`), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to load customers'));
+      const rows = await res.json();
+      setCustomers(Array.isArray(rows) ? rows : []);
+    } catch (e: unknown) {
+      setCustomers([]);
+    } finally {
+    }
+  }, [token, customerSearch]);
 
   useEffect(() => {
     const id = setTimeout(() => {
-      fetchCustomers();
+      void fetchCustomers();
     }, 300);
     return () => clearTimeout(id);
-  }, [customerSearch]);
+  }, [customerSearch, fetchCustomers]);
 
   useEffect(() => {
     void fetchInvoices();
@@ -567,31 +572,6 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
   const parsedDiscount = Number.isFinite(discountAmount) ? discountAmount : 0;
   const finalTotalRaw = cartTotal - itemsDiscountTotal - parsedDiscount;
   const finalTotal = finalTotalRaw > 0 ? finalTotalRaw : 0;
-
-  const fetchCustomers = async () => {
-    if (!customerSearch.trim()) {
-      setCustomers([]);
-      return;
-    }
-    try {
-      const params = new URLSearchParams();
-      params.set('search', customerSearch.trim());
-      params.set('limit', '20');
-      const res = await fetch(apiUrl(`/api/customers?${params.toString()}`), {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) {
-        const msg = await parseErrorResponse(res, 'Failed to load customers');
-        throw new Error(msg);
-      }
-      const data = await res.json();
-      setCustomers(data);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to load customers';
-      setCustomers([]);
-      showAlert({ title: 'Could not load customers', message: msg, variant: 'error' });
-    }
-  };
 
   const handleNewCustomerChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;

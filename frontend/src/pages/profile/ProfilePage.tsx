@@ -110,6 +110,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
 
   const [fxLoading, setFxLoading] = useState(false);
   const [fxSaving, setFxSaving] = useState(false);
+  const [fxFrankfurterSyncing, setFxFrankfurterSyncing] = useState(false);
   const [fxErr, setFxErr] = useState<string | null>(null);
   const [fxMsg, setFxMsg] = useState<string | null>(null);
   /** THB per 1 USD (standard quote: how many baht one dollar is worth). */
@@ -230,6 +231,39 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   useEffect(() => {
     void fetchExchangeRates();
   }, [fetchExchangeRates]);
+
+  const syncFrankfurterFromApi = useCallback(async () => {
+    setFxFrankfurterSyncing(true);
+    setFxErr(null);
+    setFxMsg(null);
+    try {
+      const res = await fetch(apiUrl('/api/exchange-rates/sync-frankfurter'), {
+        method: 'POST',
+        headers: authHeaders(token),
+      });
+      if (!res.ok) {
+        const msg = await parseErrorResponse(res, 'Could not sync exchange rates');
+        throw new Error(msg);
+      }
+      const data = (await res.json()) as { rate_date?: string | null };
+      const d = data.rate_date ? ` (ECB date ${data.rate_date})` : '';
+      setFxMsg(`Live rates applied from Frankfurter${d}.`);
+      await fetchExchangeRates();
+      showAlert({
+        title: 'Exchange rates updated',
+        message: data.rate_date
+          ? `Frankfurter rates saved. ECB reference date: ${data.rate_date}.`
+          : 'Frankfurter rates saved.',
+        variant: 'success',
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Frankfurter sync failed';
+      setFxErr(msg);
+      showAlert({ title: 'Frankfurter sync', message: msg, variant: 'error' });
+    } finally {
+      setFxFrankfurterSyncing(false);
+    }
+  }, [token, fetchExchangeRates, showAlert]);
 
   useEffect(() => {
     setNewUser(username);
@@ -775,12 +809,18 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       <section className="profile-section-card profile-section-card--fx" aria-label="Exchange rates">
           <div className="profile-section-head">
             <span className="profile-section-kicker profile-section-kicker--violet">Rates</span>
-            <h3 className="profile-section-title">Exchange rates (USD reference)</h3>
+            <h3 className="profile-section-title">Exchange rates (USD is primary)</h3>
             <p className="profile-section-desc">
-              Quote everything as <strong>how much of that currency one US dollar is worth</strong>: <strong>1 USD = ? THB</strong>, then{' '}
-              <strong>1 USD = ? EUR</strong>, <strong>1 USD = ? JPY</strong>, and so on. That matches usual FX screens and avoids mixing up
-              which side of the fraction you are editing. Changing rates does <strong>not</strong> change stored inventory list prices—it
-              only affects conversions (invoices, memos, reports, prefill). Leave a currency blank when saving to keep its current stored rate.
+              The shop&apos;s main reference currency is <strong>USD</strong>. Enter rates as <strong>how much of each currency one US dollar
+              is worth</strong>: <strong>1 USD = ? THB</strong>, then <strong>1 USD = ? EUR</strong>, <strong>1 USD = ? JPY</strong>, and so
+              on—the same way most FX tables quote against the dollar. Internally the app still stores a THB-per-unit bridge for totals. Use{' '}
+              <strong>Fetch live rates</strong> to pull ECB spot rates via the free{' '}
+              <a href="https://www.frankfurter.app/" target="_blank" rel="noopener noreferrer">
+                Frankfurter
+              </a>{' '}
+              API (USD base). The server can also refresh these automatically once per day while it is running. Changing rates does{' '}
+              <strong>not</strong> change stored inventory list prices—it only affects conversions (invoices, memos, reports, prefill). Leave a
+              currency blank when saving manually to keep its current stored rate.
               {role === 'staff' ? (
                 <>
                   {' '}
@@ -887,10 +927,18 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                 </table>
               </div>
               <div className="profile-fx-actions">
-                <button type="button" className="ghost-button" disabled={fxLoading || fxSaving} onClick={() => void fetchExchangeRates()}>
+                <button type="button" className="ghost-button" disabled={fxLoading || fxSaving || fxFrankfurterSyncing} onClick={() => void fetchExchangeRates()}>
                   Reload
                 </button>
-                <button type="submit" className="primary-button profile-section-submit" disabled={fxSaving || fxLoading}>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  disabled={fxLoading || fxSaving || fxFrankfurterSyncing}
+                  onClick={() => void syncFrankfurterFromApi()}
+                >
+                  {fxFrankfurterSyncing ? 'Fetching…' : 'Fetch live rates'}
+                </button>
+                <button type="submit" className="primary-button profile-section-submit" disabled={fxSaving || fxLoading || fxFrankfurterSyncing}>
                   {fxSaving ? 'Saving…' : 'Save rates'}
                 </button>
               </div>

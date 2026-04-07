@@ -9,4 +9,5 @@ export { CustomersPage } from './customers/CustomersPage';
 export { MemoPage } from './memo/MemoPage';
 export { ReturnsPage } from './returns/ReturnsPage';
 export { ReportsPage } from './reports/ReportsPage';
+export { InventoryReportPage } from './reports/InventoryReportPage';
 export { ProfilePage } from './profile/ProfilePage';

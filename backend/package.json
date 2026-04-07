@@ -6,7 +6,8 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "build": "echo \"No build step for backend\"",
-    "wipe-data": "node scripts/wipe-all-data.js"
+    "wipe-data": "node scripts/wipe-all-data.js",
+    "cloud-sync": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/cloud-sync.ps1"
   },
   "keywords": [],
   "author": "",
@@ -15,7 +16,9 @@
   "dependencies": {
     "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
+    "dotenv": "^17.4.1",
     "express": "^5.2.1",
+    "firebase-admin": "^13.7.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^1.4.5-lts.1",
     "sqlite3": "^5.1.7"

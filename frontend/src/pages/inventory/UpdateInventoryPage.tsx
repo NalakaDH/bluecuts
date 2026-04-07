@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAlertDialog } from '../../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../../api';
 import {
@@ -8,6 +8,15 @@ import {
   parseMoneyInput,
   roundMoney2,
 } from '../../lib/currencies';
+import {
+  ITEM_TYPE_OPTIONS,
+  INVENTORY_CATEGORY_MIN_DISPLAY_LENGTH,
+  categoryLooksLikeShortCode,
+  normalizeItemType,
+  isSingleItemTypeForm,
+  formatItemTypeDisplay,
+  inventoryItemPrimaryLabel,
+} from '../../lib/inventoryDisplay';
 
 const CATEGORY_OPTIONS: string[] = [
   'Blue Sapphire', 'Yellow Sapphire', 'Pink Sapphire', 'White Sapphire', 'Ruby', 'Aquamarine',
@@ -31,8 +40,15 @@ const CATEGORY_OPTIONS: string[] = [
   'Aquamarine Cabichon', 'Grandidirite', 'Moissanite', 'Spodumene',
 ];
 
-const ITEM_TYPE_OPTIONS: string[] = ['cut single', 'cut lot', 'rough single', 'rough lot'];
-const SINGLE_ITEM_TYPES = new Set(['cut single', 'rough single']);
+const DESCRIPTION_SHAPE_HINT = 'e.g. Oval 3ct, round brilliant — optional';
+
+function resolveInventoryCategory(stored: string, search: string, choices: readonly string[]): string {
+  const t = stored.trim();
+  if (t) return t;
+  const q = search.trim();
+  if (!q) return '';
+  return choices.find((c) => c.toLowerCase() === q.toLowerCase()) ?? '';
+}
 
 /** 1 gram = 5 carats (client-specified conversion) */
 const WEIGHT_GRAMS_TO_CARATS = 5;
@@ -79,7 +95,7 @@ interface MobileUploadSessionStatus {
   image_path: string | null;
 }
 
-const MAX_CATEGORY_DROPDOWN = 12;
+const MAX_CATEGORY_DROPDOWN = 16;
 
 function formatDateTime(iso: string): string {
   try {
@@ -248,11 +264,31 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
     description: '',
   });
 
-  const filteredCategories = categorySearch.trim()
-    ? CATEGORY_OPTIONS.filter(c =>
-        c.toLowerCase().includes(categorySearch.trim().toLowerCase())
-      ).slice(0, MAX_CATEGORY_DROPDOWN)
-    : CATEGORY_OPTIONS.slice(0, MAX_CATEGORY_DROPDOWN);
+  const allCategoryChoices = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of CATEGORY_OPTIONS) map.set(c.toLowerCase(), c);
+    for (const it of items) {
+      const c = (it.category || '').trim();
+      if (c.length >= INVENTORY_CATEGORY_MIN_DISPLAY_LENGTH && !map.has(c.toLowerCase())) {
+        map.set(c.toLowerCase(), c);
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.localeCompare(b));
+  }, [items]);
+
+  const filteredCategories = useMemo(() => {
+    const q = categorySearch.trim().toLowerCase();
+    const base = q
+      ? allCategoryChoices.filter((c) => c.toLowerCase().includes(q))
+      : allCategoryChoices;
+    return base.slice(0, MAX_CATEGORY_DROPDOWN);
+  }, [allCategoryChoices, categorySearch]);
+
+  const categorySearchRef = useRef(categorySearch);
+  categorySearchRef.current = categorySearch;
+  const allCategoryChoicesRef = useRef(allCategoryChoices);
+  allCategoryChoicesRef.current = allCategoryChoices;
+
   const categoryInputValue = categoryOpen ? categorySearch : (form.category || categorySearch);
 
   const fetchItems = useCallback(async (opts?: { search?: string; status?: string }) => {
@@ -444,17 +480,32 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
   const displayedItems = listCategoryFilter
     ? items.filter((i) => i.category === listCategoryFilter)
     : items;
-  const uniqueCategories = Array.from(new Set(items.map((i) => i.category))).sort();
+  const uniqueCategories = Array.from(
+    new Set(items.map((i) => i.category).filter((c) => !categoryLooksLikeShortCode(c)))
+  ).sort();
 
   const validateForm = (): Record<string, string> => {
     const err: Record<string, string> = {};
-    if (!form.category.trim()) err.category = 'Category is required.';
-    if (!form.item_type.trim()) err.item_type = 'Item type is required.';
+    const cat = resolveInventoryCategory(form.category, categorySearch, allCategoryChoices);
+    if (!cat) err.category = 'Stone type is required.';
+    else {
+      const allowedCat = allCategoryChoices.some((a) => a.toLowerCase() === cat.toLowerCase());
+      if (!allowedCat) {
+        err.category =
+          cat.length < INVENTORY_CATEGORY_MIN_DISPLAY_LENGTH
+            ? `Use the full stone name (at least ${INVENTORY_CATEGORY_MIN_DISPLAY_LENGTH} letters), not a short code.`
+            : 'Pick a stone type from the list or match an existing full category from inventory.';
+      }
+    }
+    const itemTypeNorm = normalizeItemType(form.item_type);
+    if (!itemTypeNorm) {
+      err.item_type = 'Choose product form: cut single, cut lot, rough single, or rough lot.';
+    }
     const piecesNum = Number(form.pieces);
     if (form.pieces === '' || isNaN(piecesNum)) err.pieces = 'Pieces is required.';
     else if (piecesNum < 1) err.pieces = 'Pieces must be at least 1.';
     else if (!Number.isInteger(piecesNum)) err.pieces = 'Pieces must be a whole number.';
-    else if (SINGLE_ITEM_TYPES.has(String(form.item_type).trim().toLowerCase()) && piecesNum !== 1) {
+    else if (itemTypeNorm && (itemTypeNorm === 'cut single' || itemTypeNorm === 'rough single') && piecesNum !== 1) {
       err.pieces = 'For cut single/rough single, pieces must be exactly 1.';
     }
     const wg = form.weight_grams.trim();
@@ -479,8 +530,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
     setForm(prev => {
       const next = { ...prev, [name]: value };
       if (name === 'item_type') {
-        const lowerType = String(value || '').trim().toLowerCase();
-        if (SINGLE_ITEM_TYPES.has(lowerType)) {
+        if (isSingleItemTypeForm(String(value || ''))) {
           next.pieces = '1';
         }
       }
@@ -537,9 +587,13 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
       return;
     }
     setFieldErrors({});
+    const itemTypeNorm = normalizeItemType(form.item_type)!;
+    const catRaw = resolveInventoryCategory(form.category, categorySearch, allCategoryChoices);
+    const catNorm =
+      allCategoryChoices.find((a) => a.toLowerCase() === catRaw.toLowerCase()) ?? catRaw.trim();
     const body = {
-      category: form.category,
-      item_type: form.item_type,
+      category: catNorm,
+      item_type: itemTypeNorm,
       pieces: Number(form.pieces),
       weight_grams: form.weight_grams ? Number(form.weight_grams) : null,
       weight_carats: form.weight_carats ? Number(form.weight_carats) : null,
@@ -600,6 +654,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
         item_code: '',
         description: '',
       });
+      setCategorySearch('');
       fetchItems();
     } catch (err: any) {
       const msg = err.message || 'Failed to save item';
@@ -673,7 +728,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
   const handleEdit = (item: InventoryItem) => {
     setForm({
       category: item.category,
-      item_type: item.item_type,
+      item_type: normalizeItemType(item.item_type) ?? '',
       pieces: String(item.pieces),
       weight_grams: item.weight_grams != null ? String(item.weight_grams) : '',
       weight_carats: item.weight_carats != null ? String(item.weight_carats) : '',
@@ -698,7 +753,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
   const handleDelete = async (item: InventoryItem) => {
     const ok = await showConfirm({
       title: 'Delete item?',
-      message: `Delete "${item.category}" (${item.item_code || item.id})? This cannot be undone if the item has no invoice or memo history.`,
+      message: `Delete "${inventoryItemPrimaryLabel(item)}" (${item.item_code || item.id})? This cannot be undone if the item has no invoice or memo history.`,
       confirmLabel: 'Delete',
       cancelLabel: 'Cancel',
       danger: true,
@@ -716,7 +771,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
       fetchItems({ search: listSearch, status: listStatusFilter });
       showAlert({
         title: 'Item deleted',
-        message: `"${item.category}" was removed from inventory.`,
+        message: `"${inventoryItemPrimaryLabel(item)}" was removed from inventory.`,
         variant: 'success',
       });
     } catch (err: any) {
@@ -771,7 +826,8 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
             </div>
             <div className="form-col-fields">
               <div className="form-field form-field-combobox" ref={categoryContainerRef}>
-                <label className="label-required">Category</label>
+                <label className="label-required">Stone type</label>
+                <span className="form-field-hint">Full gem name (e.g. Ruby), not a one-letter code</span>
                 <input
                   type="text"
                   autoComplete="off"
@@ -786,7 +842,22 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
                     setCategorySearch(form.category || '');
                   }}
                   onBlur={() => {
-                    setTimeout(() => setCategoryOpen(false), 150);
+                    setTimeout(() => {
+                      setCategoryOpen(false);
+                      const q = categorySearchRef.current.trim();
+                      if (!q) return;
+                      const choices = allCategoryChoicesRef.current;
+                      const m = choices.find((c) => c.toLowerCase() === q.toLowerCase());
+                      if (m) {
+                        setCategorySearch('');
+                        setForm((prev) => ({ ...prev, category: m }));
+                        setFieldErrors((prev) => {
+                          const next = { ...prev };
+                          delete next.category;
+                          return next;
+                        });
+                      }
+                    }, 150);
                   }}
                   onKeyDown={e => {
                     if (!categoryOpen) {
@@ -837,7 +908,8 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
                 )}
               </div>
               <div className="form-field">
-                <label className="label-required">Item type</label>
+                <label className="label-required">Cut / product form</label>
+                <span className="form-field-hint">Single vs lot and cut vs rough — not gem shape (use description for oval, round, etc.)</span>
                 <select
                   name="item_type"
                   value={form.item_type}
@@ -845,9 +917,17 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
                   required
                   className={fieldErrors.item_type ? 'input-invalid' : ''}
                 >
-                  <option value="">Select item type</option>
-                  {ITEM_TYPE_OPTIONS.map(t => (
-                    <option key={t} value={t}>{t}</option>
+                  <option value="">Select…</option>
+                  {ITEM_TYPE_OPTIONS.map((t) => (
+                    <option key={t} value={t}>
+                      {t === 'cut single'
+                        ? 'Cut — single stone'
+                        : t === 'cut lot'
+                          ? 'Cut — lot (multiple)'
+                          : t === 'rough single'
+                            ? 'Rough — single piece'
+                            : 'Rough — lot (multiple)'}
+                    </option>
                   ))}
                 </select>
                 {fieldErrors.item_type && (
@@ -860,14 +940,14 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
                   name="pieces"
                   type="number"
                   min={1}
-                  max={SINGLE_ITEM_TYPES.has(String(form.item_type).trim().toLowerCase()) ? 1 : undefined}
+                  max={isSingleItemTypeForm(form.item_type) ? 1 : undefined}
                   value={form.pieces}
                   onChange={handleChange}
-                  disabled={SINGLE_ITEM_TYPES.has(String(form.item_type).trim().toLowerCase())}
+                  disabled={isSingleItemTypeForm(form.item_type)}
                   required
                   className={fieldErrors.pieces ? 'input-invalid' : ''}
                 />
-                {SINGLE_ITEM_TYPES.has(String(form.item_type).trim().toLowerCase()) && (
+                {isSingleItemTypeForm(form.item_type) && (
                   <span className="form-field-hint">Single types are fixed at 1 piece.</span>
                 )}
                 {fieldErrors.pieces && (
@@ -1061,6 +1141,9 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
                   placeholder="0.00"
                   className={fieldErrors.purchasing_total_price ? 'input-invalid' : ''}
                 />
+                <span className="form-field-hint">
+                  In {INVENTORY_FORM_CURRENCY} (same as list price). Reports compare this cost to each sale in THB; profit goes negative if cost is higher than the allocated sale (e.g. after invoice discounts).
+                </span>
                 {fieldErrors.purchasing_total_price && (
                   <span className="form-field-error" role="alert">{fieldErrors.purchasing_total_price}</span>
                 )}
@@ -1132,7 +1215,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
                   rows={4}
                   value={form.description}
                   onChange={handleChange}
-                  placeholder="Optional"
+                  placeholder={DESCRIPTION_SHAPE_HINT}
                 />
               </div>
             </div>
@@ -1325,7 +1408,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
           </div>
         )}
         {!listLoading && !listError && displayedItems.length > 0 && (
-          <ul className="inventory-list" role="list">
+          <ul className="inventory-list">
             {displayedItems.map((item) => (
               <li key={item.id} className="inventory-list-item">
                 <div className="inventory-list-item-main">
@@ -1333,7 +1416,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
                     {item.image_path ? (
                       <img
                         src={getImageSrc(item.image_path)}
-                        alt={item.category}
+                        alt={inventoryItemPrimaryLabel(item)}
                         className="inventory-list-thumb-img"
                         onError={(e) => {
                           e.currentTarget.style.visibility = 'hidden';
@@ -1347,7 +1430,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
                   </div>
                   <div className="inventory-list-item-text">
                     <div className="inventory-list-item-heading">
-                      <span className="inventory-list-item-category">{item.category}</span>
+                      <span className="inventory-list-item-category">{inventoryItemPrimaryLabel(item)}</span>
                       {item.status && (
                         <span className={`inventory-list-item-badge inventory-list-item-badge--${item.status.toLowerCase().replace(/\s+/g, '-')}`}>
                           {item.status}
@@ -1355,7 +1438,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
                       )}
                     </div>
                     <span className="inventory-list-item-meta">
-                      {item.item_type} · {item.pieces} pc{item.pieces !== 1 ? 's' : ''}
+                      {formatItemTypeDisplay(item.item_type)} · {item.pieces} pc{item.pieces !== 1 ? 's' : ''}
                       {(item.weight_carats != null || item.weight_grams != null) && (
                         <> · {item.weight_carats != null ? `${item.weight_carats} ct` : ''}
                           {item.weight_carats != null && item.weight_grams != null && ' / '}

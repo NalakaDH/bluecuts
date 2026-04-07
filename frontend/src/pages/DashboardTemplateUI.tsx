@@ -1,10 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAlertDialog } from '../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../api';
+import { isCloudFirestoreMode } from '../cloud/cloudMode';
+import { readPublicDoc } from '../cloud/firestoreDocs';
 import type { PageId } from '../components/layout/Layout';
 import { DEFAULT_CURRENCY_CODE } from '../lib/currencies';
 import { formatUsdOnlyFromAny, formatUsdOnlyFromThb, thbEquivalentToUsdNumber } from '../lib/moneyUsdDisplay';
 import type { ThbPerUnitMap } from '../lib/exchangeConversion';
+import {
+  formatItemTypeDisplay,
+  inventoryItemPrimaryLabel,
+  inventoryCategoryDisplay,
+} from '../lib/inventoryDisplay';
 
 type InvoiceStatus = 'Unpaid' | 'Partial' | 'Paid';
 
@@ -328,6 +335,7 @@ function RevenueWeekChart({ rows, thbPerUnit }: { rows: { period: string; sales_
 
 export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTemplateUIProps) {
   const { showAlert } = useAlertDialog();
+  const cloud = isCloudFirestoreMode();
   const [rangeDays, setRangeDays] = useState<number>(30);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -340,14 +348,17 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
   const [memos, setMemos] = useState<MemoRow[]>([]);
   const [thbPerUnit, setThbPerUnit] = useState<ThbPerUnitMap>({ THB: 1 });
 
-  const [greetingTick, setGreetingTick] = useState(0);
+  const [, setGreetingTick] = useState(0);
   useEffect(() => {
     const id = window.setInterval(() => setGreetingTick(t => t + 1), 60_000);
     return () => window.clearInterval(id);
   }, []);
-  const timeGreeting = useMemo(() => greetingForLocalHour(), [greetingTick]);
+  const timeGreeting = useMemo(() => greetingForLocalHour(), []);
 
   const fetchOverview = async (days: number) => {
+    if (cloud) {
+      return await readPublicDoc<DashboardOverviewResponse>('dashboardOverview');
+    }
     const res = await fetch(apiUrl(`/api/dashboard/overview?days=${days}`), {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -361,6 +372,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
       .slice(0, 19);
 
   const fetchRecentInvoices = async (bounds?: { start: string; end: string } | null) => {
+    if (cloud) return;
     setInvoiceItemsCount({});
     const res = await fetch(apiUrl('/api/invoices'), { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to load invoices'));
@@ -398,6 +410,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
   };
 
   const fetchLowStock = async () => {
+    if (cloud) return;
     const params = new URLSearchParams();
     params.set('status', 'Available');
     params.set('limit', '200');
@@ -416,6 +429,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
   };
 
   const fetchMemos = async () => {
+    if (cloud) return;
     const params = new URLSearchParams();
     params.set('limit', '150');
     const res = await fetch(apiUrl(`/api/memos?${params.toString()}`), { headers: { Authorization: `Bearer ${token}` } });
@@ -435,11 +449,9 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
     try {
       const ov = await fetchOverview(rangeDays);
       setOverview(ov);
-      await Promise.all([
-        fetchRecentInvoices(ov.today_sales_bounds ?? null),
-        fetchLowStock(),
-        fetchMemos(),
-      ]);
+      if (!cloud) {
+        await Promise.all([fetchRecentInvoices(ov.today_sales_bounds ?? null), fetchLowStock(), fetchMemos()]);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to load dashboard';
       setError(msg);
@@ -456,6 +468,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
   }, [token, rangeDays]);
 
   useEffect(() => {
+    if (cloud) return;
     let cancelled = false;
     (async () => {
       try {
@@ -474,7 +487,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, cloud]);
 
   const lowStockCount = stockAlerts.length;
 
@@ -877,7 +890,18 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
                 <div className="dashT-stock-list">
                   {stockAlerts.length ? (
                     stockAlerts.map(item => {
-                      const code = item.item_code || item.item_sticker || `${item.category} ${item.item_type}`;
+                      const code =
+                        item.item_code?.trim() ||
+                        item.item_sticker?.trim() ||
+                        inventoryItemPrimaryLabel({
+                          id: item.id,
+                          category: item.category,
+                          item_code: null,
+                          description: null,
+                        });
+                      const sub =
+                        inventoryCategoryDisplay(item.category) ??
+                        (item.item_type ? formatItemTypeDisplay(item.item_type) : '');
                       const pcs = typeof item.pieces_remaining === 'number' ? item.pieces_remaining : 0;
                       return (
                         <div key={item.id} className="dashT-stock-row">
@@ -888,7 +912,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
                           </div>
                           <div className="dashT-stock-info">
                             <div className="dashT-stock-name">{code}</div>
-                            <div className="dashT-stock-cat">{item.category}</div>
+                            {sub ? <div className="dashT-stock-cat">{sub}</div> : null}
                           </div>
                           <div className="dashT-stock-pcs">
                             {pcs} <span>pc left</span>

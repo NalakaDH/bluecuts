@@ -20,6 +20,9 @@ backend/uploads/
 *.db-shm
 *.db-wal
 
+# Firebase / local keys (never commit)
+keys/
+
 # Electron icon folder: ignore everything except committed icon
 build/*
 !build/icon.png

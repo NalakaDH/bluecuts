@@ -3,6 +3,8 @@ import { useAlertDialog } from './components/AlertDialog';
 import './App.css';
 import { apiUrl, parseErrorResponse } from './api';
 import { Sidebar, Topbar, type PageId } from './components/layout/Layout';
+import { CloudApp } from './cloud/CloudApp';
+import { isCloudFirestoreMode } from './cloud/cloudMode';
 import { firstAllowedStaffPage, normalizeStaffAllowedPagesFromApi, staffCanAccessPage } from './lib/pagePermissions';
 import {
   DashboardPage,
@@ -16,6 +18,7 @@ import {
   MemoPage,
   ReturnsPage,
   ReportsPage,
+  InventoryReportPage,
   ProfilePage,
 } from './pages';
 
@@ -31,8 +34,9 @@ interface AuthState {
 
 type ThemeMode = 'light' | 'dark';
 
-const App: React.FC = () => {
+const LocalApp: React.FC = () => {
   const { showAlert } = useAlertDialog();
+
   const [auth, setAuth] = useState<AuthState | null>(null);
   const [theme, setTheme] = useState<ThemeMode>(() => {
     try {
@@ -202,7 +206,8 @@ const App: React.FC = () => {
     const contentStretch =
       effectivePage === 'updateInventory' ||
       effectivePage === 'checkInventory' ||
-      effectivePage === 'stockCount';
+      effectivePage === 'stockCount' ||
+      effectivePage === 'inventoryReport';
 
     const renderPage = () => {
       switch (effectivePage) {
@@ -211,7 +216,7 @@ const App: React.FC = () => {
         case 'updateInventory':
           return <UpdateInventoryPage token={auth.token} />;
         case 'checkInventory':
-          return <CheckInventoryPage token={auth.token} onNavigate={goToPage} />;
+          return <CheckInventoryPage token={auth.token} role={auth.role} onNavigate={goToPage} />;
         case 'stockCount':
           return <StockCountPage token={auth.token} />;
         case 'selling':
@@ -228,6 +233,8 @@ const App: React.FC = () => {
           return <ReturnsPage token={auth.token} />;
         case 'reports':
           return <ReportsPage token={auth.token} />;
+        case 'inventoryReport':
+          return <InventoryReportPage token={auth.token} />;
         case 'profile':
           return (
             <ProfilePage
@@ -280,6 +287,11 @@ const App: React.FC = () => {
   };
 
   return <div className={`App theme-${theme}`}>{renderMain()}</div>;
+};
+
+const App: React.FC = () => {
+  if (isCloudFirestoreMode()) return <CloudApp />;
+  return <LocalApp />;
 };
 
 export default App;
