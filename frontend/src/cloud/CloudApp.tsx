@@ -18,6 +18,9 @@ export function CloudApp() {
   const [pw, setPw] = useState('');
   const [err, setErr] = useState<string | null>(null);
 
+  // Use a non-empty token string so existing pages don't render "Loading..." gates.
+  const cloudToken = 'firebase';
+
   const [theme, setTheme] = useState<ThemeMode>(() => {
     try {
       return localStorage.getItem('theme-mode') === 'dark' ? 'dark' : 'light';
@@ -76,30 +79,38 @@ export function CloudApp() {
 
   if (!user) {
     return (
-      <div className="auth-container">
-        <div className="auth-card">
-          <h1>Blue Cuts</h1>
-          <p className="subtitle">Sign in to view reports</p>
-          <form onSubmit={handleLogin} className="auth-form">
-            <label>
-              Email
-              <input type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" required />
-            </label>
-            <label>
-              Password
-              <input
-                type="password"
-                value={pw}
-                onChange={e => setPw(e.target.value)}
-                autoComplete="current-password"
-                required
-              />
-            </label>
-            {err && <div className="error-text">{err}</div>}
-            <button type="submit" className="primary-button">
-              Log in
-            </button>
-          </form>
+      <div className={`App theme-${theme}`}>
+        <div className="auth-container">
+          <div className="auth-card">
+            <h1>Blue Cuts</h1>
+            <p className="subtitle">Sign in to view reports</p>
+            <form onSubmit={handleLogin} className="auth-form">
+              <label>
+                Email
+                <input
+                  type="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  autoComplete="email"
+                  required
+                />
+              </label>
+              <label>
+                Password
+                <input
+                  type="password"
+                  value={pw}
+                  onChange={e => setPw(e.target.value)}
+                  autoComplete="current-password"
+                  required
+                />
+              </label>
+              {err && <div className="error-text">{err}</div>}
+              <button type="submit" className="primary-button">
+                Log in
+              </button>
+            </form>
+          </div>
         </div>
       </div>
     );
@@ -107,54 +118,58 @@ export function CloudApp() {
 
   const goToPage = (p: PageId) => setActivePage(p);
 
-  const allowedPages = null; // cloud dashboard is owner-only
+  // Restrict navigation to cloud dashboard pages only.
+  const allowedPages = ['dashboard', 'checkInventory', 'reports', 'inventoryReport'];
 
   const renderPage = () => {
     switch (activePage) {
       case 'dashboard':
-        return <DashboardPage token="" onNavigate={goToPage} />;
+        return <DashboardPage token={cloudToken} onNavigate={goToPage} />;
       case 'checkInventory':
-        return <CheckInventoryPage token="" role="owner" onNavigate={goToPage} />;
+        return <CheckInventoryPage token={cloudToken} role="owner" onNavigate={goToPage} />;
       case 'reports':
-        return <ReportsPage token="" />;
+        return <ReportsPage token={cloudToken} />;
       case 'inventoryReport':
-        return <InventoryReportPage token="" />;
+        return <InventoryReportPage token={cloudToken} />;
       default:
-        return <DashboardPage token="" onNavigate={goToPage} />;
+        return <DashboardPage token={cloudToken} onNavigate={goToPage} />;
     }
   };
 
   return (
-    <div className={`app-shell ${theme === 'dark' ? 'theme-dark' : ''}`}>
-      {!sidebarHidden && (
-        <Sidebar
-          activePage={activePage}
-          onChangePage={goToPage}
-          username={username}
-          role="owner"
-          allowedPages={allowedPages}
-          collapsed={sidebarCollapsed}
-          onToggleCollapsed={() => setSidebarCollapsed(v => !v)}
-        />
-      )}
-      <main className="main">
-        <Topbar
-          page={activePage}
-          role="owner"
-          allowedPages={allowedPages}
-          collapsed={sidebarCollapsed}
-          onToggleCollapsed={() => setSidebarCollapsed(v => !v)}
-          sidebarHidden={sidebarHidden}
-          onSidebarHiddenChange={setSidebarHidden}
-          onChangePage={goToPage}
-          onToggleTheme={toggleTheme}
-          theme={theme}
-          onOpenProfile={() => void signOut(auth)}
-        />
-        <div className={`content ${['checkInventory', 'inventoryReport'].includes(activePage) ? 'content--stretch' : ''}`}>
-          {renderPage()}
-        </div>
-      </main>
+    <div className={`App theme-${theme}`}>
+      <div className={`layout${sidebarHidden ? ' layout--sidebar-hidden' : ''}`}>
+        {!sidebarHidden && (
+          <Sidebar
+            activePage={activePage}
+            onChangePage={goToPage}
+            username={username}
+            // Use staff role + explicit allowed pages to limit nav to cloud pages.
+            role="staff"
+            allowedPages={allowedPages}
+            collapsed={sidebarCollapsed}
+            onToggleCollapsed={() => setSidebarCollapsed(v => !v)}
+          />
+        )}
+        <main className="main">
+          <Topbar
+            page={activePage}
+            role="staff"
+            allowedPages={allowedPages}
+            collapsed={sidebarCollapsed}
+            onToggleCollapsed={() => setSidebarCollapsed(v => !v)}
+            sidebarHidden={sidebarHidden}
+            onSidebarHiddenChange={setSidebarHidden}
+            onChangePage={goToPage}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+            onOpenProfile={() => void signOut(auth)}
+          />
+          <section className={`content${['checkInventory', 'inventoryReport'].includes(activePage) ? ' content--page-stretch' : ''}`}>
+            {renderPage()}
+          </section>
+        </main>
+      </div>
     </div>
   );
 }
