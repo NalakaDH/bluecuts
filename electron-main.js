@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, Menu } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -9,6 +9,115 @@ const isDev = process.env.NODE_ENV === 'development';
 function getBackendRoot() {
   if (isDev) return path.join(__dirname, 'backend');
   return path.join(process.resourcesPath, 'backend');
+}
+
+function parseDotenvFile(filePath) {
+  const out = {};
+  if (!fs.existsSync(filePath)) return out;
+  const text = fs.readFileSync(filePath, 'utf8');
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const m = t.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!m) continue;
+    let v = m[2].trim();
+    const q = v[0];
+    if ((q === '"' || q === "'") && v.endsWith(q)) v = v.slice(1, -1);
+    out[m[1]] = v;
+  }
+  return out;
+}
+
+function postCloudSyncToLocalApi() {
+  const envPath = path.join(getBackendRoot(), '.env');
+  const env = parseDotenvFile(envPath);
+  const secret = String(
+    env.BLUECUTS_CLOUD_SYNC_SECRET || process.env.BLUECUTS_CLOUD_SYNC_SECRET || ''
+  ).trim();
+  if (!secret) {
+    dialog.showErrorBox(
+      'Cloud sync',
+      'BLUECUTS_CLOUD_SYNC_SECRET is not set. Add it to backend/.env (see .env.example), then restart the app.'
+    );
+    return;
+  }
+  const port = Number(process.env.PORT || 4000);
+  const now = new Date();
+  const body = JSON.stringify({
+    year: now.getFullYear(),
+    month: now.getMonth() + 1,
+  });
+  const req = http.request(
+    {
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/cloud/sync',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        'x-bluecuts-sync-secret': secret,
+      },
+    },
+    res => {
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          dialog.showMessageBox({
+            type: 'info',
+            title: 'Cloud sync',
+            message: 'Firestore snapshot updated.',
+            detail: data.slice(0, 2000),
+          });
+        } else {
+          dialog.showErrorBox(
+            'Cloud sync failed',
+            `HTTP ${res.statusCode}\n${data.slice(0, 1500)}`
+          );
+        }
+      });
+    }
+  );
+  req.on('error', err => {
+    dialog.showErrorBox(
+      'Cloud sync',
+      `Could not reach the local API (http://127.0.0.1:${port}). Start Blue Cuts or run the backend.\n\n${err.message}`
+    );
+  });
+  req.write(body);
+  req.end();
+}
+
+function buildApplicationMenu() {
+  const isMac = process.platform === 'darwin';
+  const template = [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }],
+          },
+        ]
+      : []),
+    {
+      label: 'File',
+      submenu: [isMac ? { role: 'close' } : { role: 'quit' }],
+    },
+    {
+      label: 'Tools',
+      submenu: [
+        {
+          label: 'Sync cloud dashboard (Firebase)…',
+          click: () => postCloudSyncToLocalApi(),
+        },
+      ],
+    },
+  ];
+  return Menu.buildFromTemplate(template);
 }
 
 function waitForBackend(maxMs = 45000) {
@@ -82,6 +191,7 @@ if (!gotTheLock) {
 
   app.whenReady().then(async () => {
     try {
+      Menu.setApplicationMenu(buildApplicationMenu());
       if (!isDev) {
         startEmbeddedBackend();
         await waitForBackend();

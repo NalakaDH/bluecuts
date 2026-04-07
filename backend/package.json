@@ -7,7 +7,12 @@
     "start": "node src/server.js",
     "build": "echo \"No build step for backend\"",
     "wipe-data": "node scripts/wipe-all-data.js",
-    "cloud-sync": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/cloud-sync.ps1"
+    "cloud-sync": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/cloud-sync.ps1",
+    "cloud-sync:task-register": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manage-cloud-sync-task.ps1 -Action Register -Schedule Both",
+    "cloud-sync:task-hourly": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manage-cloud-sync-task.ps1 -Action Register -Schedule Hourly",
+    "cloud-sync:task-daily": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manage-cloud-sync-task.ps1 -Action Register -Schedule Daily",
+    "cloud-sync:task-unregister": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manage-cloud-sync-task.ps1 -Action Unregister",
+    "cloud-sync:task-list": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manage-cloud-sync-task.ps1 -Action List"
   },
   "keywords": [],
   "author": "",

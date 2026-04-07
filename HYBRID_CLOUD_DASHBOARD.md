@@ -102,6 +102,42 @@ cd "E:\Projects\Blue Cuts Gems\backend"
 .\scripts\cloud-sync.ps1 -Year 2026 -Month 4
 ```
 
+### Scheduled sync (Windows Task Scheduler)
+
+Use `backend/scripts/manage-cloud-sync-task.ps1` to create or remove tasks under the current Windows user. The tasks run `cloud-sync.ps1`, which posts to your local API (default `http://127.0.0.1:4000`).
+
+From the `backend` folder:
+
+| Command | Meaning |
+|--------|---------|
+| `npm run cloud-sync:task-register` | Register **hourly** and **daily** (default daily time **2:00 AM**) |
+| `npm run cloud-sync:task-hourly` | Register **hourly** only |
+| `npm run cloud-sync:task-daily` | Register **daily** only |
+| `npm run cloud-sync:task-list` | Show task status / next run |
+| `npm run cloud-sync:task-unregister` | Remove both tasks |
+
+Examples (PowerShell):
+
+```powershell
+cd "E:\Projects\Blue Cuts Gems\backend"
+
+# Hourly + daily at 2:00 AM (same as npm run cloud-sync:task-register)
+.\scripts\manage-cloud-sync-task.ps1 -Action Register -Schedule Both
+
+# Daily only, at 1:30 AM
+.\scripts\manage-cloud-sync-task.ps1 -Action Register -Schedule Daily -DailyAt "1:30 AM"
+
+# If the API port or host differs
+.\scripts\manage-cloud-sync-task.ps1 -Action Register -Schedule Both -BaseUrl "http://127.0.0.1:4000"
+```
+
+**Requirement:** When a task runs, the **local Express API must be listening** (Blue Cuts running, or `npm start` in `backend`). Otherwise that run fails until the next attempt.
+
+### Manual sync
+
+1. **Blue Cuts (Electron):** menu **Tools → Sync cloud dashboard (Firebase)…** — reads `backend/.env` for `BLUECUTS_CLOUD_SYNC_SECRET` and calls `POST /api/cloud/sync` on `127.0.0.1` (port from `PORT` or `4000`).
+2. **Terminal:** `npm run cloud-sync` from `backend`, or double‑click **`backend/scripts/cloud-sync.cmd`**, or run **`cloud-sync.ps1`** directly.
+
 ---
 
 ## 3) Firebase console setup (you do this part)
@@ -200,6 +236,6 @@ Current limitations in Firebase mode (by design of one-way snapshot):
 
 ### Shop machine
 
-- Run backend normally
-- Call `/api/cloud/sync` after each sale or nightly (Task Scheduler / cron / manual button)
+- Run the backend (Electron build or `npm start` in `backend`).
+- Keep Firestore updated using **Task Scheduler** and/or **manual sync** as described in *Scheduled sync* and *Manual sync* above (or call `POST /api/cloud/sync` yourself).
 
