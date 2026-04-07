@@ -1,5 +1,5 @@
 import React from 'react';
-import { staffCanAccessPage } from '../../lib/pagePermissions';
+import { staffCanAccessPage, type StaffNavAccessOptions } from '../../lib/pagePermissions';
 
 const IconMenu: React.FC<{ className?: string }> = ({ className }) => (
   <svg className={className} width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -142,24 +142,28 @@ const TOPBAR_NAV_ORDER: { id: PageId; label: string }[] = [
   { id: 'memo', label: 'Memos' },
   { id: 'returns', label: 'Return & Restock' },
   { id: 'reports', label: 'Reports' },
-  { id: 'inventoryReport', label: 'Inventory report' },
+  { id: 'inventoryReport', label: 'Monthly inventory report' },
 ];
 
 /** `allowedPages` is staff’s server list; omit or pass null for owner (all pages). */
 export function canAccessPage(
   role: UserRole,
   page: PageId,
-  allowedPages?: string[] | null
+  allowedPages?: string[] | null,
+  staffNavAccessOptions?: StaffNavAccessOptions | null
 ): boolean {
-  return staffCanAccessPage(role, page, allowedPages ?? null);
+  return staffCanAccessPage(role, page, allowedPages ?? null, staffNavAccessOptions ?? undefined);
 }
 
 export function getTopbarNavItems(
   role: UserRole,
-  allowedPages?: string[] | null
+  allowedPages?: string[] | null,
+  staffNavAccessOptions?: StaffNavAccessOptions | null
 ): { id: PageId; label: string }[] {
-  return TOPBAR_NAV_ORDER.filter(item => canAccessPage(role, item.id, allowedPages));
+  return TOPBAR_NAV_ORDER.filter(item => canAccessPage(role, item.id, allowedPages, staffNavAccessOptions));
 }
+
+export type { StaffNavAccessOptions };
 
 const IconSidebarShow: React.FC<{ className?: string }> = ({ className }) => (
   <svg className={className} width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -185,6 +189,7 @@ interface SidebarProps {
   role: UserRole;
   /** Staff page access from server; ignored for owner (full access). */
   allowedPages: string[] | null | undefined;
+  staffNavAccessOptions?: StaffNavAccessOptions | null;
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }
@@ -195,10 +200,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   username,
   role,
   allowedPages,
+  staffNavAccessOptions,
   collapsed,
   onToggleCollapsed,
 }) => {
-  const canSee = (page: PageId) => canAccessPage(role, page, allowedPages);
+  const canSee = (page: PageId) => canAccessPage(role, page, allowedPages, staffNavAccessOptions);
 
   const navSections: { title: string; items: { id: PageId; label: string }[] }[] = [
     { title: 'Overview', items: [{ id: 'dashboard', label: 'Dashboard' }] },
@@ -224,7 +230,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       title: 'Reports',
       items: [
         { id: 'reports', label: 'Reports & Analytics' },
-        { id: 'inventoryReport', label: 'Inventory report' },
+        { id: 'inventoryReport', label: 'Monthly inventory report' },
       ],
     },
   ];
@@ -299,6 +305,7 @@ interface TopbarProps {
   role: UserRole;
   /** Staff page access from server; omit or null for owner (full nav). */
   allowedPages?: string[] | null;
+  staffNavAccessOptions?: StaffNavAccessOptions | null;
   collapsed: boolean;
   onToggleCollapsed: () => void;
   sidebarHidden: boolean;
@@ -314,6 +321,7 @@ export function Topbar(props: TopbarProps) {
     page,
     role,
     allowedPages = null,
+    staffNavAccessOptions,
     collapsed,
     onToggleCollapsed,
     sidebarHidden,
@@ -340,7 +348,7 @@ export function Topbar(props: TopbarProps) {
     profile: 'Profile',
   };
 
-  const quickNavItems = getTopbarNavItems(role, allowedPages);
+  const quickNavItems = getTopbarNavItems(role, allowedPages, staffNavAccessOptions);
   const CurrentIcon = navIcons[page];
 
   return (

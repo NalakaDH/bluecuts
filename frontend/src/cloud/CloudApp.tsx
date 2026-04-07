@@ -147,6 +147,7 @@ export function CloudApp() {
             // Use staff role + explicit allowed pages to limit nav to cloud pages.
             role="staff"
             allowedPages={allowedPages}
+            staffNavAccessOptions={{ linkStockCountToCheckInventory: false }}
             collapsed={sidebarCollapsed}
             onToggleCollapsed={() => setSidebarCollapsed(v => !v)}
           />
@@ -156,6 +157,7 @@ export function CloudApp() {
             page={activePage}
             role="staff"
             allowedPages={allowedPages}
+            staffNavAccessOptions={{ linkStockCountToCheckInventory: false }}
             collapsed={sidebarCollapsed}
             onToggleCollapsed={() => setSidebarCollapsed(v => !v)}
             sidebarHidden={sidebarHidden}
