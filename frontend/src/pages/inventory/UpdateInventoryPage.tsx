@@ -80,6 +80,22 @@ interface InventoryItem {
   updated_at: string;
 }
 
+type ActivityRow = {
+  shrink_units: number;
+  memo_units?: number;
+  sold_units?: number;
+  last_activity: string | null;
+  has_manual_edit: boolean;
+};
+
+type ActivitySummaryMap = Record<string, ActivityRow>;
+
+type EnrichedInventoryItem = InventoryItem & {
+  memoUnits: number;
+  soldUnits: number;
+  effectiveStatus: string;
+};
+
 interface MobileUploadSession {
   session_id: string;
   expires_at: string;
@@ -233,6 +249,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
   const [categoryHighlight, setCategoryHighlight] = useState(0);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [items, setItems] = useState<InventoryItem[]>([]);
+  const [activitySummary, setActivitySummary] = useState<ActivitySummaryMap>({});
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -298,26 +315,28 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
 
   const fetchItems = useCallback(async (opts?: { search?: string; status?: string }) => {
     const search = opts?.search !== undefined ? opts.search : listSearch;
-    const status = opts?.status !== undefined ? opts.status : listStatusFilter;
+    // Status includes virtual states (On Memo / Sold), so we filter client-side.
     setListLoading(true);
     setListError(null);
     try {
       const params = new URLSearchParams();
       if (search.trim()) params.set('search', search.trim());
-      if (status.trim()) params.set('status', status.trim());
-      const res = await fetch(apiUrl(`/api/inventory?${params.toString()}`), {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) {
-        const message = await parseErrorResponse(res, 'Failed to load inventory');
-        throw new Error(message);
-      }
-      const data = await res.json();
-      setItems(data);
+      const headers = { Authorization: `Bearer ${token}` };
+      const [invRes, sumRes] = await Promise.all([
+        fetch(apiUrl(`/api/inventory?${params.toString()}`), { headers }),
+        fetch(apiUrl('/api/inventory/activity-summary'), { headers }),
+      ]);
+      if (!invRes.ok) throw new Error(await parseErrorResponse(invRes, 'Failed to load inventory'));
+      if (!sumRes.ok) throw new Error(await parseErrorResponse(sumRes, 'Failed to load activity summary'));
+      const data = (await invRes.json()) as InventoryItem[];
+      const summary = (await sumRes.json()) as ActivitySummaryMap;
+      setItems(Array.isArray(data) ? data : []);
+      setActivitySummary(summary && typeof summary === 'object' ? summary : {});
     } catch (err: any) {
       const msg = err.message || 'Failed to load list';
       setListError(msg);
       setItems([]);
+      setActivitySummary({});
       showAlert({ title: 'Could not load inventory', message: msg, variant: 'error' });
     } finally {
       setListLoading(false);
@@ -482,9 +501,23 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
     };
   }, [mobileSession, token, showAlert]);
 
-  const displayedItems = listCategoryFilter
-    ? items.filter((i) => i.category === listCategoryFilter)
-    : items;
+  const enrichedItems: EnrichedInventoryItem[] = useMemo(() => {
+    return (items || []).map((i) => {
+      const s = activitySummary[String(i.id)] || ({} as ActivityRow);
+      const memoUnits = Math.max(0, Math.round(Number((s as any).memo_units) || 0));
+      const soldUnits = Math.max(0, Math.round(Number((s as any).sold_units) || 0));
+      const effectiveStatus =
+        memoUnits > 0 ? 'On Memo' : i.status === 'Out of stock' && soldUnits > 0 ? 'Sold' : i.status;
+      return { ...i, memoUnits, soldUnits, effectiveStatus };
+    });
+  }, [items, activitySummary]);
+
+  const displayedItems = useMemo(() => {
+    let list = enrichedItems;
+    if (listCategoryFilter) list = list.filter((i) => i.category === listCategoryFilter);
+    if (listStatusFilter) list = list.filter((i) => i.effectiveStatus === listStatusFilter);
+    return list;
+  }, [enrichedItems, listCategoryFilter, listStatusFilter]);
   const uniqueCategories = Array.from(
     new Set(items.map((i) => i.category).filter((c) => !categoryLooksLikeShortCode(c)))
   ).sort();
@@ -1448,14 +1481,14 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
             <p className="inventory-list-message inventory-list-error">{listError}</p>
           </div>
         )}
-        {!listLoading && !listError && items.length === 0 && (
+        {!listLoading && !listError && enrichedItems.length === 0 && (
           <div className="inventory-list-state inventory-list-state--empty">
             <span className="inventory-list-state-icon" aria-hidden="true">📦</span>
             <p className="inventory-list-message">No items yet.</p>
             <p className="inventory-list-message inventory-list-message-sub">Add one using the form above.</p>
           </div>
         )}
-        {!listLoading && !listError && items.length > 0 && displayedItems.length === 0 && (
+        {!listLoading && !listError && enrichedItems.length > 0 && displayedItems.length === 0 && (
           <div className="inventory-list-state inventory-list-state--empty">
             <span className="inventory-list-state-icon" aria-hidden="true">🔍</span>
             <p className="inventory-list-message">No items match the current filters.</p>
@@ -1486,9 +1519,9 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
                   <div className="inventory-list-item-text">
                     <div className="inventory-list-item-heading">
                       <span className="inventory-list-item-category">{inventoryItemPrimaryLabel(item)}</span>
-                      {item.status && (
-                        <span className={`inventory-list-item-badge inventory-list-item-badge--${item.status.toLowerCase().replace(/\s+/g, '-')}`}>
-                          {item.status}
+                    {item.effectiveStatus && (
+                        <span className={`inventory-list-item-badge inventory-list-item-badge--${item.effectiveStatus.toLowerCase().replace(/\s+/g, '-')}`}>
+                          {item.effectiveStatus}
                         </span>
                       )}
                     </div>
