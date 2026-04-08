@@ -137,7 +137,6 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   allowedPagesRef.current = allowedPages;
 
   const fetchAccount = useCallback(async () => {
-    setSyncing(true);
     try {
       const res = await fetch(apiUrl('/api/account'), { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) return;
@@ -159,8 +158,6 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       }
     } catch {
       // ignore
-    } finally {
-      setSyncing(false);
     }
   }, [token, onAccountUpdated]);
 
