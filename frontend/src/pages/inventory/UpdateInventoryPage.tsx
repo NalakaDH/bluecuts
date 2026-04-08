@@ -237,6 +237,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
   const [listError, setListError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const lastPurchasePriceEditedRef = useRef<'total' | 'carat'>('carat');
+  const lastSellingPriceEditedRef = useRef<'total' | 'carat'>('carat');
   const [formOpen, setFormOpen] = useState(false);
   const [listSearch, setListSearch] = useState('');
   const [listStatusFilter, setListStatusFilter] = useState<string>('');
@@ -535,6 +536,8 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
       const next = { ...prev, [name]: value };
       if (name === 'purchasing_total_price') lastPurchasePriceEditedRef.current = 'total';
       if (name === 'purchasing_carat_price') lastPurchasePriceEditedRef.current = 'carat';
+      if (name === 'selling_total_price') lastSellingPriceEditedRef.current = 'total';
+      if (name === 'selling_carat_price') lastSellingPriceEditedRef.current = 'carat';
       if (name === 'item_type') {
         if (isSingleItemTypeForm(String(value || ''))) {
           next.pieces = '1';
@@ -563,10 +566,17 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
         } else {
           next.purchasing_total_price = '';
         }
-        if (Number.isFinite(weightCarats) && weightCarats > 0 && Number.isFinite(sellingCaratPrice) && sellingCaratPrice >= 0) {
-          next.selling_total_price = roundMoney2(weightCarats * sellingCaratPrice).toFixed(2);
-        } else {
-          next.selling_total_price = '';
+        // Only recalc selling_total from selling_carat if carat is the last edited source
+        // (or if the user is actively editing selling_carat_price right now).
+        const keepSellingTotalAsSource =
+          (name === 'weight_carats' || name === 'weight_grams') &&
+          lastSellingPriceEditedRef.current === 'total';
+        if (!keepSellingTotalAsSource) {
+          if (Number.isFinite(weightCarats) && weightCarats > 0 && Number.isFinite(sellingCaratPrice) && sellingCaratPrice >= 0) {
+            next.selling_total_price = roundMoney2(weightCarats * sellingCaratPrice).toFixed(2);
+          } else {
+            next.selling_total_price = '';
+          }
         }
       }
 
@@ -584,6 +594,23 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
         } else if (name === 'purchasing_total_price') {
           // Only clear the derived field when the user is editing total (avoid wiping on other edits).
           next.purchasing_carat_price = '';
+        }
+      }
+
+      // Selling total -> selling carat (bidirectional).
+      const shouldRecalcSellingCarat =
+        name === 'selling_total_price' || name === 'weight_carats' || name === 'weight_grams';
+      if (shouldRecalcSellingCarat) {
+        const weightCarats = Number(next.weight_carats);
+        const total = Number(next.selling_total_price);
+        const last = lastSellingPriceEditedRef.current;
+        if ((name === 'weight_carats' || name === 'weight_grams') && last === 'carat') {
+          // When weight changes, keep carat price as the "source of truth" (existing behavior).
+        } else if (Number.isFinite(weightCarats) && weightCarats > 0 && Number.isFinite(total) && total >= 0) {
+          next.selling_carat_price = roundMoney2(total / weightCarats).toFixed(2);
+        } else if (name === 'selling_total_price') {
+          // Only clear the derived field when the user is editing total (avoid wiping on other edits).
+          next.selling_carat_price = '';
         }
       }
 
