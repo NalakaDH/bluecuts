@@ -55,6 +55,8 @@ interface StockMovement {
 
 interface ActivityRow {
   shrink_units: number;
+  memo_units?: number;
+  sold_units?: number;
   last_activity: string | null;
   has_manual_edit: boolean;
 }
@@ -66,6 +68,9 @@ type StockHealth = 'critical' | 'low' | 'healthy';
 type EnrichedItem = InventoryItem & {
   rem: number;
   shrinkUnits: number;
+  memoUnits: number;
+  soldUnits: number;
+  effectiveStatus: string;
   lastActivityIso: string | null;
   hasManualEdit: boolean;
 };
@@ -266,14 +271,27 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, r
     return rawItems.map((item) => {
       const s = activitySummary[String(item.id)] || {
         shrink_units: 0,
+        memo_units: 0,
+        sold_units: 0,
         last_activity: null,
         has_manual_edit: false,
       };
       const rem = remainingOf(item);
+      const memoUnits = Math.max(0, Math.round(Number((s as any).memo_units) || 0));
+      const soldUnits = Math.max(0, Math.round(Number((s as any).sold_units) || 0));
+      const effectiveStatus =
+        memoUnits > 0
+          ? 'On Memo'
+          : rem === 0 && soldUnits > 0
+            ? 'Sold'
+            : item.status;
       return {
         ...item,
         rem,
         shrinkUnits: Number(s.shrink_units) || 0,
+        memoUnits,
+        soldUnits,
+        effectiveStatus,
         lastActivityIso: s.last_activity || item.updated_at || null,
         hasManualEdit: Boolean(s.has_manual_edit),
       };
@@ -308,7 +326,7 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, r
           .toLowerCase();
         if (!hay.includes(q)) return false;
       }
-      if (filterStatus && i.status !== filterStatus) return false;
+      if (filterStatus && i.effectiveStatus !== filterStatus) return false;
       if (filterCat && i.category !== filterCat) return false;
       const h = healthOf(i.rem, i.pieces);
       if (isOwner && filterHealth !== 'all' && h !== filterHealth) return false;
@@ -398,7 +416,7 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, r
         </div>
         <div className="ci2-summary-cell">
           <span className="ci2-summary-label">Available</span>
-          <span className="ci2-summary-val ci2-summary-val--ok">{filtered.filter((i) => i.status === 'Available').length}</span>
+          <span className="ci2-summary-val ci2-summary-val--ok">{filtered.filter((i) => i.effectiveStatus === 'Available').length}</span>
         </div>
         <div className="ci2-summary-cell">
           <span className="ci2-summary-label">Out of stock</span>
@@ -586,7 +604,7 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, r
                               : '—'}
                           </td>
                           <td className="ci2-td">
-                            <span className={`ci2-status ci2-status--${statusBadgeClass(item.status)}`}>{item.status}</span>
+                            <span className={`ci2-status ci2-status--${statusBadgeClass(item.effectiveStatus)}`}>{item.effectiveStatus}</span>
                           </td>
                           <td className="ci2-td ci2-muted">{formatRelativeLast(item.lastActivityIso)}</td>
                           <td className="ci2-td ci2-flags">
@@ -645,7 +663,7 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, r
                         </div>
                       </div>
                       <div className="ci2-card-foot">
-                        <span className={`ci2-status ci2-status--${statusBadgeClass(item.status)}`}>{item.status}</span>
+                        <span className={`ci2-status ci2-status--${statusBadgeClass(item.effectiveStatus)}`}>{item.effectiveStatus}</span>
                         <span className="ci2-price">
                           {item.selling_total_price != null
                             ? formatMoneyWhole(item.selling_total_price, item.selling_currency)
@@ -753,8 +771,8 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, r
                 </div>
                 <div className="ci2-field">
                   <div className="ci2-field-label">Status</div>
-                  <span className={`ci2-status ci2-status--${statusBadgeClass(selectedItem.status)}`}>
-                    {selectedItem.status}
+                  <span className={`ci2-status ci2-status--${statusBadgeClass(selectedItem.effectiveStatus)}`}>
+                    {selectedItem.effectiveStatus}
                   </span>
                 </div>
                 <div className="ci2-field">
