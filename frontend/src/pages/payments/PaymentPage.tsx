@@ -5,6 +5,7 @@ import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
 import { mapApiInvoiceToReceipt, openInvoiceReceiptWindow } from '../../lib/receiptDocument';
 import { formatUsdOnlyFromThb } from '../../lib/moneyUsdDisplay';
 import { DEFAULT_CURRENCY_CODE, formatMoneyAmount, roundMoney2 } from '../../lib/currencies';
+import { dateFromServerUtc } from '../../lib/serverTime';
 import { INVOICE_CHECKOUT_INVOICE_ID_KEY } from '../../constants/invoiceCheckout';
 import type { PageId } from '../../components/layout/Layout';
 import { InvoiceCheckoutPage } from './InvoiceCheckoutPage';
@@ -593,7 +594,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
                 invoices.map(inv => {
                   const isSelected = selectedInvoiceId === inv.id;
                   const st = (inv.status || 'Unpaid').toLowerCase() as 'paid' | 'unpaid' | 'partial';
-                  const createdLabel = new Date(inv.createdAt).toLocaleString(undefined, {
+                  const createdLabel = dateFromServerUtc(inv.createdAt).toLocaleString(undefined, {
                     month: 'numeric',
                     day: 'numeric',
                     year: 'numeric',
@@ -691,7 +692,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
                           {selectedInvoice.customer_name || 'Walk-in customer'}
                         </div>
                         <div className="pay-inv-detail-when">
-                          {new Date(selectedInvoice.created_at).toLocaleString(undefined, {
+                          {dateFromServerUtc(selectedInvoice.created_at).toLocaleString(undefined, {
                             month: 'numeric',
                             day: 'numeric',
                             year: 'numeric',
@@ -791,7 +792,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
                                   <div>
                                     <div className="pay-inv-payment-method">{p.method}</div>
                                     <div className="pay-inv-payment-when">
-                                      {new Date(p.created_at).toLocaleString(undefined, {
+                                      {dateFromServerUtc(p.created_at).toLocaleString(undefined, {
                                         month: 'numeric',
                                         day: 'numeric',
                                         year: 'numeric',

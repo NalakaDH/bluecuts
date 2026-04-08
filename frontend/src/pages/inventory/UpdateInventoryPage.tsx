@@ -17,6 +17,7 @@ import {
   formatItemTypeDisplay,
   inventoryItemPrimaryLabel,
 } from '../../lib/inventoryDisplay';
+import { dateFromServerUtc } from '../../lib/serverTime';
 
 const CATEGORY_OPTIONS: string[] = [
   'Blue Sapphire', 'Yellow Sapphire', 'Pink Sapphire', 'White Sapphire', 'Ruby', 'Aquamarine',
@@ -99,7 +100,7 @@ const MAX_CATEGORY_DROPDOWN = 16;
 
 function formatDateTime(iso: string): string {
   try {
-    const d = new Date(iso);
+    const d = dateFromServerUtc(iso);
     return d.toLocaleString(undefined, {
       day: 'numeric',
       month: 'short',

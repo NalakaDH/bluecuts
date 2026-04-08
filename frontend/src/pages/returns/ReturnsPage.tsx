@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useAlertDialog } from '../../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../../api';
 import { DEFAULT_CURRENCY_CODE, formatMoneyAmount } from '../../lib/currencies';
+import { dateFromServerUtc } from '../../lib/serverTime';
 
 type InvoiceStatus = 'Unpaid' | 'Partial' | 'Paid';
 
@@ -580,7 +581,7 @@ export const ReturnsPage: React.FC<ReturnsPageProps> = ({ token }) => {
                         >
                           <td className="ret-ui-inv-num">{inv.invoice_no}</td>
                           <td>{inv.customer_name || 'Walk-in'}</td>
-                          <td>{new Date(inv.created_at).toLocaleDateString()}</td>
+                          <td>{dateFromServerUtc(inv.created_at).toLocaleDateString()}</td>
                           <td>{formatMoneyAmount(inv.total, inv.currency_code || DEFAULT_CURRENCY_CODE)}</td>
                           <td>{formatMoneyAmount(inv.paid, inv.currency_code || DEFAULT_CURRENCY_CODE)}</td>
                           <td>
@@ -629,7 +630,7 @@ export const ReturnsPage: React.FC<ReturnsPageProps> = ({ token }) => {
                 <div className="ret-ui-inv-meta">
                   <div className="ret-ui-inv-meta-id">{detail.invoice_no}</div>
                   <div className="ret-ui-inv-meta-sub">
-                    {detail.customer_name || 'Walk-in'} · {new Date(detail.created_at).toLocaleString()}
+                    {detail.customer_name || 'Walk-in'} · {dateFromServerUtc(detail.created_at).toLocaleString()}
                   </div>
                   <div className="ret-ui-inv-meta-total">
                     {formatMoneyAmount(detail.total, detail.currency_code || DEFAULT_CURRENCY_CODE)}
@@ -867,7 +868,7 @@ export const ReturnsPage: React.FC<ReturnsPageProps> = ({ token }) => {
                               <div className="ret-ui-activity-main">
                                 <div className="ret-ui-activity-desc">{desc}</div>
                                 <div className="ret-ui-activity-time">
-                                  {new Date(m.created_at).toLocaleString()} · {m.user_name || '—'}
+                                  {dateFromServerUtc(m.created_at).toLocaleString()} · {m.user_name || '—'}
                                 </div>
                               </div>
                               <div className={`ret-ui-activity-delta ${retStockDeltaClass(m.qty_change)}`}>

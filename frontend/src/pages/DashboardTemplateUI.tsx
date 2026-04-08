@@ -7,6 +7,7 @@ import type { PageId } from '../components/layout/Layout';
 import { DEFAULT_CURRENCY_CODE } from '../lib/currencies';
 import { formatUsdOnlyFromAny, formatUsdOnlyFromThb, thbEquivalentToUsdNumber } from '../lib/moneyUsdDisplay';
 import type { ThbPerUnitMap } from '../lib/exchangeConversion';
+import { dateFromServerUtc } from '../lib/serverTime';
 import {
   formatItemTypeDisplay,
   inventoryItemPrimaryLabel,
@@ -379,7 +380,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
     const all: InvoiceRow[] = (await res.json()) as InvoiceRow[];
     const sorted = all
       .slice()
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      .sort((a, b) => dateFromServerUtc(b.created_at).getTime() - dateFromServerUtc(a.created_at).getTime());
 
     const todays =
       bounds && bounds.start && bounds.end
@@ -437,7 +438,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
     const rows: MemoRow[] = (await res.json()) as MemoRow[];
     const sorted = rows
       .slice()
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      .sort((a, b) => dateFromServerUtc(b.created_at).getTime() - dateFromServerUtc(a.created_at).getTime());
     const open = sorted.filter(r => r.status !== 'Closed');
     // If there are no open memos, show the latest memos (including Closed) so the dashboard doesn't look empty.
     setMemos((open.length ? open : sorted).slice(0, 4));

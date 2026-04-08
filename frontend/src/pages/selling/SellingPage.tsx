@@ -14,6 +14,7 @@ import {
   roundMoney2,
 } from '../../lib/currencies';
 import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
+import { dateFromServerUtc } from '../../lib/serverTime';
 import { formatUsdOnlyFromAny } from '../../lib/moneyUsdDisplay';
 
 /** Default invoice / checkout display currency for new sales on this page. */
@@ -1625,7 +1626,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
                   return (
                     <tr key={inv.id}>
                       <td className="selling-invoice-id">{inv.invoiceNo}</td>
-                      <td className="selling-invoice-date">{new Date(inv.createdAt).toLocaleDateString()}</td>
+                      <td className="selling-invoice-date">{dateFromServerUtc(inv.createdAt).toLocaleDateString()}</td>
                       <td className="selling-invoice-customer">{inv.customerName}</td>
                       <td className="selling-invoice-total">
                         {formatMoneyAmount(inv.total, inv.currencyCode)}
@@ -1823,7 +1824,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
                   {invoiceCreatedModalLineCount > 1 ? ` · ${invoiceCreatedModalLineCount} lines` : ''}
                 </span>
               </div>
-              <div><span>Date</span><span>{new Date(createdInvoice.createdAt).toLocaleDateString()}</span></div>
+              <div><span>Date</span><span>{dateFromServerUtc(createdInvoice.createdAt).toLocaleDateString()}</span></div>
             </div>
             {invoiceCreatedModalLineViews.length > 0 && (
               <div className="selling2-created-lines" aria-label="Invoice line details">

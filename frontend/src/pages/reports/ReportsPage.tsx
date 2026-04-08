@@ -11,6 +11,7 @@ import {
   thbEquivalentToUsdNumber,
 } from '../../lib/moneyUsdDisplay';
 import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
+import { dateFromServerUtc } from '../../lib/serverTime';
 
 type GroupMode = 'daily' | 'monthly';
 
@@ -1346,7 +1347,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                               ) : (
                                 summary.latest_stock_movements.map(m => (
                                   <tr key={m.id}>
-                                    <td>{new Date(m.created_at).toLocaleString()}</td>
+                                    <td>{dateFromServerUtc(m.created_at).toLocaleString()}</td>
                                     <td className="rep2-cell-name">
                                       {m.item_code || `#${m.inventory_item_id}`}
                                     </td>
@@ -1414,7 +1415,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                         return (
                           <tr key={inv.id}>
                             <td className="reports-strong">{inv.invoice_no}</td>
-                            <td>{new Date(inv.created_at).toLocaleDateString()}</td>
+                            <td>{dateFromServerUtc(inv.created_at).toLocaleDateString()}</td>
                             <td className="right">
                               {formatUsdOnlyFromAny(inv.total, inv.currency_code || DEFAULT_CURRENCY_CODE, thbPerUnit)}
                             </td>
@@ -1471,7 +1472,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                     <tbody>
                       {itemStockHistory.map(m => (
                         <tr key={m.id}>
-                          <td>{new Date(m.created_at).toLocaleString()}</td>
+                          <td>{dateFromServerUtc(m.created_at).toLocaleString()}</td>
                           <td>{m.type}</td>
                           <td className={`right ${m.qty_change >= 0 ? 'reports-stock-pos' : 'reports-stock-neg'}`}>
                             {m.qty_change >= 0 ? `+${m.qty_change}` : m.qty_change}

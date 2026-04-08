@@ -4,6 +4,7 @@
  */
 
 import { currencyReceiptLabel, normalizeCurrencyCode } from './currencies';
+import { dateFromServerUtc } from './serverTime';
 
 const STORAGE_KEY = 'bluecuts-receipt-company';
 
@@ -111,7 +112,7 @@ function formatMoneyAmountOnly(n: number, currencyCode: string): string {
 
 function formatInvoiceDate(iso: string): string {
   if (!iso) return '—';
-  const d = new Date(iso);
+  const d = dateFromServerUtc(iso);
   if (Number.isNaN(d.getTime())) return escapeHtml(String(iso).slice(0, 10));
   return escapeHtml(d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }));
 }

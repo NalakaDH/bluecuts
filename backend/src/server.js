@@ -66,7 +66,7 @@ if (!JWT_SECRET && bluecutsUserData) {
   }
 }
 if (!JWT_SECRET) JWT_SECRET = 'dev_secret_change_me';
-/** IANA zone for "today" in doc numbers and default memo_date (SQLite date('now') is UTC). */
+/** IANA zone for "today" in doc numbers and default memo_date. SQLite `datetime('now')` is UTC; the React app parses those strings as UTC when displaying local time. */
 const BUSINESS_TZ = process.env.BUSINESS_TZ || 'Asia/Bangkok';
 
 /** Calendar date YYYY-MM-DD in BUSINESS_TZ. */

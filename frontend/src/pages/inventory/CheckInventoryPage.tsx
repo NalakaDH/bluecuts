@@ -10,6 +10,7 @@ import {
   formatItemTypeDisplay,
   inventoryCategoryDisplay,
 } from '../../lib/inventoryDisplay';
+import { dateFromServerUtc } from '../../lib/serverTime';
 
 type UserRole = 'owner' | 'staff';
 
@@ -119,7 +120,7 @@ function displayTitle(item: InventoryItem): string {
 
 function formatRelativeLast(iso: string | null): string {
   if (!iso) return '—';
-  const t = new Date(iso).getTime();
+  const t = dateFromServerUtc(iso).getTime();
   if (Number.isNaN(t)) return '—';
   const now = Date.now();
   const diffMs = Math.max(0, now - t);
@@ -131,12 +132,12 @@ function formatRelativeLast(iso: string | null): string {
   if (h < 1) return `${m} min ago`;
   if (d < 1) return `${h} hr ago`;
   if (d < 7) return `${d} day${d === 1 ? '' : 's'} ago`;
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  return dateFromServerUtc(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function formatMovementDateShort(iso: string): string {
   try {
-    return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    return dateFromServerUtc(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   } catch {
     return iso;
   }
