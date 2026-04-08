@@ -88,6 +88,16 @@ async function syncToFirestore(deps, opts) {
          WHERE sm.inventory_item_id = i.id AND sm.type = 'SHRINKAGE'),
         0
       ) AS shrink_units,
+      COALESCE(
+        -(SELECT SUM(sm_m.qty_change) FROM stock_movements sm_m
+          WHERE sm_m.inventory_item_id = i.id AND sm_m.type IN ('MEMO_OUT', 'MEMO_RETURN', 'MEMO_VOID')),
+        0
+      ) AS memo_units,
+      COALESCE(
+        -(SELECT SUM(sm_s.qty_change) FROM stock_movements sm_s
+          WHERE sm_s.inventory_item_id = i.id AND sm_s.type IN ('SALE', 'INVOICE_RETURN')),
+        0
+      ) AS sold_units,
       (SELECT MAX(sm2.created_at) FROM stock_movements sm2 WHERE sm2.inventory_item_id = i.id) AS last_activity,
       EXISTS(
         SELECT 1 FROM stock_movements sm3
@@ -100,6 +110,8 @@ async function syncToFirestore(deps, opts) {
   for (const r of activityRows || []) {
     activityMap[String(r.id)] = {
       shrink_units: Number(r.shrink_units) || 0,
+      memo_units: Math.max(0, Math.round(Number(r.memo_units) || 0)),
+      sold_units: Math.max(0, Math.round(Number(r.sold_units) || 0)),
       last_activity: r.last_activity || null,
       has_manual_edit: Boolean(r.has_manual_edit),
     };
