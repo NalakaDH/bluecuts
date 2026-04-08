@@ -79,7 +79,9 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   const { showAlert, showConfirm } = useAlertDialog();
   const roleLabel = role === 'owner' ? 'Shop owner' : 'Staff';
 
-  const [syncing, setSyncing] = useState(false);
+  const [cloudSyncLoading, setCloudSyncLoading] = useState(false);
+  const [cloudSyncMsg, setCloudSyncMsg] = useState<string | null>(null);
+  const [cloudSyncErr, setCloudSyncErr] = useState<string | null>(null);
 
   const [curPwd, setCurPwd] = useState('');
   const [newUser, setNewUser] = useState('');
@@ -231,6 +233,33 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   useEffect(() => {
     void fetchExchangeRates();
   }, [fetchExchangeRates]);
+
+  const syncCloudDashboard = useCallback(async () => {
+    setCloudSyncErr(null);
+    setCloudSyncMsg(null);
+    setCloudSyncLoading(true);
+    try {
+      const res = await fetch(apiUrl('/api/cloud/sync-from-app'), {
+        method: 'POST',
+        headers: authHeaders(token),
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const msg = await parseErrorResponse(res, 'Could not sync to cloud dashboard');
+        throw new Error(msg);
+      }
+      await res.json();
+      const ok = 'Snapshot was sent to the cloud dashboard.';
+      setCloudSyncMsg(ok);
+      showAlert({ title: 'Cloud dashboard', message: ok, variant: 'success' });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Cloud sync failed';
+      setCloudSyncErr(msg);
+      showAlert({ title: 'Cloud sync failed', message: msg, variant: 'error' });
+    } finally {
+      setCloudSyncLoading(false);
+    }
+  }, [token, showAlert]);
 
   const syncFrankfurterFromApi = useCallback(async () => {
     setFxFrankfurterSyncing(true);
@@ -653,11 +682,6 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
               ? 'Manage your sign-in, invite staff, and control which areas of the app they can use.'
               : 'Update your sign-in. Which pages you can open is set by the shop owner.'}
           </p>
-          {syncing ? (
-            <span className="profile-sync-badge" role="status">
-              Syncing…
-            </span>
-          ) : null}
         </div>
       </header>
 
@@ -989,6 +1013,30 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
           </div>
         ) : null}
       </section>
+
+      {role === 'owner' ? (
+        <section className="profile-section-card profile-section-card--cloud" aria-label="Cloud dashboard sync">
+          <div className="profile-section-head">
+            <span className="profile-section-kicker profile-section-kicker--violet">Cloud</span>
+            <h3 className="profile-section-title">Cloud dashboard</h3>
+            <p className="profile-section-desc">
+              Push the latest reports and inventory snapshot to Firebase for the online dashboard (Vercel). This PC must
+              have <strong>BLUECUTS_SHOP_ID</strong> and Firebase credentials in <strong>backend/.env</strong> as described in the
+              hybrid setup guide.
+            </p>
+          </div>
+          {cloudSyncErr ? <p className="profile-form-error">{cloudSyncErr}</p> : null}
+          {cloudSyncMsg ? <p className="profile-form-success">{cloudSyncMsg}</p> : null}
+          <button
+            type="button"
+            className="primary-button profile-section-submit"
+            disabled={cloudSyncLoading}
+            onClick={() => void syncCloudDashboard()}
+          >
+            {cloudSyncLoading ? 'Syncing…' : 'Sync to cloud dashboard'}
+          </button>
+        </section>
+      ) : null}
 
           <section className="profile-section-card profile-section-card--logout" aria-label="Sign out">
             <h3 className="profile-section-title profile-section-title--small">End session</h3>

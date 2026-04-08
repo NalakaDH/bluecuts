@@ -4844,62 +4844,85 @@ function requireCloudSyncSecret(req, res, next) {
   return next();
 }
 
+async function runCloudSnapshotSync(req) {
+  const shopId = String(process.env.BLUECUTS_SHOP_ID || '').trim();
+  if (!shopId) {
+    const err = new Error('Missing BLUECUTS_SHOP_ID');
+    err.statusCode = 400;
+    throw err;
+  }
+  const now = new Date();
+  const yearDefault = Math.floor(Number(req.body?.year ?? now.getFullYear()));
+  const monthDefault = Math.floor(Number(req.body?.month ?? now.getMonth() + 1));
+  if (!Number.isFinite(yearDefault) || !Number.isFinite(monthDefault)) {
+    const err = new Error('Invalid year/month');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return syncToFirestore(
+    {
+      dbAll,
+      dbGet,
+      loadExchangeRatesThbPerUnit,
+      buildInventoryMonthlyReport,
+      businessTodayYmd,
+      businessZonedDayBoundsUtc,
+      businessYmdAddCalendarDays,
+      sqliteUtcFromMs,
+      BUSINESS_TZ,
+      sqlPieces: {
+        SQL_PAYMENTS_AGG_IP,
+        SQL_INV_FX_JOIN,
+        SQL_INV_OUTSTANDING_NATIVE,
+        SQL_INV_LINES_SUM_JOIN,
+        SQL_INVITEM_FX_JOIN,
+        SQL_THB_PER_INV,
+        SQL_LINE_PURCH_COST_THB,
+        SQL_INV_LINE_NET,
+        SQL_THB_PER_INVITEM,
+        SQL_THB_PER_MEMO,
+        SQL_MEMO_FX_JOIN,
+        sqlInvThbTotalRow,
+        sqlInvThbPaidRow,
+        sqlInvThbOutstandingRow,
+        sqlInvLineThbGrossRow,
+      },
+    },
+    {
+      shopId,
+      reportsTop: 5,
+      reportsRangeDays: 30,
+      dashboardDays: 30,
+      monthlyYear: yearDefault,
+      monthlyMonth: monthDefault,
+    }
+  );
+}
+
+function sendCloudSyncRouteError(res, err, logPrefix) {
+  const status = err && typeof err.statusCode === 'number' ? err.statusCode : 500;
+  const msg = err instanceof Error ? err.message : 'Cloud sync failed';
+  if (status >= 500) console.error(logPrefix, err);
+  return res.status(status).json({ error: msg });
+}
+
 app.post('/api/cloud/sync', requireCloudSyncSecret, async (req, res) => {
   try {
-    const shopId = String(process.env.BLUECUTS_SHOP_ID || '').trim();
-    if (!shopId) return res.status(400).json({ error: 'Missing BLUECUTS_SHOP_ID' });
-
-    const now = new Date();
-    const yearDefault = Math.floor(Number(req.body?.year ?? now.getFullYear()));
-    const monthDefault = Math.floor(Number(req.body?.month ?? now.getMonth() + 1));
-    if (!Number.isFinite(yearDefault) || !Number.isFinite(monthDefault)) {
-      return res.status(400).json({ error: 'Invalid year/month' });
-    }
-
-    const result = await syncToFirestore(
-      {
-        dbAll,
-        dbGet,
-        loadExchangeRatesThbPerUnit,
-        buildInventoryMonthlyReport,
-        businessTodayYmd,
-        businessZonedDayBoundsUtc,
-        businessYmdAddCalendarDays,
-        sqliteUtcFromMs,
-        BUSINESS_TZ,
-        sqlPieces: {
-          SQL_PAYMENTS_AGG_IP,
-          SQL_INV_FX_JOIN,
-          SQL_INV_OUTSTANDING_NATIVE,
-          SQL_INV_LINES_SUM_JOIN,
-          SQL_INVITEM_FX_JOIN,
-          SQL_THB_PER_INV,
-          SQL_LINE_PURCH_COST_THB,
-          SQL_INV_LINE_NET,
-          SQL_THB_PER_INVITEM,
-          SQL_THB_PER_MEMO,
-          SQL_MEMO_FX_JOIN,
-          sqlInvThbTotalRow,
-          sqlInvThbPaidRow,
-          sqlInvThbOutstandingRow,
-          sqlInvLineThbGrossRow,
-        },
-      },
-      {
-        shopId,
-        reportsTop: 5,
-        reportsRangeDays: 30,
-        dashboardDays: 30,
-        monthlyYear: yearDefault,
-        monthlyMonth: monthDefault,
-      }
-    );
-
+    const result = await runCloudSnapshotSync(req);
     return res.json(result);
   } catch (e) {
-    console.error('POST /api/cloud/sync', e);
-    const msg = e instanceof Error ? e.message : 'Cloud sync failed';
-    return res.status(500).json({ error: msg });
+    return sendCloudSyncRouteError(res, e, 'POST /api/cloud/sync');
+  }
+});
+
+/** Owner-only: same snapshot as POST /api/cloud/sync, without the sync secret (for in-app Profile button). */
+app.post('/api/cloud/sync-from-app', authMiddleware, requireRole(['owner']), async (req, res) => {
+  try {
+    const result = await runCloudSnapshotSync(req);
+    return res.json(result);
+  } catch (e) {
+    return sendCloudSyncRouteError(res, e, 'POST /api/cloud/sync-from-app');
   }
 });
 

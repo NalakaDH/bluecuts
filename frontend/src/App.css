@@ -844,18 +844,6 @@
   color: #475569;
 }
 
-.profile-sync-badge {
-  display: inline-flex;
-  align-items: center;
-  margin-top: 0.5rem;
-  padding: 0.25rem 0.65rem;
-  border-radius: 999px;
-  font-size: 0.78rem;
-  font-weight: 600;
-  background: var(--section-list-bg);
-  color: var(--section-list);
-}
-
 .profile-shell {
   display: flex;
   flex-direction: column;
