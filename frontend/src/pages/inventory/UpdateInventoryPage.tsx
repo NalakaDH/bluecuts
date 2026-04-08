@@ -57,6 +57,7 @@ const INVENTORY_FORM_CURRENCY = 'USD';
 
 interface UpdateInventoryPageProps {
   token: string;
+  role?: 'owner' | 'staff';
 }
 
 interface InventoryItem {
@@ -217,8 +218,9 @@ const LIST_STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: 'Sold', label: 'Sold' },
 ];
 
-export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token }) => {
+export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token, role = 'staff' }) => {
   const { showAlert, showConfirm } = useAlertDialog();
+  const canEditOrDelete = role === 'owner';
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
@@ -234,6 +236,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const lastPurchasePriceEditedRef = useRef<'total' | 'carat'>('carat');
   const [formOpen, setFormOpen] = useState(false);
   const [listSearch, setListSearch] = useState('');
   const [listStatusFilter, setListStatusFilter] = useState<string>('');
@@ -530,6 +533,8 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
     const { name, value } = e.target;
     setForm(prev => {
       const next = { ...prev, [name]: value };
+      if (name === 'purchasing_total_price') lastPurchasePriceEditedRef.current = 'total';
+      if (name === 'purchasing_carat_price') lastPurchasePriceEditedRef.current = 'carat';
       if (name === 'item_type') {
         if (isSingleItemTypeForm(String(value || ''))) {
           next.pieces = '1';
@@ -564,6 +569,24 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
           next.selling_total_price = '';
         }
       }
+
+      // Purchasing total -> purchasing carat (bidirectional).
+      const shouldRecalcPurchaseCarat =
+        name === 'purchasing_total_price' || name === 'weight_carats' || name === 'weight_grams';
+      if (shouldRecalcPurchaseCarat) {
+        const weightCarats = Number(next.weight_carats);
+        const total = Number(next.purchasing_total_price);
+        const last = lastPurchasePriceEditedRef.current;
+        if ((name === 'weight_carats' || name === 'weight_grams') && last === 'carat') {
+          // When weight changes, keep carat price as the "source of truth" (existing behavior).
+        } else if (Number.isFinite(weightCarats) && weightCarats > 0 && Number.isFinite(total) && total >= 0) {
+          next.purchasing_carat_price = roundMoney2(total / weightCarats).toFixed(2);
+        } else if (name === 'purchasing_total_price') {
+          // Only clear the derived field when the user is editing total (avoid wiping on other edits).
+          next.purchasing_carat_price = '';
+        }
+      }
+
       next.selling_currency = INVENTORY_FORM_CURRENCY;
       return next;
     });
@@ -747,6 +770,10 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
     setFormOpen(true);
     setSaveError(null);
     setFieldErrors({});
+    // After opening the edit form, scroll to it (long lists on small screens).
+    setTimeout(() => {
+      formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
   };
 
   // (No auto-focus) Avoid triggering the Category combobox dropdown unexpectedly.
@@ -784,7 +811,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
 
   return (
     <div className="page page-update-inventory">
-      <div className={`section-card section-card--form ${categoryOpen ? 'section-card--form-dropdown-open' : ''}`}>
+        <div className={`section-card section-card--form ${categoryOpen ? 'section-card--form-dropdown-open' : ''}`}>
         <div className="inventory-form-section">
           {!formOpen ? (
             <button
@@ -1462,24 +1489,26 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token 
                     </div>
                   </div>
                 </div>
-                <div className="inventory-list-item-actions">
-                  <button
-                    type="button"
-                    className="ghost-button inventory-list-btn"
-                    onClick={() => handleEdit(item)}
-                  >
-                    <IconEdit />
-                    <span>Edit</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost-button inventory-list-btn inventory-list-btn-danger"
-                    onClick={() => handleDelete(item)}
-                  >
-                    <IconDelete />
-                    <span>Delete</span>
-                  </button>
-                </div>
+                {canEditOrDelete ? (
+                  <div className="inventory-list-item-actions">
+                    <button
+                      type="button"
+                      className="ghost-button inventory-list-btn"
+                      onClick={() => handleEdit(item)}
+                    >
+                      <IconEdit />
+                      <span>Edit</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button inventory-list-btn inventory-list-btn-danger"
+                      onClick={() => handleDelete(item)}
+                    >
+                      <IconDelete />
+                      <span>Delete</span>
+                    </button>
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>

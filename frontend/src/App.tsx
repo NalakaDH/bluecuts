@@ -214,7 +214,7 @@ const LocalApp: React.FC = () => {
         case 'dashboard':
           return <DashboardPage token={auth.token} onNavigate={goToPage} />;
         case 'updateInventory':
-          return <UpdateInventoryPage token={auth.token} />;
+          return <UpdateInventoryPage token={auth.token} role={auth.role} />;
         case 'checkInventory':
           return <CheckInventoryPage token={auth.token} role={auth.role} onNavigate={goToPage} />;
         case 'stockCount':

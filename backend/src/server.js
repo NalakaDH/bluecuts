@@ -1628,7 +1628,7 @@ app.post('/api/inventory', authMiddleware, requireRole(['owner', 'staff']), asyn
   }
 });
 
-app.put('/api/inventory/:id', authMiddleware, requireRole(['owner', 'staff']), async (req, res) => {
+app.put('/api/inventory/:id', authMiddleware, requireRole(['owner']), async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid inventory id' });
@@ -1719,7 +1719,7 @@ app.put('/api/inventory/:id', authMiddleware, requireRole(['owner', 'staff']), a
   }
 });
 
-app.delete('/api/inventory/:id', authMiddleware, requireRole(['owner', 'staff']), async (req, res) => {
+app.delete('/api/inventory/:id', authMiddleware, requireRole(['owner']), async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid inventory id' });
