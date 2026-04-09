@@ -184,18 +184,6 @@ function IconRotateCcw() {
   );
 }
 
-function IconDownloadCloud() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden>
-      <path d="M21 16v-2l-3-3V5.5a2.5 2.5 0 0 0-5 0V7" />
-      <path d="M7 16v-2l3-3" />
-      <path d="M3.55 18A2.93 2.93 0 0 1 1 15.07V14a6 6 0 0 1 6.72-5.96" />
-      <path d="M11 20h10v-2H11z" />
-      <path d="M8 12l4 4 4-4" />
-    </svg>
-  );
-}
-
 /** Plain numbers with grouping — matches reference charts (0 … 16,000) */
 function formatChartYAxis(n: number): string {
   const v = Math.round(Number(n) || 0);
@@ -862,76 +850,6 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
       .filter(r => r.status !== 'Closed')
       .reduce((s, r) => s + (Number(r.memo_count) || 0), 0);
   }, [summary]);
-
-  const exportMasterReport = () => {
-    if (!summary) {
-      return;
-    }
-    const s = summary.sales;
-    const p = summary.profit;
-    const inv = summary.inventory;
-    const lines: string[] = [];
-    lines.push('Blue Cuts — Reports export');
-    lines.push(`From,${from}`);
-    lines.push(`To,${to}`);
-    lines.push(`Grouping,${group}`);
-    lines.push(
-      'Note,"USD values converted from internal THB-equivalent totals using Profile exchange rates (THB bridge)"'
-    );
-    lines.push('');
-    lines.push('Metric,Value (USD)');
-    lines.push(`Total Sales,${thbEquivalentToUsdCsv(s?.sales_total ?? 0, thbPerUnit)}`);
-    lines.push(`Total Collected,${thbEquivalentToUsdCsv(s?.collected_total ?? 0, thbPerUnit)}`);
-    lines.push(`Outstanding Balance,${thbEquivalentToUsdCsv(s?.outstanding_total ?? 0, thbPerUnit)}`);
-    lines.push(`Gross Profit,${thbEquivalentToUsdCsv(p?.profit_total ?? 0, thbPerUnit)}`);
-    lines.push(`Inventory Value,${thbEquivalentToUsdCsv(inv?.inventory_value ?? 0, thbPerUnit)}`);
-    lines.push(`Open Memo Value,${thbEquivalentToUsdCsv(memoOpenValue, thbPerUnit)}`);
-    lines.push('');
-    lines.push('SALES TREND');
-    lines.push(
-      toCsv(
-        salesTrend.map(r => ({
-          period: r.period,
-          invoices_count: r.invoices_count,
-          sales_total: thbEquivalentToUsdCsv(r.sales_total, thbPerUnit),
-          collected_total: thbEquivalentToUsdCsv(r.collected_total, thbPerUnit),
-          outstanding_total: thbEquivalentToUsdCsv(r.outstanding_total, thbPerUnit),
-        })),
-        [
-          { key: 'period', label: 'Period' },
-          { key: 'invoices_count', label: 'Invoices' },
-          { key: 'sales_total', label: 'Sales Total (USD)' },
-          { key: 'collected_total', label: 'Collected Total (USD)' },
-          { key: 'outstanding_total', label: 'Outstanding Total (USD)' },
-        ]
-      )
-    );
-    lines.push('');
-    lines.push('PROFIT TREND');
-    lines.push(
-      toCsv(
-        profitTrend.map(r => ({
-          period: r.period,
-          selling_total: thbEquivalentToUsdCsv(r.selling_total, thbPerUnit),
-          cost_total: thbEquivalentToUsdCsv(r.cost_total, thbPerUnit),
-          profit_total: thbEquivalentToUsdCsv(r.profit_total, thbPerUnit),
-        })),
-        [
-          { key: 'period', label: 'Period' },
-          { key: 'selling_total', label: 'Selling Total (USD)' },
-          { key: 'cost_total', label: 'Cost Total (USD)' },
-          { key: 'profit_total', label: 'Profit Total (USD)' },
-        ]
-      )
-    );
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `reports-${from}-to-${to}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
 
   const sales = summary?.sales;
   const profit = summary?.profit;

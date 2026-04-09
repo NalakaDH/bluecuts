@@ -122,12 +122,6 @@ function statusBadge(item: ReportItem): { label: string; className: string } {
   return { label: 'Active', className: 'inv-rpt-badge inv-rpt-badge--active' };
 }
 
-function escapeCsvCell(v: string | number): string {
-  const s = String(v ?? '');
-  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
 function isNumericSortKey(k: SortKey): boolean {
   return k !== 'name' && k !== 'category';
 }

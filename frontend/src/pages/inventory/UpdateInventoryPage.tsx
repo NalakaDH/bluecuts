@@ -117,21 +117,6 @@ interface MobileUploadSessionStatus {
 
 const MAX_CATEGORY_DROPDOWN = 16;
 
-function formatDateTime(iso: string): string {
-  try {
-    const d = dateFromServerUtc(iso);
-    return d.toLocaleString(undefined, {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
-  } catch {
-    return iso;
-  }
-}
-
 function formatIsoDateUtc(iso: string): string {
   const d = dateFromServerUtc(iso);
   return Number.isNaN(d.getTime()) ? String(iso).slice(0, 10) : d.toISOString().slice(0, 10);

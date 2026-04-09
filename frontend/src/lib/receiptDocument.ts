@@ -1046,10 +1046,6 @@ function memoTotalsSummary(me: ReceiptMemoPayload | null): { pieces: number; car
   return { pieces, carats: hasCt ? carats : null };
 }
 
-function memoTotalDeclaredValue(me: ReceiptMemoPayload | null): number {
-  return memoReceiptRollupTotals(me).net;
-}
-
 /** Fixed legal text for memo receipts; company name from settings. */
 function buildMemoTermsConditionsHtml(co: CompanyReceiptSettings): string {
   const company = escapeHtml(co.name.trim() || 'Blue Cuts Co., Ltd.');

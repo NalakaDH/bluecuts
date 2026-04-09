@@ -1582,7 +1582,6 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
                           {cart.map(c => {
                             const rqLine = Math.floor(Number(c.memoReturnedQty || 0));
                             const qtyMin = Math.max(1, rqLine);
-                            const qty = Number(c.quantity) || 0;
                             const unit = memoLineSellUnit(c);
                             const lineGross = memoLineSubtotalGross(c, memoCurrency);
                             const rowDiscount = memoLineDerivedDiscount(c, memoCurrency);
