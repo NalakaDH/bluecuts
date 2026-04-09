@@ -10,6 +10,8 @@ import {
   inventoryItemPrimaryLabel,
   inventoryCategoryDisplay,
 } from '../../lib/inventoryDisplay';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 const USD = 'USD';
 
@@ -134,6 +136,28 @@ const IconRefresh = () => (
   <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M23 4v6h-6M1 20v-6h6" />
     <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+  </svg>
+);
+
+const IconTrend = () => (
+  <svg viewBox="0 0 24 24" aria-hidden>
+    <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    <polyline points="17 6 23 6 23 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+const IconUpRight = () => (
+  <svg viewBox="0 0 24 24" aria-hidden>
+    <line x1="7" y1="17" x2="17" y2="7" />
+    <polyline points="7 7 17 7 17 17" />
+  </svg>
+);
+
+const IconAlert = () => (
+  <svg viewBox="0 0 24 24" aria-hidden>
+    <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" />
+    <line x1="12" y1="8" x2="12" y2="12" strokeWidth="2" strokeLinecap="round" />
+    <line x1="12" y1="16" x2="12.01" y2="16" strokeWidth="3" strokeLinecap="round" />
   </svg>
 );
 
@@ -301,9 +325,37 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
     return out;
   }, []);
 
-  const exportCsv = () => {
+  const exportPdf = () => {
     const rows = filtered;
-    const headers = [
+    if (!rows.length) return;
+
+    const title = `Monthly Inventory Report — ${MONTHS[month - 1]} ${year}`;
+    const subtitleBits = [
+      ym ? `Period: ${ym}` : null,
+      category && category !== 'All' ? `Category: ${category}` : null,
+      search.trim() ? `Search: "${search.trim()}"` : null,
+      `Segment: ${
+        tabs.find(t => t.key === activeTab)?.label ?? activeTab
+      }`,
+      fx?.usd_available && fx.thb_per_usd ? `USD @ ${fx.thb_per_usd} THB/USD` : null,
+      `Rows: ${rows.length}`,
+      `Generated: ${new Date().toLocaleString()}`,
+    ].filter(Boolean);
+
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+    const pageW = doc.internal.pageSize.getWidth();
+    const marginX = 40;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.text(title, marginX, 44);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(60);
+    doc.text(subtitleBits.join('   •   '), marginX, 62, { maxWidth: pageW - marginX * 2 });
+
+    const head = [[
       'Item code',
       'Category',
       'Opening',
@@ -313,38 +365,77 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
       'Restocked',
       'Remaining',
       'Unit price',
-      'Revenue USD',
-      'Stock value USD',
+      'Revenue (USD)',
+      'Stock (USD)',
       'Status',
-    ];
-    const lines = [headers.join(',')];
-    for (const item of rows) {
+    ]];
+
+    const body = rows.map(item => {
       const badge = statusBadge(item);
-      lines.push(
-        [
-          escapeCsvCell(item.item_code?.trim() || ''),
-          escapeCsvCell(item.category),
-          item.opening,
-          item.sold,
-          item.returned,
-          item.shrinkage,
-          item.restocked,
-          item.remaining,
-          escapeCsvCell(
-            item.unit_price != null ? formatMoneyAmount(item.unit_price, item.selling_currency) : '—'
-          ),
-          escapeCsvCell(item.revenue_usd != null && item.revenue_usd > 0 ? String(item.revenue_usd) : ''),
-          escapeCsvCell(item.stock_value_usd != null ? String(item.stock_value_usd) : ''),
-          escapeCsvCell(badge.label),
-        ].join(',')
-      );
-    }
-    const blob = new Blob([`\ufeff${lines.join('\n')}`], { type: 'text/csv;charset=utf-8;' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `inventory-report-${ym || 'export'}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+      const unit = item.unit_price != null ? formatMoneyAmount(item.unit_price, item.selling_currency) : '—';
+      const revUsd = item.revenue_usd != null && item.revenue_usd > 0 ? String(item.revenue_usd) : '—';
+      const stockUsd = item.stock_value_usd != null ? String(item.stock_value_usd) : '—';
+      return [
+        item.item_code?.trim() || '—',
+        inventoryCategoryDisplay(item.category) ?? item.category ?? '—',
+        String(item.opening),
+        String(item.sold),
+        String(item.returned),
+        item.shrinkage > 0 ? `-${item.shrinkage}` : '—',
+        item.restocked > 0 ? `+${item.restocked}` : '—',
+        String(item.remaining),
+        unit,
+        revUsd,
+        stockUsd,
+        badge.label,
+      ];
+    });
+
+    autoTable(doc, {
+      startY: 78,
+      head,
+      body,
+      styles: {
+        font: 'helvetica',
+        fontSize: 9,
+        cellPadding: { top: 5, right: 6, bottom: 5, left: 6 },
+        lineColor: [226, 232, 240],
+        lineWidth: 0.75,
+      },
+      headStyles: {
+        fillColor: [13, 43, 94],
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
+      },
+      alternateRowStyles: { fillColor: [247, 251, 255] },
+      columnStyles: {
+        2: { halign: 'right' },
+        3: { halign: 'right' },
+        4: { halign: 'right' },
+        5: { halign: 'right' },
+        6: { halign: 'right' },
+        7: { halign: 'right' },
+        8: { halign: 'right' },
+        9: { halign: 'right' },
+        10: { halign: 'right' },
+      },
+      didParseCell: (data) => {
+        if (data.section !== 'body') return;
+        const raw = data.row.raw as unknown;
+        const status =
+          Array.isArray(raw) ? String(raw[11] ?? '') : '';
+        // Status badge-like tint (subtle)
+        if (data.column.index === 11) {
+          if (status === 'Shrinkage') data.cell.styles.textColor = [183, 28, 28];
+          else if (status === 'Out of stock') data.cell.styles.textColor = [220, 38, 38];
+          else if (status === 'Low stock') data.cell.styles.textColor = [217, 119, 6];
+          else if (status === 'Active') data.cell.styles.textColor = [5, 150, 105];
+        }
+      },
+      margin: { left: marginX, right: marginX },
+    });
+
+    doc.save(`inventory-report-${ym || `${year}-${String(month).padStart(2, '0')}`}.pdf`);
   };
 
   const cols: { key: SortKey; label: string; w: string }[] = [
@@ -381,50 +472,63 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
   return (
     <div className="page page-inventory-report inv-rpt-root">
       {sum && (
-        <div className="inv-rpt-summary inv-rpt-summary--top" aria-label="Month summary">
+        <section className="rep2-kpi-grid" aria-label="Month summary">
           {(
             [
-              { label: 'Total sold', value: String(sum.totalSold), sub: 'units this month' },
+              { label: 'Total sold', value: String(sum.totalSold), sub: 'units this month', variant: 'blue' as const, icon: <IconTrend /> },
               {
                 label: 'Revenue',
                 value: formatUsd(sum.totalRevenueUsd),
                 sub: 'Month invoice sales → THB (line share × FX) → USD',
+                variant: 'emerald' as const,
+                icon: <IconUpRight />,
               },
-              { label: 'No movement', value: String(sum.noMovement), sub: 'items unsold', tone: 'warn' as const },
+              { label: 'No movement', value: String(sum.noMovement), sub: 'items unsold', tone: 'warn' as const, variant: 'amber' as const },
               {
                 label: 'Stock value',
                 value: formatUsd(sum.stockValueUsd),
                 sub: 'Remaining × list price × FX → THB → USD',
+                variant: 'amber' as const,
               },
               {
                 label: 'Shrinkage',
                 value: String(sum.totalShrinkage),
                 sub: 'units lost/missing',
                 tone: 'danger' as const,
+                variant: 'red' as const,
+                icon: <IconAlert />,
               },
-              { label: 'Out of stock', value: String(sum.outOfStock), sub: 'items depleted' },
+              { label: 'Out of stock', value: String(sum.outOfStock), sub: 'items depleted', variant: 'slate' as const },
             ] as {
               label: string;
               value: string;
               sub: string;
               tone?: 'warn' | 'danger';
+              variant: 'blue' | 'emerald' | 'red' | 'amber' | 'slate';
+              icon?: React.ReactNode;
             }[]
           ).map((c, i) => (
-            <div key={i} className="inv-rpt-summary-cell">
-              <div className="inv-rpt-summary-label">{c.label}</div>
-              <div
-                className={`inv-rpt-summary-value${c.tone === 'danger' ? ' inv-rpt-summary-value--danger' : ''}${c.tone === 'warn' ? ' inv-rpt-summary-value--warn' : ''}`}
-              >
-                {c.value}
+            <div
+              key={i}
+              className={`rep2-metric rep2-m--${c.variant}${c.tone === 'danger' ? ' rep2-metric--alert' : ''}`}
+            >
+              <div className="rep2-metric-inner">
+                <div>
+                  <p className="rep2-metric-title">{c.label}</p>
+                  <p className={`rep2-metric-value${c.tone === 'danger' ? ' inv-rpt-summary-value--danger' : ''}${c.tone === 'warn' ? ' inv-rpt-summary-value--warn' : ''}`}>
+                    {c.value}
+                  </p>
+                  <p className="rep2-metric-sub">{c.sub}</p>
+                </div>
+                {c.icon ? <div className="rep2-metric-icon">{c.icon}</div> : null}
               </div>
-              <div className="inv-rpt-summary-sub">{c.sub}</div>
             </div>
           ))}
-        </div>
+        </section>
       )}
 
       <header className="inv-rpt-topbar">
-        <div className="inv-rpt-toolbar-main inv-rpt-toolbar-main--search-only">
+        <div className="inv-rpt-toolbar-row">
           <input
             className="inv-rpt-input inv-rpt-input--search"
             type="search"
@@ -433,8 +537,6 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
             onChange={(e) => setSearch(e.target.value)}
             aria-label="Search report"
           />
-        </div>
-        <div className="inv-rpt-toolbar-sub">
           <div className="inv-rpt-filters" aria-label="Period and category">
             <select
               className="inv-rpt-select"
@@ -475,24 +577,10 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
             >
               <IconRefresh />
             </button>
-            <button type="button" className="inv-rpt-export" onClick={exportCsv} disabled={loading || filtered.length === 0}>
-              Export CSV
+            <button type="button" className="inv-rpt-export" onClick={exportPdf} disabled={loading || filtered.length === 0}>
+              Export PDF
             </button>
           </div>
-        </div>
-        <div className="inv-rpt-context">
-          <p className="inv-rpt-subtitle inv-rpt-subtitle--toolbar">
-            Owner view — {MONTHS[month - 1]} {year}
-            {ym ? ` (${ym})` : ''}
-            {fx?.usd_available && fx.thb_per_usd
-              ? ` · Revenue & stock converted via THB bridge (USD @ ${fx.thb_per_usd} THB/USD from Profile).`
-              : ''}
-          </p>
-          {fx && !fx.usd_available && (
-            <p className="inv-rpt-fx-warn">
-              Set a USD exchange rate under Profile to show revenue and stock values in US dollars.
-            </p>
-          )}
         </div>
       </header>
 

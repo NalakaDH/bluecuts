@@ -14,6 +14,10 @@ import {
   inventoryCategoryDisplay,
 } from '../lib/inventoryDisplay';
 
+function sortRowsByCreatedAtDesc<T extends { created_at: string }>(rows: T[]): T[] {
+  return rows.slice().sort((a, b) => dateFromServerUtc(b.created_at).getTime() - dateFromServerUtc(a.created_at).getTime());
+}
+
 type InvoiceStatus = 'Unpaid' | 'Partial' | 'Paid';
 
 type InvoiceRow = {
@@ -378,9 +382,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
     const res = await fetch(apiUrl('/api/invoices'), { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to load invoices'));
     const all: InvoiceRow[] = (await res.json()) as InvoiceRow[];
-    const sorted = all
-      .slice()
-      .sort((a, b) => dateFromServerUtc(b.created_at).getTime() - dateFromServerUtc(a.created_at).getTime());
+    const sorted = sortRowsByCreatedAtDesc(all);
 
     const todays =
       bounds && bounds.start && bounds.end
@@ -436,9 +438,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
     const res = await fetch(apiUrl(`/api/memos?${params.toString()}`), { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to load memos'));
     const rows: MemoRow[] = (await res.json()) as MemoRow[];
-    const sorted = rows
-      .slice()
-      .sort((a, b) => dateFromServerUtc(b.created_at).getTime() - dateFromServerUtc(a.created_at).getTime());
+    const sorted = sortRowsByCreatedAtDesc(rows);
     const open = sorted.filter(r => r.status !== 'Closed');
     // If there are no open memos, show the latest memos (including Closed) so the dashboard doesn't look empty.
     setMemos((open.length ? open : sorted).slice(0, 4));

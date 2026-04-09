@@ -943,6 +943,51 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
     <div className="page page-reports">
       <div className="rep2-page">
         <div className="rep2-shell">
+          {!loading && summary && (
+            <section className="rep2-kpi-grid" aria-label="Key metrics">
+              <MetricCard
+                title="Total Sales"
+                value={formatUsdOnlyFromThb(sales?.sales_total || 0, thbPerUnit)}
+                subtitle={`${sales?.invoices_count || 0} invoices · USD (Profile rates)`}
+                icon={<IconTrendingUp />}
+                variant="blue"
+              />
+              <MetricCard
+                title="Total Collected"
+                value={formatUsdOnlyFromThb(sales?.collected_total || 0, thbPerUnit)}
+                subtitle={`${sales?.paid_invoices || 0} paid invoices · USD (Profile rates)`}
+                icon={<IconArrowUpRight />}
+                variant="emerald"
+              />
+              <MetricCard
+                title="Outstanding Balance"
+                value={formatUsdOnlyFromThb(sales?.outstanding_total || 0, thbPerUnit)}
+                subtitle={`${sales?.unpaid_invoices || 0} unpaid · USD (Profile rates)`}
+                icon={<IconArrowDownRight />}
+                variant="red"
+                alert={(sales?.outstanding_total || 0) > 0}
+              />
+              <MetricCard
+                title="Gross Profit"
+                value={formatUsdOnlyFromThb(profit?.profit_total || 0, thbPerUnit)}
+                subtitle={`${money(profit?.profit_margin_pct || 0)}% margin · USD (Profile rates)`}
+                variant="emerald"
+              />
+              <MetricCard
+                title="Inventory Value"
+                value={formatUsdOnlyFromThb(inventory?.inventory_value || 0, thbPerUnit)}
+                subtitle={`${inventory?.remaining_pcs || 0} pieces · USD (Profile rates)`}
+                variant="amber"
+              />
+              <MetricCard
+                title="Open Memo Value"
+                value={formatUsdOnlyFromThb(memoOpenValue, thbPerUnit)}
+                subtitle={`${openMemoCount} open memos · USD (Profile rates)`}
+                variant="slate"
+              />
+            </section>
+          )}
+
           <section className="rep2-controls" aria-label="Report filters">
             <div className="rep2-controls-grid">
               <div className="rep2-field">
@@ -983,16 +1028,6 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                 <IconRotateCcw />
                 Reset
               </button>
-              <button
-                type="button"
-                className="rep2-btn-outline"
-                onClick={exportMasterReport}
-                disabled={loading || !summary}
-                title="Download summary, sales trend, and profit trend as CSV"
-              >
-                <IconDownloadCloud />
-                Export
-              </button>
             </div>
           </section>
 
@@ -1005,49 +1040,6 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
 
           {!loading && summary && (
             <>
-              <section className="rep2-kpi-grid" aria-label="Key metrics">
-                <MetricCard
-                  title="Total Sales"
-                  value={formatUsdOnlyFromThb(sales?.sales_total || 0, thbPerUnit)}
-                  subtitle={`${sales?.invoices_count || 0} invoices · USD (Profile rates)`}
-                  icon={<IconTrendingUp />}
-                  variant="blue"
-                />
-                <MetricCard
-                  title="Total Collected"
-                  value={formatUsdOnlyFromThb(sales?.collected_total || 0, thbPerUnit)}
-                  subtitle={`${sales?.paid_invoices || 0} paid invoices · USD (Profile rates)`}
-                  icon={<IconArrowUpRight />}
-                  variant="emerald"
-                />
-                <MetricCard
-                  title="Outstanding Balance"
-                  value={formatUsdOnlyFromThb(sales?.outstanding_total || 0, thbPerUnit)}
-                  subtitle={`${sales?.unpaid_invoices || 0} unpaid · USD (Profile rates)`}
-                  icon={<IconArrowDownRight />}
-                  variant="red"
-                  alert={(sales?.outstanding_total || 0) > 0}
-                />
-                <MetricCard
-                  title="Gross Profit"
-                  value={formatUsdOnlyFromThb(profit?.profit_total || 0, thbPerUnit)}
-                  subtitle={`${money(profit?.profit_margin_pct || 0)}% margin · USD (Profile rates)`}
-                  variant="emerald"
-                />
-                <MetricCard
-                  title="Inventory Value"
-                  value={formatUsdOnlyFromThb(inventory?.inventory_value || 0, thbPerUnit)}
-                  subtitle={`${inventory?.remaining_pcs || 0} pieces · USD (Profile rates)`}
-                  variant="amber"
-                />
-                <MetricCard
-                  title="Open Memo Value"
-                  value={formatUsdOnlyFromThb(memoOpenValue, thbPerUnit)}
-                  subtitle={`${openMemoCount} open memos · USD (Profile rates)`}
-                  variant="slate"
-                />
-              </section>
-
               <div className="rep2-charts-row">
                 <div className="rep2-card rep2-card--chart">
                   <div className="rep2-card-head">

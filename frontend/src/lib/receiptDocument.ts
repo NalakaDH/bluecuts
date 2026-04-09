@@ -3,7 +3,7 @@
  * Override company block via localStorage key `bluecuts-receipt-company` (JSON).
  */
 
-import { currencyReceiptLabel, normalizeCurrencyCode } from './currencies';
+import { currencyReceiptLabel, normalizeCurrencyCode, roundMoney2 } from './currencies';
 import { dateFromServerUtc } from './serverTime';
 
 const STORAGE_KEY = 'bluecuts-receipt-company';
@@ -135,19 +135,42 @@ function formatWtCtShort(ct: number | null | undefined, g: number | null | undef
   return '—';
 }
 
+/** Strip inventory item `description` prose when it appears as a ·-separated segment (fallback path). */
+function stripInventoryNoteFromMergedDescription(merged: string, invNote: string): string {
+  const n = invNote.trim();
+  if (!n) return merged;
+  return merged
+    .split(/\s*·\s*/)
+    .map(s => s.trim())
+    .filter(s => s.toLowerCase() !== n.toLowerCase())
+    .join(' · ')
+    .replace(/\s*·\s*·\s*/g, ' · ')
+    .replace(/^\s*·\s*|\s*·\s*$/g, '')
+    .trim();
+}
+
+/**
+ * Invoice receipt line text: category, type, and weights only — not the inventory freeform description.
+ */
 function invoiceLineDescription(row: ReceiptInvoiceLine): string {
-  let merged = (row.description || '').trim();
-  const typeBit = [row.inv_category, row.inv_item_type].filter(Boolean).join(' ').trim();
+  const typeLine = [row.inv_category, row.inv_item_type].filter(Boolean).join(' ').trim();
+  const wSegs: string[] = [];
+  const ct = row.weight_carats != null ? Number(row.weight_carats) : NaN;
+  const g = row.weight_grams != null ? Number(row.weight_grams) : NaN;
+  if (Number.isFinite(ct)) wSegs.push(`${ct} ct`);
+  if (Number.isFinite(g)) wSegs.push(`${g} g`);
+  const weightPart = wSegs.join(' · ');
+
+  const specParts: string[] = [];
+  if (typeLine) specParts.push(typeLine);
+  if (weightPart) specParts.push(weightPart);
+  const fromSpecs = specParts.join(' · ').trim();
+  if (fromSpecs) return fromSpecs;
+
   const invNote = (row.inventory_description || '').trim();
-  if (typeBit) {
-    if (!merged) merged = typeBit;
-    else if (!merged.toLowerCase().includes(typeBit.toLowerCase())) merged = `${merged} · ${typeBit}`;
-  }
-  if (invNote) {
-    if (!merged) merged = invNote;
-    else if (!merged.toLowerCase().includes(invNote.toLowerCase())) merged = `${merged} · ${invNote}`;
-  }
-  return merged || `${(row.item_code || '').trim()}` || '—';
+  let merged = (row.description || '').trim();
+  if (merged && invNote) merged = stripInventoryNoteFromMergedDescription(merged, invNote);
+  return merged || (row.item_code || '').trim() || '—';
 }
 
 function splitDescriptionForTable(desc: string): { title: string; sub: string } {
@@ -404,6 +427,8 @@ body{background:#E8F1FA;font-family:'Lato',sans-serif;min-height:100vh;padding:2
 .items-table th{padding:12px 15px;text-align:left;font-size:9.5px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:rgba(255,255,255,0.85);white-space:nowrap}
 .items-table th:last-child,.items-table td:last-child{text-align:right}
 .items-table th.center,.items-table td.center{text-align:center}
+.items-table th.right,.items-table td.right{text-align:right}
+.memo-totals-disc{color:#B71C1C;font-weight:600}
 .items-table tbody tr{border-bottom:1px solid #E8F2FA}
 .items-table tbody tr:last-child{border-bottom:none}
 .items-table tbody tr:nth-child(even) td{background:#F7FBFF}
@@ -923,16 +948,53 @@ function buildInvoiceDoc(
 </div>`;
 }
 
+/** Per-line amounts for remaining pcs (memo stores gross `unit_price`, net `line_total` for full qty). */
+export function memoReceiptLineRemainingAmounts(row: ReceiptMemoLine): {
+  remaining: number;
+  lineGrossRem: number;
+  lineDiscRem: number;
+  lineNetRem: number;
+} {
+  const remaining = Math.max(0, (row.quantity || 0) - (row.returned_qty || 0));
+  const q = Math.max(1, Math.floor(Number(row.quantity) || 1));
+  const grossPc = Number(row.unit_price || 0);
+  const lineNetFull = roundMoney2(Number(row.line_total) || 0);
+  const lineGrossFull = roundMoney2(grossPc * q);
+  const lineGrossRem = q > 0 ? roundMoney2((lineGrossFull * remaining) / q) : 0;
+  const lineNetRem = q > 0 ? roundMoney2((lineNetFull * remaining) / q) : 0;
+  const lineDiscRem = Math.max(0, roundMoney2(lineGrossRem - lineNetRem));
+  return { remaining, lineGrossRem, lineDiscRem, lineNetRem };
+}
+
+function memoReceiptRollupTotals(me: ReceiptMemoPayload | null): {
+  subtotalGross: number;
+  discount: number;
+  net: number;
+} {
+  if (!me?.items?.length) return { subtotalGross: 0, discount: 0, net: 0 };
+  let subtotalGross = 0;
+  let discount = 0;
+  for (const row of me.items) {
+    const a = memoReceiptLineRemainingAmounts(row);
+    subtotalGross += a.lineGrossRem;
+    discount += a.lineDiscRem;
+  }
+  return {
+    subtotalGross: roundMoney2(subtotalGross),
+    discount: roundMoney2(discount),
+    net: roundMoney2(subtotalGross - discount),
+  };
+}
+
 function buildMemoTableRows(me: ReceiptMemoPayload | null, currencyCode: string): string {
   if (!me?.items?.length) {
-    return `<tr class="items-empty"><td colspan="5">No line items.</td></tr>`;
+    return `<tr class="items-empty"><td colspan="7">No line items.</td></tr>`;
   }
   return me.items
     .map((row, i) => {
-      const remaining = Math.max(0, (row.quantity || 0) - (row.returned_qty || 0));
+      const { remaining, lineGrossRem, lineDiscRem, lineNetRem } = memoReceiptLineRemainingAmounts(row);
       const descFull = row.description || `${row.item_code || ''}`.trim() || '—';
       const parts = splitDescriptionForTable(descFull);
-      const declared = remaining * Number(row.unit_price || 0);
       const ct = row.weight_carats;
       const wt =
         ct != null && Number.isFinite(Number(ct)) ?
@@ -943,6 +1005,8 @@ function buildMemoTableRows(me: ReceiptMemoPayload | null, currencyCode: string)
       const idx = String(i + 1).padStart(2, '0');
       const codeMono = (row.item_code || '').trim();
       const subExtra = codeMono ? `${parts.sub ? `${parts.sub} · ` : ''}Code: ${codeMono}` : parts.sub;
+      const discCol =
+        lineDiscRem > 0.0001 ? `− ${formatMoney(lineDiscRem, currencyCode)}` : '—';
       return `<tr>
         <td class="center td-mono">${escapeHtml(idx)}</td>
         <td>
@@ -956,7 +1020,9 @@ function buildMemoTableRows(me: ReceiptMemoPayload | null, currencyCode: string)
         </td>
         <td class="center">${escapeHtml(String(remaining))}</td>
         <td class="center">${wt}</td>
-        <td class="td-total">${escapeHtml(formatMoney(declared, currencyCode))}</td>
+        <td class="td-price">${escapeHtml(formatMoney(lineGrossRem, currencyCode))}</td>
+        <td class="td-discount">${escapeHtml(discCol)}</td>
+        <td class="td-total">${escapeHtml(formatMoney(lineNetRem, currencyCode))}</td>
       </tr>`;
     })
     .join('');
@@ -981,11 +1047,7 @@ function memoTotalsSummary(me: ReceiptMemoPayload | null): { pieces: number; car
 }
 
 function memoTotalDeclaredValue(me: ReceiptMemoPayload | null): number {
-  if (!me?.items?.length) return 0;
-  return me.items.reduce((sum, row) => {
-    const remaining = Math.max(0, (row.quantity || 0) - (row.returned_qty || 0));
-    return sum + remaining * Number(row.unit_price || 0);
-  }, 0);
+  return memoReceiptRollupTotals(me).net;
 }
 
 /** Fixed legal text for memo receipts; company name from settings. */
@@ -1048,8 +1110,13 @@ function buildMemoDoc(
   const wtLabel =
     totals.carats != null ? `${totals.carats.toFixed(2)} cts` : '—';
 
-  const declaredTotal = memoTotalDeclaredValue(me);
-  // Match invoice grand total: ISO code + amount only — formatMoney() already embeds the code via Intl (duplicate "THB THB").
+  const rollup = memoReceiptRollupTotals(me);
+  const declaredTotal = rollup.net;
+  const subtotalDisplay = `${escapeHtml(currencyCode)} ${escapeHtml(formatMoneyAmountOnly(rollup.subtotalGross, currencyCode))}`;
+  const discountDisplay =
+    rollup.discount > 0.0001 ?
+      `− ${escapeHtml(currencyCode)} ${escapeHtml(formatMoneyAmountOnly(rollup.discount, currencyCode))}` :
+      `—`;
   const declaredValueDisplay = `${escapeHtml(currencyCode)} ${escapeHtml(formatMoneyAmountOnly(declaredTotal, currencyCode))}`;
 
   const notesExtra =
@@ -1101,7 +1168,9 @@ function buildMemoDoc(
           <th>Gemstone description</th>
           <th class="center">Pcs</th>
           <th class="center">Weight (cts)</th>
-          <th>Declared value</th>
+          <th class="right">Subtotal</th>
+          <th class="right">Discount</th>
+          <th class="right">Declared value</th>
               </tr>
             </thead>
       <tbody>${buildMemoTableRows(me, currencyCode)}</tbody>
@@ -1110,6 +1179,8 @@ function buildMemoDoc(
       <div class="totals-box">
         <div class="totals-row"><span class="tkey">Total pieces</span><span class="tval">${escapeHtml(piecesLabel)}</span></div>
         <div class="totals-row"><span class="tkey">Total weight</span><span class="tval">${escapeHtml(wtLabel)}</span></div>
+        <div class="totals-row"><span class="tkey">Subtotal</span><span class="tval">${subtotalDisplay}</span></div>
+        <div class="totals-row"><span class="tkey">Discounts</span><span class="tval memo-totals-disc">${discountDisplay}</span></div>
         <div class="grand-total-row memo-declared-grand-row">
           <div class="grand-total-key">Total declared value</div>
           <div class="grand-total-val">${declaredValueDisplay}</div>

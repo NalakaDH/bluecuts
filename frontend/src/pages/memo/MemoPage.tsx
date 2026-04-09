@@ -3,7 +3,7 @@ import { useAlertDialog } from '../../components/AlertDialog';
 import type { PageId } from '../../components/layout/Layout';
 import { SELLING_FROM_MEMO_CONVERT_INVOICE_KEY } from '../../constants/invoiceCheckout';
 import { apiUrl, parseErrorResponse } from '../../api';
-import { openMemoReceiptWindow } from '../../lib/receiptDocument';
+import { memoReceiptLineRemainingAmounts, openMemoReceiptWindow } from '../../lib/receiptDocument';
 import {
   DEFAULT_CURRENCY_CODE,
   SUPPORTED_CURRENCIES,
@@ -149,6 +149,61 @@ function memoUnitPrefillFromCartLine(c: MemoCartItem, memoCur: string): number {
   const inv = normalizeCurrencyCode(memoCur);
   if (listCur === inv) return roundMoney2(Number(c.source_unit_price ?? 0));
   return 0;
+}
+
+function listUnitForMemoCartLine(c: MemoCartItem, memoCur: string): number | null {
+  const listCur = normalizeCurrencyCode(c.source_currency ?? DEFAULT_CURRENCY_CODE);
+  if (listCur !== normalizeCurrencyCode(memoCur)) return null;
+  const v = Number(c.source_unit_price ?? 0);
+  if (!Number.isFinite(v) || v < 0) return null;
+  return roundMoney2(v);
+}
+
+function memoLineSellUnit(c: MemoCartItem): number {
+  return roundMoney2(Number(c.unit_price) || 0);
+}
+
+function memoLineApiUnit(c: MemoCartItem, memoCur: string): number {
+  const sell = memoLineSellUnit(c);
+  const list = listUnitForMemoCartLine(c, memoCur);
+  if (list == null) return sell;
+  if (sell > list) return sell;
+  return list;
+}
+
+function memoLineQty(c: MemoCartItem): number {
+  return Math.max(1, Math.floor(Number(c.quantity) || 1));
+}
+
+function memoLineSubtotalGross(c: MemoCartItem, memoCur: string): number {
+  return roundMoney2(memoLineApiUnit(c, memoCur) * memoLineQty(c));
+}
+
+function memoLineDerivedDiscount(c: MemoCartItem, memoCur: string): number {
+  const qty = memoLineQty(c);
+  const sell = memoLineSellUnit(c);
+  const list = listUnitForMemoCartLine(c, memoCur);
+  if (list == null || sell >= list) return 0;
+  const gross = memoLineSubtotalGross(c, memoCur);
+  return Math.min(gross, Math.max(0, roundMoney2(roundMoney2(list - sell) * qty)));
+}
+
+function memoLineSellTotal(c: MemoCartItem): number {
+  return roundMoney2(memoLineSellUnit(c) * memoLineQty(c));
+}
+
+/** Net unit (charged) from stored memo line — works for list+discount and legacy rows. */
+function memoDetailNetUnit(it: MemoItemRow): number {
+  const q = Math.max(1, Math.floor(Number(it.quantity) || 1));
+  const lt = Number(it.line_total) || 0;
+  return roundMoney2(lt / q);
+}
+
+function memoDetailRemainingLineValue(it: MemoItemRow): number {
+  const q = Math.max(1, Math.floor(Number(it.quantity) || 1));
+  const remaining = Math.max(0, (it.quantity || 0) - (it.returned_qty || 0));
+  const lt = Number(it.line_total) || 0;
+  return roundMoney2((lt * remaining) / q);
 }
 
 interface MemoPageProps {
@@ -417,15 +472,16 @@ function detailToComposerCart(d: MemoDetail): MemoCartItem[] {
   return d.items.map(it => {
     const q = Math.max(1, Math.floor(Number(it.quantity) || 0));
     const rq = Math.floor(Number(it.returned_qty) || 0);
-    const unit = roundMoney2(Number(it.unit_price || 0));
+    const sellUnit = memoDetailNetUnit(it);
+    const storedGrossUnit = roundMoney2(Number(it.unit_price || 0));
     return {
       memoItemId: it.id,
       inventory_item_id: it.inventory_item_id,
       label: memoLineDescription(it),
       maxQty: Math.max(q, 1),
       quantity: q,
-      unit_price: unit,
-      source_unit_price: unit,
+      unit_price: sellUnit,
+      source_unit_price: storedGrossUnit,
       source_currency: cur,
       item_code: it.item_code,
       description: it.description,
@@ -762,9 +818,17 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
     });
   };
 
-  const cartTotal = useMemo(() => {
-    return cart.reduce((sum, c) => sum + (Number(c.unit_price) || 0) * (Number(c.quantity) || 0), 0);
-  }, [cart]);
+  const memoCartSubtotalGross = useMemo(() => {
+    return cart.reduce((sum, c) => sum + memoLineSubtotalGross(c, memoCurrency), 0);
+  }, [cart, memoCurrency]);
+
+  const memoCartItemsDiscountTotal = useMemo(() => {
+    return cart.reduce((sum, c) => sum + memoLineDerivedDiscount(c, memoCurrency), 0);
+  }, [cart, memoCurrency]);
+
+  const memoCartNetTotal = useMemo(() => {
+    return Math.max(0, roundMoney2(memoCartSubtotalGross - memoCartItemsDiscountTotal));
+  }, [memoCartSubtotalGross, memoCartItemsDiscountTotal]);
 
   const handleNewCustomerChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -907,7 +971,8 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
           items: cart.map(c => ({
             inventory_item_id: c.inventory_item_id,
             quantity: c.quantity,
-            unit_price: c.unit_price,
+            unit_price: memoLineApiUnit(c, memoCurrency),
+            discount: memoLineDerivedDiscount(c, memoCurrency),
             item_code: c.item_code || null,
             description: c.description || null,
           })),
@@ -1013,7 +1078,9 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
               const q = Math.floor(Number(c.quantity) || 0);
               const onMemo = Math.max(0, q - rq);
               const maxQty = Math.max(1, q, onMemo + rem);
-              return { ...c, maxQty };
+              const list = roundMoney2(Number(row.selling_total_price ?? 0));
+              const listCur = normalizeCurrencyCode(row.selling_currency ?? DEFAULT_CURRENCY_CODE);
+              return { ...c, maxQty, source_unit_price: list, source_currency: listCur };
             } catch {
               return c;
             }
@@ -1103,6 +1170,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
           inventory_item_id: number;
           quantity: number;
           unit_price: number;
+          discount: number;
           item_code: string | null;
           description: string | null;
         }>;
@@ -1119,7 +1187,8 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
           memo_item_id: c.memoItemId ?? null,
           inventory_item_id: c.inventory_item_id,
           quantity: Math.floor(Number(c.quantity) || 0),
-          unit_price: roundMoney2(Number(c.unit_price) || 0),
+          unit_price: memoLineApiUnit(c, memoCurrency),
+          discount: memoLineDerivedDiscount(c, memoCurrency),
           item_code: c.item_code ?? null,
           description: c.description ?? null,
         }));
@@ -1503,7 +1572,9 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
                             <th scope="col">Description</th>
                             <th scope="col">Pcs</th>
                             <th scope="col">Unit price ({normalizeCurrencyCode(memoCurrency)})</th>
-                            <th scope="col">Line total</th>
+                            <th scope="col">Subtotal</th>
+                            <th scope="col">Discount</th>
+                            <th scope="col">Net</th>
                             <th scope="col">Action</th>
                           </tr>
                         </thead>
@@ -1512,8 +1583,10 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
                             const rqLine = Math.floor(Number(c.memoReturnedQty || 0));
                             const qtyMin = Math.max(1, rqLine);
                             const qty = Number(c.quantity) || 0;
-                            const unit = Number(c.unit_price) || 0;
-                            const lineGross = roundMoney2(unit * qty);
+                            const unit = memoLineSellUnit(c);
+                            const lineGross = memoLineSubtotalGross(c, memoCurrency);
+                            const rowDiscount = memoLineDerivedDiscount(c, memoCurrency);
+                            const lineNet = memoLineSellTotal(c);
                             const imgSrc = c.image_path ? memoItemImageSrc(c.image_path) : '';
                             const showPlaceholder = !imgSrc || cartImageLoadFailed.has(c.inventory_item_id);
                             const avail = c.maxQty;
@@ -1592,6 +1665,10 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
                                   />
                                 </td>
                                 <td className="memo-create-line-total">{formatMoneyAmount(lineGross, memoCurrency)}</td>
+                                <td className="memo-create-line-total memo-create-discount-cell">
+                                  {rowDiscount > 0 ? formatMoneyAmount(rowDiscount, memoCurrency) : '—'}
+                                </td>
+                                <td className="memo-create-line-total">{formatMoneyAmount(lineNet, memoCurrency)}</td>
                                 <td>
                                   <button
                                     type="button"
@@ -1608,10 +1685,6 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
                           })}
                         </tbody>
                       </table>
-                    </div>
-                    <div className="memo-create-total-bar" aria-live="polite">
-                      <span className="memo-create-total-label">Memo Total</span>
-                      <span className="memo-create-total-value">{formatMoneyAmount(cartTotal, memoCurrency)}</span>
                     </div>
                   </>
                 )}
@@ -1768,6 +1841,30 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
                       Unit prices are in the memo currency. Changing currency refills from inventory when the list currency matches; otherwise enter prices manually.
                     </p>
                   </div>
+
+                  {cart.length > 0 ? (
+                    <>
+                      <div className="memo-create-panel-divider" />
+                      <div className="memo-create-panel-section selling2-gem-summary-lines">
+                        <div className="selling2-summary-row selling2-summary-row--gem">
+                          <span className="selling2-summary-key">Subtotal</span>
+                          <strong className="selling2-summary-val">
+                            {formatMoneyAmount(memoCartSubtotalGross, memoCurrency)}
+                          </strong>
+                        </div>
+                        <div className="selling2-summary-row selling2-summary-row--gem">
+                          <span className="selling2-summary-key">Item discounts</span>
+                          <span className="selling2-summary-val selling2-neg">
+                            −{formatMoneyAmount(memoCartItemsDiscountTotal, memoCurrency)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="selling2-final-total-row">
+                        <span className="selling2-ft-label">Memo total</span>
+                        <span className="selling2-ft-value">{formatMoneyAmount(memoCartNetTotal, memoCurrency)}</span>
+                      </div>
+                    </>
+                  ) : null}
 
                   <div className="memo-create-panel-divider" />
 
@@ -2055,10 +2152,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
                     <span className="memo-detail-meta-label">Total (USD)</span>
                     <strong className="memo-detail-meta-strong memo-detail-meta-strong--total-usd">
                       {formatUsdOnlyFromAny(
-                        detail.items.reduce(
-                          (s, it) => s + Math.max(0, (it.quantity - it.returned_qty) * it.unit_price),
-                          0
-                        ),
+                        detail.items.reduce((s, it) => s + memoDetailRemainingLineValue(it), 0),
                         detailCur,
                         thbPerUnit
                       )}
@@ -2103,8 +2197,10 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
                               <th className="memo-detail-th-center">Returned</th>
                               <th className="memo-detail-th-center">Remaining</th>
                               <th className="memo-detail-th-center">Return qty</th>
-                              <th className="memo-detail-th-center">Price</th>
-                              <th className="memo-detail-th-end">Total</th>
+                              <th className="memo-detail-th-center">Net / pc</th>
+                              <th className="memo-detail-th-end">Subtotal</th>
+                              <th className="memo-detail-th-end">Discount</th>
+                              <th className="memo-detail-th-end">Remaining value</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -2112,6 +2208,14 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
                               const remaining = Math.max(0, (it.quantity || 0) - (it.returned_qty || 0));
                               const draft = Math.floor(Number(returnDraft[it.id] || 0));
                               const draftClamped = Math.max(0, Math.min(remaining, draft));
+                              const remAmt = memoReceiptLineRemainingAmounts({
+                                item_code: it.item_code,
+                                description: it.description,
+                                quantity: it.quantity,
+                                returned_qty: it.returned_qty,
+                                unit_price: it.unit_price,
+                                line_total: it.line_total,
+                              });
                               return (
                                 <tr key={it.id}>
                                   <td>
@@ -2154,10 +2258,30 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
                                     />
                                   </td>
                                   <td className="memo-detail-td-center">
-                                    <span className="memo-detail-price-cell">{formatMoneyAmount(it.unit_price, detailCur)}</span>
+                                    <span className="memo-detail-price-cell">{formatMoneyAmount(memoDetailNetUnit(it), detailCur)}</span>
                                   </td>
                                   <td className="memo-detail-td-end">
-                                    <span className="memo-detail-line-total">{formatMoneyAmount(remaining * it.unit_price, detailCur)}</span>
+                                    <span className="memo-detail-line-total">
+                                      {formatMoneyAmount(remAmt.lineGrossRem, detailCur)}
+                                    </span>
+                                  </td>
+                                  <td className="memo-detail-td-end">
+                                    <span
+                                      className={
+                                        remAmt.lineDiscRem > 0.0001
+                                          ? 'memo-detail-line-discount'
+                                          : 'memo-detail-line-total memo-detail-line-total--muted'
+                                      }
+                                    >
+                                      {remAmt.lineDiscRem > 0.0001
+                                        ? `−${formatMoneyAmount(remAmt.lineDiscRem, detailCur)}`
+                                        : '—'}
+                                    </span>
+                                  </td>
+                                  <td className="memo-detail-td-end">
+                                    <span className="memo-detail-line-total">
+                                      {formatMoneyAmount(remAmt.lineNetRem, detailCur)}
+                                    </span>
                                   </td>
                                 </tr>
                               );

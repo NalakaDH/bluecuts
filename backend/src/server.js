@@ -241,6 +241,9 @@ const SQL_INV_LINES_SUM_JOIN = `JOIN (SELECT invoice_id, IFNULL(SUM(line_total),
 const SQL_INV_LINE_NET = `(ii.line_total * (i.total / NULLIF(ls.lines_sum, 0)))`;
 const sqlInvLineThbGrossRow = () => `ROUND((${SQL_INV_LINE_NET}) * ${SQL_THB_PER_INV}, 2)`;
 
+/** Memo line: proportional `line_total` for pieces still on memo (not returned). Alias `mi`. */
+const SQL_MEMO_LINE_REMAINING_VALUE = `CASE WHEN IFNULL(mi.quantity, 0) > IFNULL(mi.returned_qty, 0) AND mi.quantity > 0 THEN IFNULL(mi.line_total, 0) * (mi.quantity - mi.returned_qty) * 1.0 / mi.quantity ELSE 0 END`;
+
 // ===== DB schema =====
 db.serialize(() => {
   // Users
@@ -1929,9 +1932,7 @@ app.get('/api/memos', authMiddleware, requireRole(['owner', 'staff']), (req, res
         SELECT IFNULL(COUNT(*), 0) FROM memo_items mi WHERE mi.memo_id = m.id
       ) AS items_count,
       (
-        SELECT IFNULL(SUM(
-          mi.unit_price * (CASE WHEN mi.quantity > mi.returned_qty THEN mi.quantity - mi.returned_qty ELSE 0 END)
-        ), 0)
+        SELECT IFNULL(SUM(${SQL_MEMO_LINE_REMAINING_VALUE}), 0)
         FROM memo_items mi WHERE mi.memo_id = m.id
       ) AS total_value
     FROM memos m
@@ -1983,9 +1984,7 @@ app.get('/api/memos/stats', authMiddleware, requireRole(['owner', 'staff']), (re
       ), 0) AS items_on_open_memos,
       IFNULL(SUM(
         CASE WHEN m.status IN ('Open', 'Partially Returned') THEN
-          (SELECT IFNULL(SUM(
-            mi.unit_price * (CASE WHEN mi.quantity > mi.returned_qty THEN mi.quantity - mi.returned_qty ELSE 0 END)
-          ), 0) FROM memo_items mi WHERE mi.memo_id = m.id) * ${SQL_THB_PER_MEMO}
+          (SELECT IFNULL(SUM(${SQL_MEMO_LINE_REMAINING_VALUE}), 0) FROM memo_items mi WHERE mi.memo_id = m.id) * ${SQL_THB_PER_MEMO}
         ELSE 0 END
       ), 0) AS open_memos_value_thb
     FROM memos m
@@ -2024,10 +2023,12 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
     return res.status(400).json({ error: 'Invalid customer id' });
   }
 
-  let subtotal = 0;
+  let subtotalGross = 0;
+  let itemsDiscountTotal = 0;
   for (const it of items) {
     const inventoryItemId = Number(it.inventory_item_id);
     const unitPrice = Number(it.unit_price || 0);
+    const discount = Number(it.discount || 0);
     const quantity = Math.floor(Number(it.quantity ?? 0));
     if (!Number.isFinite(inventoryItemId) || inventoryItemId <= 0) {
       return res.status(400).json({ error: 'Invalid inventory_item_id' });
@@ -2035,11 +2036,17 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
     if (!Number.isFinite(unitPrice) || unitPrice < 0) {
       return res.status(400).json({ error: 'Invalid item price (negative amounts are not allowed)' });
     }
+    if (!Number.isFinite(discount) || discount < 0) {
+      return res.status(400).json({ error: 'Invalid item discount' });
+    }
     if (!Number.isFinite(quantity) || quantity < 1) {
       return res.status(400).json({ error: 'Each line must have a quantity of at least 1' });
     }
-    subtotal += unitPrice * quantity;
+    const lineGross = unitPrice * quantity;
+    subtotalGross += lineGross;
+    itemsDiscountTotal += Math.min(discount, lineGross);
   }
+  const memoNetTotal = Math.max(0, subtotalGross - itemsDiscountTotal);
 
   try {
     const businessToday = businessTodayYmd();
@@ -2078,8 +2085,10 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
     for (const it of items) {
       const inventoryItemId = Number(it.inventory_item_id);
       const unitPrice = Number(it.unit_price || 0);
+      const discount = Number(it.discount || 0);
       const quantity = Math.floor(Number(it.quantity ?? 0));
-      const lineTotal = unitPrice * quantity;
+      const lineGross = unitPrice * quantity;
+      const lineTotal = Math.max(0, lineGross - Math.min(discount, lineGross));
       const reqCode = it.item_code != null ? String(it.item_code).trim() || null : null;
       const reqDesc = it.description != null ? String(it.description) : null;
 
@@ -2147,7 +2156,7 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
       memo_date: memoDate || null,
       due_date: dueDate,
       notes,
-      total: subtotal,
+      total: memoNetTotal,
       currency_code,
     });
   } catch (err) {
@@ -2363,6 +2372,7 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
         const invId = Number(it.inventory_item_id);
         const newQ = Math.floor(Number(it.quantity ?? 0));
         const newP = Number(it.unit_price || 0);
+        const disc = Number(it.discount || 0);
         if (!Number.isFinite(invId) || invId <= 0) {
           await dbRun('ROLLBACK');
           return res.status(400).json({ error: 'Invalid inventory_item_id' });
@@ -2374,6 +2384,10 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
         if (!Number.isFinite(newP) || newP < 0) {
           await dbRun('ROLLBACK');
           return res.status(400).json({ error: 'Invalid item price' });
+        }
+        if (!Number.isFinite(disc) || disc < 0) {
+          await dbRun('ROLLBACK');
+          return res.status(400).json({ error: 'Invalid item discount' });
         }
 
         const midRaw = it.memo_item_id != null && it.memo_item_id !== '' ? Number(it.memo_item_id) : null;
@@ -2465,7 +2479,8 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
             );
           }
 
-          const lineTotal = newP * newQ;
+          const lineGross = newP * newQ;
+          const lineTotal = Math.max(0, lineGross - Math.min(disc, lineGross));
           const reqCode = it.item_code != null ? String(it.item_code).trim() || null : null;
           const reqDesc = it.description != null ? String(it.description) : null;
           const stockRow2 = await dbGet(
@@ -2519,7 +2534,8 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
           }
 
           const description = buildInventoryLineDescription(stockRow, reqDesc);
-          const lineTotal = newP * newQ;
+          const lineGrossNew = newP * newQ;
+          const lineTotal = Math.max(0, lineGrossNew - Math.min(disc, lineGrossNew));
 
           await dbRun(
             `
@@ -2782,11 +2798,22 @@ app.post('/api/memos/:id/convert-to-invoice', authMiddleware, requireRole(['owne
 
     if (!toBill.length) return res.status(400).json({ error: 'No items left on memo to invoice' });
 
-    let subtotal = 0;
+    let subtotalGross = 0;
+    let itemsDiscountTotal = 0;
     for (const l of toBill) {
-      subtotal += Number(l.unit_price || 0) * l.remaining;
+      const q = Math.floor(Number(l.quantity || 0));
+      const grossPc = Number(l.unit_price || 0);
+      const rem = l.remaining;
+      const lineGross = grossPc * rem;
+      const lineNet =
+        q > 0 ? (Number(l.line_total || 0) * rem) / q : 0;
+      const lineNetRounded = Math.round(lineNet * 100) / 100;
+      const lineDisc = Math.max(0, Math.round((lineGross - lineNetRounded) * 100) / 100);
+      subtotalGross += lineGross;
+      itemsDiscountTotal += lineDisc;
     }
-    const total = Math.max(0, subtotal);
+    const totalDiscount = Math.min(subtotalGross, itemsDiscountTotal);
+    const total = Math.max(0, Math.round((subtotalGross - totalDiscount) * 100) / 100);
     const customerId =
       memo.customer_id == null || memo.customer_id === '' ? null : Number(memo.customer_id);
     const invCurrency = normalizeCurrencyCode(memo.currency_code);
@@ -2796,15 +2823,21 @@ app.post('/api/memos/:id/convert-to-invoice', authMiddleware, requireRole(['owne
     const invInsert = await dbRun(
       `
       INSERT INTO invoices (invoice_no, customer_id, subtotal, discount, total, status, currency_code, created_at, updated_at)
-      VALUES (?, ?, ?, 0, ?, 'Unpaid', ?, datetime('now'), datetime('now'))
+      VALUES (?, ?, ?, ?, ?, 'Unpaid', ?, datetime('now'), datetime('now'))
     `,
-      [null, customerId, subtotal, total, invCurrency]
+      [null, customerId, subtotalGross, totalDiscount, total, invCurrency]
     );
     const invoiceId = invInsert.lastID;
     const invoiceNo = await nextSerialDocNumber('INV', 'invoices', null);
 
     for (const l of toBill) {
-      const lineTotal = Number(l.unit_price || 0) * l.remaining;
+      const q = Math.floor(Number(l.quantity || 0));
+      const grossPc = Number(l.unit_price || 0);
+      const rem = l.remaining;
+      const lineGross = grossPc * rem;
+      const lineNet =
+        q > 0 ? (Number(l.line_total || 0) * rem) / q : 0;
+      const lineTotalInv = Math.max(0, Math.round(lineNet * 100) / 100);
       await dbRun(
         `
         INSERT INTO invoice_items (
@@ -2812,7 +2845,7 @@ app.post('/api/memos/:id/convert-to-invoice', authMiddleware, requireRole(['owne
         )
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `,
-        [invoiceId, l.inventory_item_id, l.item_code, l.description, l.remaining, l.unit_price, lineTotal]
+        [invoiceId, l.inventory_item_id, l.item_code, l.description, rem, grossPc, lineTotalInv]
       );
 
       await dbRun(
@@ -3047,6 +3080,9 @@ app.get('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), (r
         line_total: row.line_total,
         weight_grams: row.weight_grams,
         weight_carats: row.weight_carats,
+        inv_category: row.inv_category,
+        inv_item_type: row.inv_item_type,
+        inventory_description: row.inventory_description,
       }));
       db.all(sqlPayments, [id], (err3, payments) => {
         if (err3) return res.status(500).json({ error: 'Internal server error' });
@@ -4103,9 +4139,7 @@ app.get('/api/customers/:id', authMiddleware, requireRole(['owner', 'staff']), (
             SELECT IFNULL(COUNT(*), 0) FROM memo_items mi WHERE mi.memo_id = m.id
           ) AS items_count,
           (
-            SELECT IFNULL(SUM(
-              mi.unit_price * (CASE WHEN mi.quantity > mi.returned_qty THEN mi.quantity - mi.returned_qty ELSE 0 END)
-            ), 0)
+            SELECT IFNULL(SUM(${SQL_MEMO_LINE_REMAINING_VALUE}), 0)
             FROM memo_items mi WHERE mi.memo_id = m.id
           ) AS total_value
         FROM memos m
@@ -4380,7 +4414,7 @@ app.get('/api/reports/summary', authMiddleware, requireRole(['owner', 'staff']),
       m.status,
       COUNT(*) AS memo_count,
       IFNULL(SUM(mi.quantity - mi.returned_qty), 0) AS remaining_qty,
-      IFNULL(SUM((mi.quantity - mi.returned_qty) * mi.unit_price * ${SQL_THB_PER_MEMO}), 0) AS value
+      IFNULL(SUM((${SQL_MEMO_LINE_REMAINING_VALUE}) * ${SQL_THB_PER_MEMO}), 0) AS value
     FROM memos m
     ${SQL_MEMO_FX_JOIN}
     LEFT JOIN memo_items mi ON mi.memo_id = m.id

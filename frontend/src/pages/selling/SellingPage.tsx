@@ -31,6 +31,19 @@ function sellingUnitPrefillFromList(item: InventoryItem, invoiceCurrency: string
   return 0;
 }
 
+/** Inventory list price per unit in `invoiceCurrency`, or null if not comparable (currency mismatch). */
+function inventoryListUnitInInvoiceCurrency(
+  item: InventoryItem,
+  invoiceCurrency: string
+): number | null {
+  const listCur = normalizeCurrencyCode(item.selling_currency ?? DEFAULT_CURRENCY_CODE);
+  const inv = normalizeCurrencyCode(invoiceCurrency);
+  if (listCur !== inv) return null;
+  const v = Number(item.selling_total_price ?? 0);
+  if (!Number.isFinite(v) || v < 0) return null;
+  return roundMoney2(v);
+}
+
 interface InventoryItem {
   id: number;
   category: string;
@@ -236,7 +249,6 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [loadingInvoices, setLoadingInvoices] = useState(false);
   const [invoicesError, setInvoicesError] = useState<string | null>(null);
-  const [itemDiscounts, setItemDiscounts] = useState<Record<number, number>>({});
   const [itemQuantities, setItemQuantities] = useState<Record<number, number>>({});
   /** Per-line unit price in the selected invoice currency (manual; not recomputed when currency changes). */
   const [itemUnitPrices, setItemUnitPrices] = useState<Record<number, number>>({});
@@ -509,22 +521,49 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     return Math.max(1, base + bonus);
   };
 
-  const lineUnitPriceForItem = (item: InventoryItem): number => {
+  /** Editable unit price (amount charged per piece). */
+  const lineSellUnitForItem = (item: InventoryItem): number => {
     const manual = itemUnitPrices[item.id];
     if (manual != null && Number.isFinite(manual)) return roundMoney2(manual);
     return sellingUnitPrefillFromList(item, saleCurrency);
   };
 
-  const lineGrossForItem = (item: InventoryItem) => {
-    const unit = lineUnitPriceForItem(item);
+  /**
+   * Unit price stored on the invoice line (`price` in API): list when sale is at or below inventory list
+   * (so line discount = list − sell); otherwise the sell unit (premium over list).
+   */
+  const lineApiUnitPriceForItem = (item: InventoryItem): number => {
+    const sell = lineSellUnitForItem(item);
+    const list = inventoryListUnitInInvoiceCurrency(item, saleCurrency);
+    if (list == null) return sell;
+    if (sell > list) return sell;
+    return list;
+  };
+
+  /** Line subtotal before line discount (matches backend gross). */
+  const lineSubtotalGrossForItem = (item: InventoryItem) => {
+    const unit = lineApiUnitPriceForItem(item);
     const q = itemQuantities[item.id] ?? 1;
     return roundMoney2(unit * q);
   };
 
-  const lineNetForItem = (item: InventoryItem) => {
-    const gross = lineGrossForItem(item);
-    const d = Math.min(itemDiscounts[item.id] || 0, gross);
-    return Math.max(0, gross - d);
+  /** Amount charged for the line (sell unit × qty). */
+  const lineSellTotalForItem = (item: InventoryItem) => {
+    const unit = lineSellUnitForItem(item);
+    const q = itemQuantities[item.id] ?? 1;
+    return roundMoney2(unit * q);
+  };
+
+  /** Line discount = (inventory list − sell) × qty when sell is below list; otherwise 0. */
+  const lineDerivedItemDiscount = (item: InventoryItem): number => {
+    const sell = lineSellUnitForItem(item);
+    const list = inventoryListUnitInInvoiceCurrency(item, saleCurrency);
+    const q = itemQuantities[item.id] ?? 1;
+    if (list == null || sell >= list) return 0;
+    const perUnit = roundMoney2(list - sell);
+    const raw = perUnit * q;
+    const gross = lineSubtotalGrossForItem(item);
+    return Math.min(gross, Math.max(0, roundMoney2(raw)));
   };
 
   const addToCart = (item: InventoryItem) => {
@@ -545,11 +584,6 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       delete next[id];
       return next;
     });
-    setItemDiscounts(prev => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
     setItemUnitPrices(prev => {
       const next = { ...prev };
       delete next[id];
@@ -565,11 +599,8 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     setItemQuantities(prev => ({ ...prev, [item.id]: q }));
   };
 
-  const cartTotal = cart.reduce((sum, i) => sum + lineGrossForItem(i), 0);
-  const itemsDiscountTotal = cart.reduce(
-    (sum, item) => sum + Math.min(itemDiscounts[item.id] || 0, lineGrossForItem(item)),
-    0
-  );
+  const cartTotal = cart.reduce((sum, i) => sum + lineSubtotalGrossForItem(i), 0);
+  const itemsDiscountTotal = cart.reduce((sum, item) => sum + lineDerivedItemDiscount(item), 0);
   const parsedDiscount = Number.isFinite(discountAmount) ? discountAmount : 0;
   const finalTotalRaw = cartTotal - itemsDiscountTotal - parsedDiscount;
   const finalTotal = finalTotalRaw > 0 ? finalTotalRaw : 0;
@@ -729,9 +760,9 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         currency_code: saleCurrency,
         items: cart.map(item => ({
           inventory_item_id: item.id,
-          price: lineUnitPriceForItem(item),
+          price: lineApiUnitPriceForItem(item),
           quantity: itemQuantities[item.id] ?? 1,
-          discount: itemDiscounts[item.id] || 0,
+          discount: lineDerivedItemDiscount(item),
           item_code: item.item_code,
         })),
       };
@@ -820,7 +851,6 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
 
   const resetInvoice = () => {
     setCart([]);
-    setItemDiscounts({});
     setItemQuantities({});
     setItemUnitPrices({});
     setDiscountAmount(0);
@@ -857,7 +887,6 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       const payload = {
         selectedCustomer,
         discountAmount,
-        itemDiscounts,
         itemQuantities,
         itemUnitPrices,
         cart,
@@ -909,7 +938,6 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         payload: {
           selectedCustomer: Customer | null;
           discountAmount: number;
-          itemDiscounts: Record<number, number>;
           itemQuantities?: Record<number, number>;
           itemUnitPrices?: Record<number, number>;
           cart: InventoryItem[];
@@ -924,7 +952,6 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
           ? normalizeCurrencyCode(payload.saleCurrency)
           : SELLING_DEFAULT_CURRENCY;
       setSaleCurrency(invoiceCur);
-      setItemDiscounts(payload.itemDiscounts || {});
       const rawCart: InventoryItem[] = Array.isArray(payload.cart) ? payload.cart : [];
       const savedQ =
         payload.itemQuantities && typeof payload.itemQuantities === 'object'
@@ -989,7 +1016,6 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
 
       const reserved: Record<number, number> = {};
       const cartRows: InventoryItem[] = [];
-      const discounts: Record<number, number> = {};
       const quantities: Record<number, number> = {};
       const unitPrices: Record<number, number> = {};
 
@@ -1006,10 +1032,8 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         const qty = Math.max(1, Math.floor(Number(line.quantity) || 1));
         quantities[row.id] = qty;
         reserved[row.id] = qty;
-        unitPrices[row.id] = roundMoney2(Number(line.unit_price || 0));
-        const lineGross = qty * Number(line.unit_price || 0);
-        const lineDisc = Math.max(0, lineGross - Number(line.line_total || 0));
-        discounts[row.id] = lineDisc;
+        const lineTotal = Number(line.line_total || 0);
+        unitPrices[row.id] = roundMoney2(qty > 0 ? lineTotal / qty : 0);
       }
 
       let itemsDiscSum = 0;
@@ -1022,7 +1046,6 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
 
       setCart(cartRows);
       setItemQuantities(quantities);
-      setItemDiscounts(discounts);
       setItemUnitPrices(unitPrices);
       setDiscountAmount(orderDisc);
       setReservedPiecesOnEdit(reserved);
@@ -1120,9 +1143,9 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     invoiceCreatedLineOverride ??
     cart.map(row => {
       const q = itemQuantities[row.id] ?? 1;
-      const gross = lineGrossForItem(row);
-      const disc = Math.min(itemDiscounts[row.id] || 0, gross);
-      const net = Math.max(0, gross - disc);
+      const gross = lineSubtotalGrossForItem(row);
+      const disc = lineDerivedItemDiscount(row);
+      const net = lineSellTotalForItem(row);
       const label = row.item_code || `#${row.id}`;
       return { label, qty: q, gross, disc, net };
     });
@@ -1237,11 +1260,11 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
                   </thead>
                   <tbody>
                     {cart.map(it => {
-                      const rowDiscount = itemDiscounts[it.id] || 0;
+                      const rowDiscount = lineDerivedItemDiscount(it);
                       const maxPcs = maxPcsForItem(it);
                       const qty = itemQuantities[it.id] ?? 1;
-                      const lineGross = lineGrossForItem(it);
-                      const lineNet = lineNetForItem(it);
+                      const lineGross = lineSubtotalGrossForItem(it);
+                      const lineNet = lineSellTotalForItem(it);
                       const avail = it.pieces_remaining ?? it.pieces;
                       const imgSrc = getImageSrc(it.image_path);
                       const showPlaceholder = !imgSrc || cartImageLoadFailed.has(it.id);
@@ -1288,7 +1311,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
                             <input
                               type="number"
                               className="selling2-unit-price-input"
-                              value={lineUnitPriceForItem(it)}
+                              value={lineSellUnitForItem(it)}
                               min={0}
                               step={0.01}
                               title={`Unit price (${saleCurrency})`}
@@ -1301,19 +1324,8 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
                             />
                           </td>
                           <td className="selling2-price">{formatMoneyAmount(lineGross, saleCurrency)}</td>
-                          <td>
-                            <input
-                              type="number"
-                              className="selling2-discount-input"
-                              value={rowDiscount}
-                              min={0}
-                              onChange={e =>
-                                setItemDiscounts(prev => ({
-                                  ...prev,
-                                  [it.id]: parseMoneyInput(e.target.value),
-                                }))
-                              }
-                            />
+                          <td className="selling2-price selling2-discount-cell">
+                            {rowDiscount > 0 ? formatMoneyAmount(rowDiscount, saleCurrency) : '—'}
                           </td>
                           <td className="selling2-net">{formatMoneyAmount(lineNet, saleCurrency)}</td>
                           <td>

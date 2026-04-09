@@ -5,6 +5,7 @@ import {
   SUPPORTED_CURRENCIES,
   normalizeCurrencyCode,
   formatMoneyWhole,
+  formatMoneyAmount,
   parseMoneyInput,
   roundMoney2,
 } from '../../lib/currencies';
@@ -15,6 +16,7 @@ import {
   normalizeItemType,
   isSingleItemTypeForm,
   formatItemTypeDisplay,
+  inventoryCategoryDisplay,
   inventoryItemPrimaryLabel,
 } from '../../lib/inventoryDisplay';
 import { dateFromServerUtc } from '../../lib/serverTime';
@@ -130,6 +132,130 @@ function formatDateTime(iso: string): string {
   }
 }
 
+function formatIsoDateUtc(iso: string): string {
+  const d = dateFromServerUtc(iso);
+  return Number.isNaN(d.getTime()) ? String(iso).slice(0, 10) : d.toISOString().slice(0, 10);
+}
+
+/** Markup vs cost on list price (USD form entry); null if not computable. */
+function formatMarginPercentLabel(item: InventoryItem): string | null {
+  const sell = item.selling_total_price;
+  const buy = item.purchasing_total_price;
+  if (sell == null || buy == null) return null;
+  const s = Number(sell);
+  const b = Number(buy);
+  if (!Number.isFinite(s) || !Number.isFinite(b) || b <= 0) return null;
+  const pct = ((s - b) / b) * 100;
+  const rounded = Math.round(pct * 10) / 10;
+  const sign = rounded > 0 ? '+' : '';
+  return `${sign}${rounded}%`;
+}
+
+function statusSlugForUi(status: string): string {
+  return String(status || '')
+    .toLowerCase()
+    .replace(/\s+/g, '-');
+}
+
+function ItemDetailDrawerFinanceSections({ item }: { item: EnrichedInventoryItem }) {
+  const sellCur = normalizeCurrencyCode(item.selling_currency);
+  const marginLabel = formatMarginPercentLabel(item);
+  const sellTotal = item.selling_total_price;
+  const buyTotal = item.purchasing_total_price;
+  const grossNum =
+    sellTotal != null && buyTotal != null ? roundMoney2(Number(sellTotal) - Number(buyTotal)) : null;
+  const marginNegative = marginLabel != null && marginLabel.startsWith('-');
+  const grossNegative = grossNum != null && grossNum < 0;
+
+  return (
+    <>
+      <section className="upd-inv-detail-drawer__section" aria-label="Selling price">
+        <h4 className="upd-inv-detail-drawer__section-kicker">Selling price ({sellCur})</h4>
+        <div className="upd-inv-detail-drawer__rule upd-inv-detail-drawer__rule--subtle" aria-hidden="true" />
+        <dl className="upd-inv-detail-drawer__kv">
+          <div className="upd-inv-detail-drawer__kv-row">
+            <dt>List total</dt>
+            <dd>{sellTotal != null ? formatMoneyAmount(Number(sellTotal), sellCur) : '—'}</dd>
+          </div>
+          <div className="upd-inv-detail-drawer__kv-row">
+            <dt>Per carat</dt>
+            <dd>
+              {item.selling_carat_price != null
+                ? `${formatMoneyAmount(Number(item.selling_carat_price), sellCur)}/ct`
+                : '—'}
+            </dd>
+          </div>
+          <div className="upd-inv-detail-drawer__kv-row">
+            <dt>Currency</dt>
+            <dd>{sellCur}</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section className="upd-inv-detail-drawer__section" aria-label="Purchasing cost">
+        <h4 className="upd-inv-detail-drawer__section-kicker">
+          Purchasing cost ({INVENTORY_FORM_CURRENCY})
+        </h4>
+        <div className="upd-inv-detail-drawer__rule upd-inv-detail-drawer__rule--subtle" aria-hidden="true" />
+        <dl className="upd-inv-detail-drawer__kv">
+          <div className="upd-inv-detail-drawer__kv-row upd-inv-detail-drawer__kv-row--cost">
+            <dt>Total cost</dt>
+            <dd>
+              {buyTotal != null ? formatMoneyAmount(Number(buyTotal), INVENTORY_FORM_CURRENCY) : '—'}
+            </dd>
+          </div>
+          <div className="upd-inv-detail-drawer__kv-row upd-inv-detail-drawer__kv-row--cost">
+            <dt>Per carat</dt>
+            <dd>
+              {item.purchasing_carat_price != null
+                ? `${formatMoneyAmount(Number(item.purchasing_carat_price), INVENTORY_FORM_CURRENCY)}/ct`
+                : '—'}
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      <section className="upd-inv-detail-drawer__section" aria-label="Profitability">
+        <h4 className="upd-inv-detail-drawer__section-kicker">Profitability</h4>
+        <div className="upd-inv-detail-drawer__rule upd-inv-detail-drawer__rule--subtle" aria-hidden="true" />
+        <dl className="upd-inv-detail-drawer__kv">
+          <div
+            className={`upd-inv-detail-drawer__kv-row upd-inv-detail-drawer__kv-row--profit${grossNegative ? ' is-negative' : ''}`}
+          >
+            <dt>Gross profit</dt>
+            <dd>{grossNum != null ? formatMoneyAmount(grossNum, sellCur) : '—'}</dd>
+          </div>
+          <div
+            className={`upd-inv-detail-drawer__kv-row upd-inv-detail-drawer__kv-row--profit${marginNegative ? ' is-negative' : ''}`}
+          >
+            <dt>Margin</dt>
+            <dd>{marginLabel ?? '—'}</dd>
+          </div>
+        </dl>
+        <div className={`upd-inv-detail-drawer__net-margin${marginNegative ? ' is-negative' : ''}`}>
+          <span className="upd-inv-detail-drawer__net-margin-label">Net margin</span>
+          <span className="upd-inv-detail-drawer__net-margin-value">{marginLabel ?? '—'}</span>
+        </div>
+      </section>
+
+      <section className="upd-inv-detail-drawer__section" aria-label="Record">
+        <h4 className="upd-inv-detail-drawer__section-kicker">Record</h4>
+        <div className="upd-inv-detail-drawer__rule upd-inv-detail-drawer__rule--subtle" aria-hidden="true" />
+        <dl className="upd-inv-detail-drawer__kv">
+          <div className="upd-inv-detail-drawer__kv-row">
+            <dt>Item ID</dt>
+            <dd>#{item.id}</dd>
+          </div>
+          <div className="upd-inv-detail-drawer__kv-row">
+            <dt>Date added</dt>
+            <dd>{formatIsoDateUtc(item.created_at)}</dd>
+          </div>
+        </dl>
+      </section>
+    </>
+  );
+}
+
 const iconSize = 20;
 const IconDetails = () => (
   <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -154,6 +280,12 @@ const IconList = () => (
     <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
   </svg>
 );
+const IconGrid = () => (
+  <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
+    <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+  </svg>
+);
 const IconAdd = () => (
   <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
@@ -167,6 +299,12 @@ const IconSearch = () => (
 const IconRefresh = () => (
   <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M23 4v6h-6M1 20v-6h6" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+  </svg>
+);
+const IconEye = () => (
+  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+    <circle cx="12" cy="12" r="3" />
   </svg>
 );
 const IconEdit = () => (
@@ -230,9 +368,50 @@ const IconSell = () => (
 const LIST_STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: '', label: 'All statuses' },
   { value: 'Available', label: 'Available' },
+  { value: 'Out of stock', label: 'Out of stock' },
   { value: 'On Memo', label: 'On Memo' },
   { value: 'Sold', label: 'Sold' },
 ];
+
+/** Quick filters above list/grid (synced with status dropdown). */
+const QUICK_STATUS_PILLS: { value: string; label: string }[] = [
+  { value: '', label: 'All' },
+  { value: 'Available', label: 'Available' },
+  { value: 'Out of stock', label: 'Out of Stock' },
+  { value: 'On Memo', label: 'On Memo' },
+  { value: 'Sold', label: 'Sold' },
+];
+
+type ListSortMode =
+  | 'newest'
+  | 'oldest'
+  | 'price_high'
+  | 'price_low'
+  | 'name_az'
+  | 'weight_heavy';
+
+const LIST_SORT_OPTIONS: { value: ListSortMode; label: string }[] = [
+  { value: 'newest', label: 'Newest First' },
+  { value: 'oldest', label: 'Oldest First' },
+  { value: 'price_high', label: 'Price: High → Low' },
+  { value: 'price_low', label: 'Price: Low → High' },
+  { value: 'name_az', label: 'Name A → Z' },
+  { value: 'weight_heavy', label: 'Weight: Heavy → Light' },
+];
+
+function sellingPriceForSort(i: InventoryItem): number {
+  const n = i.selling_total_price;
+  return n != null && Number.isFinite(Number(n)) ? Number(n) : 0;
+}
+
+/** Carats for weight sort; falls back from grams using shop conversion. */
+function weightCaratsForSort(i: InventoryItem): number {
+  const c = i.weight_carats;
+  const g = i.weight_grams;
+  if (c != null && Number.isFinite(Number(c)) && Number(c) > 0) return Number(c);
+  if (g != null && Number.isFinite(Number(g)) && Number(g) > 0) return Number(g) * WEIGHT_GRAMS_TO_CARATS;
+  return 0;
+}
 
 export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token, role = 'staff' }) => {
   const { showAlert, showConfirm } = useAlertDialog();
@@ -269,6 +448,11 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
   const [mobileStarting, setMobileStarting] = useState(false);
   const [mobileUploadHint, setMobileUploadHint] = useState<string | null>(null);
   const [mobileCopied, setMobileCopied] = useState(false);
+  const [selectedViewItemId, setSelectedViewItemId] = useState<number | null>(null);
+  const [listViewMode, setListViewMode] = useState<'list' | 'grid'>('list');
+  const [listSort, setListSort] = useState<ListSortMode>('newest');
+  const [sortDropdownOpen, setSortDropdownOpen] = useState(false);
+  const sortDropdownRef = useRef<HTMLDivElement>(null);
 
   const [form, setForm] = useState({
     category: '',
@@ -341,7 +525,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
     } finally {
       setListLoading(false);
     }
-  }, [listSearch, listStatusFilter, token, showAlert]);
+  }, [listSearch, token, showAlert]);
 
   const applyListFilters = () => {
     fetchItems({ search: listSearch, status: listStatusFilter });
@@ -453,6 +637,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
     const handleClickOutside = (e: MouseEvent) => {
       if (listCategoryDropdownRef.current && !listCategoryDropdownRef.current.contains(e.target as Node)) setListCategoryDropdownOpen(false);
       if (listStatusDropdownRef.current && !listStatusDropdownRef.current.contains(e.target as Node)) setListStatusDropdownOpen(false);
+      if (sortDropdownRef.current && !sortDropdownRef.current.contains(e.target as Node)) setSortDropdownOpen(false);
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -518,6 +703,76 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
     if (listStatusFilter) list = list.filter((i) => i.effectiveStatus === listStatusFilter);
     return list;
   }, [enrichedItems, listCategoryFilter, listStatusFilter]);
+
+  const kpiStats = useMemo(() => {
+    const list = enrichedItems;
+    return {
+      total: list.length,
+      available: list.filter((i) => i.effectiveStatus === 'Available').length,
+      onMemo: list.filter((i) => i.effectiveStatus === 'On Memo').length,
+      sold: list.filter((i) => i.effectiveStatus === 'Sold').length,
+    };
+  }, [enrichedItems]);
+
+  const sortedDisplayedItems = useMemo(() => {
+    const arr = [...displayedItems];
+    switch (listSort) {
+      case 'newest':
+        arr.sort((a, b) => dateFromServerUtc(b.created_at).getTime() - dateFromServerUtc(a.created_at).getTime());
+        break;
+      case 'oldest':
+        arr.sort((a, b) => dateFromServerUtc(a.created_at).getTime() - dateFromServerUtc(b.created_at).getTime());
+        break;
+      case 'price_high':
+        arr.sort((a, b) => sellingPriceForSort(b) - sellingPriceForSort(a));
+        break;
+      case 'price_low':
+        arr.sort((a, b) => sellingPriceForSort(a) - sellingPriceForSort(b));
+        break;
+      case 'name_az':
+        arr.sort((a, b) =>
+          inventoryItemPrimaryLabel(a).localeCompare(inventoryItemPrimaryLabel(b), undefined, { sensitivity: 'base' })
+        );
+        break;
+      case 'weight_heavy':
+        arr.sort((a, b) => weightCaratsForSort(b) - weightCaratsForSort(a));
+        break;
+      default:
+        break;
+    }
+    return arr;
+  }, [displayedItems, listSort]);
+
+  const selectedViewItem = useMemo(
+    () => (selectedViewItemId == null ? null : sortedDisplayedItems.find((i) => i.id === selectedViewItemId) ?? null),
+    [sortedDisplayedItems, selectedViewItemId]
+  );
+
+  useEffect(() => {
+    if (selectedViewItemId == null) return;
+    if (!sortedDisplayedItems.some((i) => i.id === selectedViewItemId)) {
+      setSelectedViewItemId(null);
+    }
+  }, [sortedDisplayedItems, selectedViewItemId]);
+
+  useEffect(() => {
+    if (selectedViewItemId == null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSelectedViewItemId(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedViewItemId]);
+
+  useEffect(() => {
+    if (selectedViewItemId == null) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [selectedViewItemId]);
+
   const uniqueCategories = Array.from(
     new Set(items.map((i) => i.category).filter((c) => !categoryLooksLikeShortCode(c)))
   ).sort();
@@ -809,6 +1064,12 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
     setMobileCopied(false);
   };
 
+  const openAddForm = () => {
+    resetForm();
+    setFormOpen(true);
+    setSelectedViewItemId(null);
+  };
+
   const handleEdit = (item: InventoryItem) => {
     setForm({
       category: item.category,
@@ -827,6 +1088,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
     });
     setCategorySearch(item.category);
     setEditingId(item.id);
+    setSelectedViewItemId(item.id);
     setFormOpen(true);
     setSaveError(null);
     setFieldErrors({});
@@ -856,6 +1118,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
         const message = await parseErrorResponse(res, 'Failed to delete');
         throw new Error(message);
       }
+      if (selectedViewItemId === item.id) setSelectedViewItemId(null);
       fetchItems({ search: listSearch, status: listStatusFilter });
       showAlert({
         title: 'Item deleted',
@@ -869,43 +1132,46 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
     }
   };
 
+  const sortMenuLabel = LIST_SORT_OPTIONS.find((o) => o.value === listSort)?.label ?? 'Newest First';
+
   return (
     <div className="page page-update-inventory">
-        <div className={`section-card section-card--form ${categoryOpen ? 'section-card--form-dropdown-open' : ''}`}>
-        <div className="inventory-form-section">
-          {!formOpen ? (
-            <button
-              type="button"
-              className="primary-button inventory-form-toggle"
-              onClick={() => setFormOpen(true)}
-            >
-              <span className="btn-icon"><IconAdd /></span>
-              Add new item
-            </button>
-          ) : (
-            <>
-              <div className="inventory-form-header">
-                <span className="inventory-form-title">
-                  <span className="section-title-icon section-title-icon--form">
-                    <IconAdd />
+      <div className="upd-inv-page-top">
+        <div className="upd-inv-top-row">
+          <button type="button" className="primary-button upd-inv-add-top" onClick={openAddForm}>
+            <span className="btn-icon" aria-hidden="true">
+              <IconAdd />
+            </span>
+            Add new item
+          </button>
+          {formOpen ? (
+            <div className={`section-card section-card--form upd-inv-form-slot${categoryOpen ? ' section-card--form-dropdown-open' : ''}`}>
+              <div className="inventory-form-section">
+                <div className="inventory-form-header">
+                  <span className="inventory-form-title">
+                    <span className="section-title-icon section-title-icon--form">
+                      <IconAdd />
+                    </span>
+                    {editingId ? 'Edit item' : 'Add new item'}
                   </span>
-                  {editingId ? 'Edit item' : 'Add new item'}
-                </span>
-                <button
-                  type="button"
-                  className="ghost-button inventory-form-close"
-                  onClick={() => { resetForm(); setFormOpen(false); }}
-                  aria-label="Close form"
-                >
-                  <IconClose />
-                  <span>Close</span>
-                </button>
-              </div>
-      <form ref={formRef} className="inventory-form inventory-form-three-cols" onSubmit={handleSubmit}>
-        {saveError && (
-          <div className="alert alert-error" role="alert">{saveError}</div>
-        )}
-        <div className="form-three-cols">
+                  <button
+                    type="button"
+                    className="ghost-button inventory-form-close"
+                    onClick={() => {
+                      resetForm();
+                      setFormOpen(false);
+                    }}
+                    aria-label="Close form"
+                  >
+                    <IconClose />
+                    <span>Close</span>
+                  </button>
+                </div>
+                <form ref={formRef} className="inventory-form inventory-form-three-cols upd-inv-form-new" onSubmit={handleSubmit}>
+                  {saveError && (
+                    <div className="alert alert-error" role="alert">{saveError}</div>
+                  )}
+                  <div className="form-three-cols">
           {/* Column 1 */}
           <div className="form-col form-col-card section-card-inner section-card-inner--details">
             <div className="form-section-title section-title-with-icon">
@@ -1086,15 +1352,15 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
             </div>
           </div>
 
-          {/* Column 2: Image */}
-          <div className="form-col form-col-card section-card-inner section-card-inner--image">
+          {/* Column 2: Photo + QR (new UI layout) */}
+          <div className="form-col form-col-card section-card-inner section-card-inner--image upd-inv-form-photo-col">
             <div className="form-section-title section-title-with-icon">
               <span className="section-title-icon section-title-icon--image"><IconImage /></span>
-              Image
+              Photo · file or QR
             </div>
             <div className="form-col-fields">
               <div className="form-field">
-                <label>Image</label>
+                <label>Image file</label>
                 <div
                   className={`drop-zone ${dropZoneActive ? 'drop-zone-dragover' : ''}`}
                   onClick={() => photoInputRef.current?.click()}
@@ -1150,10 +1416,14 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
                     }}
                   />
                 </div>
-                <div className="mobile-upload-card">
-                  <div className="mobile-upload-title">Mobile Camera Upload</div>
+                <div className="mobile-upload-card upd-inv-qr-panel">
+                  <div className="upd-inv-qr-heading">
+                    <div className="mobile-upload-title">QR code — add image from phone</div>
+                    <span className="upd-inv-qr-required-badge">Use for showroom photos</span>
+                  </div>
                   <p className="mobile-upload-text">
-                    Scan with phone, take photo, and upload directly to this item or draft form before save.
+                    Start a session, scan the QR with your phone camera, then take or upload a picture. Phone and this
+                    computer must be on the same Wi‑Fi. You can still save the item after uploading from the phone.
                   </p>
                   <div className="mobile-upload-actions">
                     {!mobileSession ? (
@@ -1308,168 +1578,303 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
               </div>
             </div>
           </div>
-        </div>
+                  </div>
 
-        <div className="form-actions form-actions-end">
-          <span className="form-actions-hint" aria-hidden="true">
-            Ctrl+Enter to save
-          </span>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => { resetForm(); setFormOpen(false); }}
-          >
-            Cancel
-          </button>
-          <button type="submit" className="primary-button" disabled={saving}>
-            {saving ? (editingId ? 'Updating…' : 'Saving…') : (editingId ? 'Update item' : 'Save item')}
-          </button>
-        </div>
-      </form>
-          </>
-        )}
+                  <div className="form-actions form-actions-end">
+                    <span className="form-actions-hint" aria-hidden="true">
+                      Ctrl+Enter to save
+                    </span>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => { resetForm(); setFormOpen(false); }}
+                    >
+                      Cancel
+                    </button>
+                    <button type="submit" className="primary-button" disabled={saving}>
+                      {saving ? (editingId ? 'Updating…' : 'Saving…') : (editingId ? 'Update item' : 'Save item')}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 
-      {/* Card 1: Find items */}
-      <section className={`section-card section-card--find ${listStatusDropdownOpen || listCategoryDropdownOpen ? 'dropdown-open' : ''}`} aria-label="Find items">
-        <div className="inventory-list-toolbar">
-          <h3 className="inventory-list-title">
-            <span className="section-title-icon section-title-icon--find"><IconFilter /></span>
-            Find items
-          </h3>
-          <div className="inventory-list-controls">
-            <div className="inventory-list-search-wrap">
-              <span className="inventory-list-search-icon" aria-hidden="true">
-                <IconSearch />
-              </span>
-              <input
-                type="search"
-                className="inventory-list-search"
-                placeholder="Category, type, or ID…"
-                value={listSearch}
-                onChange={(e) => setListSearch(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), applyListFilters())}
-                aria-label="Search inventory"
-              />
-            </div>
-            <div className="check-inventory-dropdown" ref={listStatusDropdownRef}>
-              <button
-                type="button"
-                className="check-inventory-dropdown-trigger"
-                onClick={() => { setListStatusDropdownOpen((o) => !o); setListCategoryDropdownOpen(false); }}
-                aria-haspopup="listbox"
-                aria-expanded={listStatusDropdownOpen}
-                aria-label="Filter by status"
-              >
-                <span className="check-inventory-dropdown-trigger-icon check-inventory-dropdown-trigger-icon--status"><IconStatus /></span>
-                <span className="check-inventory-dropdown-trigger-label">
-                  {LIST_STATUS_OPTIONS.find((o) => o.value === listStatusFilter)?.label || 'All statuses'}
-                </span>
-                <span className={`check-inventory-dropdown-chevron ${listStatusDropdownOpen ? 'is-open' : ''}`}><IconChevronDown /></span>
-              </button>
-              {listStatusDropdownOpen && (
-                <ul className="check-inventory-dropdown-list" role="listbox" aria-label="Status">
-                  {LIST_STATUS_OPTIONS.map((opt) => (
-                    <li
-                      key={opt.value || 'all'}
-                      role="option"
-                      aria-selected={listStatusFilter === opt.value}
-                      className={`check-inventory-dropdown-option check-inventory-dropdown-option--${opt.value || 'all'} ${listStatusFilter === opt.value ? 'is-selected' : ''}`}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        setListStatusFilter(opt.value);
-                        setListStatusDropdownOpen(false);
-                        fetchItems({ search: listSearch, status: opt.value });
-                      }}
-                    >
-                      {opt.value === '' && <span className="check-inventory-dropdown-option-icon check-inventory-dropdown-option-icon--all"><IconFilter /></span>}
-                      {opt.value === 'Available' && <span className="check-inventory-dropdown-option-icon check-inventory-dropdown-option-icon--available"><IconCheck /></span>}
-                      {opt.value === 'On Memo' && <span className="check-inventory-dropdown-option-icon check-inventory-dropdown-option-icon--memo"><IconMemo /></span>}
-                      {opt.value === 'Sold' && <span className="check-inventory-dropdown-option-icon check-inventory-dropdown-option-icon--sold"><IconSell /></span>}
-                      {opt.label}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            <div className="check-inventory-dropdown" ref={listCategoryDropdownRef}>
-              <button
-                type="button"
-                className="check-inventory-dropdown-trigger"
-                onClick={() => { setListCategoryDropdownOpen((o) => !o); setListStatusDropdownOpen(false); }}
-                aria-haspopup="listbox"
-                aria-expanded={listCategoryDropdownOpen}
-                aria-label="Filter by category"
-              >
-                <span className="check-inventory-dropdown-trigger-icon check-inventory-dropdown-trigger-icon--category"><IconCategory /></span>
-                <span className="check-inventory-dropdown-trigger-label">{listCategoryFilter || 'All categories'}</span>
-                <span className={`check-inventory-dropdown-chevron ${listCategoryDropdownOpen ? 'is-open' : ''}`}><IconChevronDown /></span>
-              </button>
-              {listCategoryDropdownOpen && (
-                <ul className="check-inventory-dropdown-list" role="listbox" aria-label="Category">
-                  <li
-                    role="option"
-                    aria-selected={!listCategoryFilter}
-                    className={`check-inventory-dropdown-option ${!listCategoryFilter ? 'is-selected' : ''}`}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => { setListCategoryFilter(''); setListCategoryDropdownOpen(false); }}
-                  >
-                    <span className="check-inventory-dropdown-option-icon check-inventory-dropdown-option-icon--category"><IconGem /></span>
-                    All categories
-                  </li>
-                  {uniqueCategories.map((cat) => (
-                    <li
-                      key={cat}
-                      role="option"
-                      aria-selected={listCategoryFilter === cat}
-                      className={`check-inventory-dropdown-option ${listCategoryFilter === cat ? 'is-selected' : ''}`}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => { setListCategoryFilter(cat); setListCategoryDropdownOpen(false); }}
-                    >
-                      <span className="check-inventory-dropdown-option-icon check-inventory-dropdown-option-icon--category"><IconGem /></span>
-                      {cat}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+      <div className="upd-inv-kpi-row" aria-label="Inventory summary">
+        <div className="upd-inv-kpi-card">
+          <div className="upd-inv-kpi-label">Total items</div>
+          <div className="upd-inv-kpi-value">{kpiStats.total}</div>
+          <p className="upd-inv-kpi-hint">From the latest load (filters below apply to the list only).</p>
+        </div>
+        <div className="upd-inv-kpi-card">
+          <div className="upd-inv-kpi-label">Available</div>
+          <div className="upd-inv-kpi-value upd-inv-kpi-value--accent">{kpiStats.available}</div>
+        </div>
+        <div className="upd-inv-kpi-card">
+          <div className="upd-inv-kpi-label">On memo</div>
+          <div className="upd-inv-kpi-value">{kpiStats.onMemo}</div>
+        </div>
+        <div className="upd-inv-kpi-card">
+          <div className="upd-inv-kpi-label">Sold</div>
+          <div className="upd-inv-kpi-value">{kpiStats.sold}</div>
+        </div>
+      </div>
+
+      <div className="upd-inv-filters-surface">
+      <section
+        className={`upd-inv-filters-card${
+          listStatusDropdownOpen || listCategoryDropdownOpen || sortDropdownOpen ? ' is-dropdown-open' : ''
+        }`}
+        aria-label="Search and filters"
+      >
+        <div className="upd-inv-filters-row">
+          <div className="upd-inv-filters-search-wrap">
+            <span className="upd-inv-filters-search-icon" aria-hidden="true">
+              <IconSearch />
+            </span>
+            <input
+              type="search"
+              className="upd-inv-filters-search-input"
+              placeholder="Search by category, type, code, description…"
+              value={listSearch}
+              onChange={(e) => setListSearch(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), applyListFilters())}
+              aria-label="Search inventory"
+            />
+          </div>
+
+          <div className="check-inventory-dropdown upd-inv-filters-dd" ref={listStatusDropdownRef}>
             <button
               type="button"
-              className="primary-button inventory-list-apply-btn"
-              onClick={applyListFilters}
-              disabled={listLoading}
+              className="check-inventory-dropdown-trigger upd-inv-filters-dd-trigger"
+              onClick={() => {
+                setSortDropdownOpen(false);
+                setListStatusDropdownOpen((o) => !o);
+                setListCategoryDropdownOpen(false);
+              }}
+              aria-haspopup="listbox"
+              aria-expanded={listStatusDropdownOpen}
+              aria-label="Filter by status"
             >
-              <IconSearch />
-              <span>Search</span>
+              <span className="check-inventory-dropdown-trigger-icon check-inventory-dropdown-trigger-icon--status upd-inv-filters-dd-trigger-icon">
+                <IconStatus />
+              </span>
+              <span className="check-inventory-dropdown-trigger-label">
+                {LIST_STATUS_OPTIONS.find((o) => o.value === listStatusFilter)?.label || 'All statuses'}
+              </span>
+              <span className={`check-inventory-dropdown-chevron ${listStatusDropdownOpen ? 'is-open' : ''}`}>
+                <IconChevronDown />
+              </span>
+            </button>
+            {listStatusDropdownOpen && (
+              <ul className="check-inventory-dropdown-list" role="listbox" aria-label="Status">
+                {LIST_STATUS_OPTIONS.map((opt) => (
+                  <li
+                    key={opt.value || 'all'}
+                    role="option"
+                    aria-selected={listStatusFilter === opt.value}
+                    className={`check-inventory-dropdown-option check-inventory-dropdown-option--${opt.value || 'all'} ${listStatusFilter === opt.value ? 'is-selected' : ''}`}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setListStatusFilter(opt.value);
+                      setListStatusDropdownOpen(false);
+                      fetchItems({ search: listSearch, status: opt.value });
+                    }}
+                  >
+                    {opt.value === '' && (
+                      <span className="check-inventory-dropdown-option-icon check-inventory-dropdown-option-icon--all">
+                        <IconFilter />
+                      </span>
+                    )}
+                    {opt.value === 'Available' && (
+                      <span className="check-inventory-dropdown-option-icon check-inventory-dropdown-option-icon--available">
+                        <IconCheck />
+                      </span>
+                    )}
+                    {opt.value === 'On Memo' && (
+                      <span className="check-inventory-dropdown-option-icon check-inventory-dropdown-option-icon--memo">
+                        <IconMemo />
+                      </span>
+                    )}
+                    {opt.value === 'Sold' && (
+                      <span className="check-inventory-dropdown-option-icon check-inventory-dropdown-option-icon--sold">
+                        <IconSell />
+                      </span>
+                    )}
+                    {opt.label}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="check-inventory-dropdown upd-inv-filters-dd upd-inv-filters-dd--category" ref={listCategoryDropdownRef}>
+            <button
+              type="button"
+              className="check-inventory-dropdown-trigger upd-inv-filters-dd-trigger"
+              onClick={() => {
+                setSortDropdownOpen(false);
+                setListCategoryDropdownOpen((o) => !o);
+                setListStatusDropdownOpen(false);
+              }}
+              aria-haspopup="listbox"
+              aria-expanded={listCategoryDropdownOpen}
+              aria-label="Filter by category"
+            >
+              <span className="check-inventory-dropdown-trigger-icon check-inventory-dropdown-trigger-icon--category upd-inv-filters-dd-trigger-icon">
+                <IconCategory />
+              </span>
+              <span className="check-inventory-dropdown-trigger-label">{listCategoryFilter || 'All categories'}</span>
+              <span className={`check-inventory-dropdown-chevron ${listCategoryDropdownOpen ? 'is-open' : ''}`}>
+                <IconChevronDown />
+              </span>
+            </button>
+            {listCategoryDropdownOpen && (
+              <ul className="check-inventory-dropdown-list" role="listbox" aria-label="Category">
+                <li
+                  role="option"
+                  aria-selected={!listCategoryFilter}
+                  className={`check-inventory-dropdown-option ${!listCategoryFilter ? 'is-selected' : ''}`}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setListCategoryFilter('');
+                    setListCategoryDropdownOpen(false);
+                  }}
+                >
+                  <span className="check-inventory-dropdown-option-icon check-inventory-dropdown-option-icon--category">
+                    <IconGem />
+                  </span>
+                  All categories
+                </li>
+                {uniqueCategories.map((cat) => (
+                  <li
+                    key={cat}
+                    role="option"
+                    aria-selected={listCategoryFilter === cat}
+                    className={`check-inventory-dropdown-option ${listCategoryFilter === cat ? 'is-selected' : ''}`}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setListCategoryFilter(cat);
+                      setListCategoryDropdownOpen(false);
+                    }}
+                  >
+                    <span className="check-inventory-dropdown-option-icon check-inventory-dropdown-option-icon--category">
+                      <IconGem />
+                    </span>
+                    {cat}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="upd-inv-filters-dd upd-inv-sort-dropdown" ref={sortDropdownRef}>
+            <button
+              type="button"
+              className="upd-inv-filters-dd-trigger upd-inv-filters-dd-trigger--sort"
+              aria-haspopup="listbox"
+              aria-expanded={sortDropdownOpen}
+              aria-label="Sort items"
+              onClick={() => {
+                setSortDropdownOpen((o) => !o);
+                setListStatusDropdownOpen(false);
+                setListCategoryDropdownOpen(false);
+              }}
+            >
+              <span className="upd-inv-filters-dd-trigger-label">{sortMenuLabel}</span>
+              <span className={`upd-inv-filters-dd-chevron${sortDropdownOpen ? ' is-open' : ''}`}>
+                <IconChevronDown />
+              </span>
+            </button>
+            {sortDropdownOpen && (
+              <ul className="upd-inv-sort-list" role="listbox" aria-label="Sort by">
+                {LIST_SORT_OPTIONS.map((opt) => (
+                  <li
+                    key={opt.value}
+                    role="option"
+                    aria-selected={listSort === opt.value}
+                    className={`upd-inv-sort-option${listSort === opt.value ? ' is-selected' : ''}`}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setListSort(opt.value);
+                      setSortDropdownOpen(false);
+                    }}
+                  >
+                    {opt.label}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="upd-inv-filters-view-toggle" role="group" aria-label="View layout">
+            <button
+              type="button"
+              className={`upd-inv-filters-view-btn${listViewMode === 'list' ? ' is-active' : ''}`}
+              onClick={() => setListViewMode('list')}
+              aria-pressed={listViewMode === 'list'}
+              title="List view"
+            >
+              <IconList />
             </button>
             <button
               type="button"
-              className="ghost-button inventory-list-refresh"
-              onClick={() => fetchItems({ search: listSearch, status: listStatusFilter })}
-              aria-label="Refresh list"
-              disabled={listLoading}
+              className={`upd-inv-filters-view-btn${listViewMode === 'grid' ? ' is-active' : ''}`}
+              onClick={() => setListViewMode('grid')}
+              aria-pressed={listViewMode === 'grid'}
+              title="Grid view"
             >
-              <IconRefresh />
-              <span>{listLoading ? 'Loading…' : 'Refresh'}</span>
+              <IconGrid />
             </button>
           </div>
+
+          <button
+            type="button"
+            className="upd-inv-filters-refresh"
+            onClick={() => fetchItems({ search: listSearch, status: listStatusFilter })}
+            aria-label="Refresh list"
+            disabled={listLoading}
+          >
+            <IconRefresh />
+            <span>{listLoading ? 'Loading…' : 'Refresh'}</span>
+          </button>
         </div>
       </section>
+      </div>
 
-      {/* Card 2: Items list */}
-      <section className="section-card section-card--list" aria-label="Items">
-        <div className="inventory-list-card-header">
-          <h3 className="inventory-list-title">
-            <span className="section-title-icon section-title-icon--list"><IconList /></span>
-            Items
-          </h3>
-          {!listLoading && !listError && displayedItems.length > 0 && (
-            <p className="inventory-list-count" aria-live="polite">
-              Showing {displayedItems.length} item{displayedItems.length !== 1 ? 's' : ''}
+      <div className="upd-inv-main upd-inv-main--single">
+        <div className="upd-inv-list-column">
+      {/* Items list */}
+      <section className="section-card section-card--list upd-inv-items-section" aria-label="Items">
+        {!listLoading && !listError && enrichedItems.length > 0 && (
+          <div className="upd-inv-results-bar">
+            <p className="upd-inv-results-count" aria-live="polite">
+              Showing {sortedDisplayedItems.length} of {enrichedItems.length} items
             </p>
-          )}
-        </div>
+            <div className="upd-inv-status-pills" role="tablist" aria-label="Quick status filter">
+              {QUICK_STATUS_PILLS.map((pill) => (
+                <button
+                  key={pill.value || 'all'}
+                  type="button"
+                  role="tab"
+                  aria-selected={listStatusFilter === pill.value}
+                  className={`upd-inv-status-pill${listStatusFilter === pill.value ? ' is-active' : ''}`}
+                  onClick={() => {
+                    setListStatusFilter(pill.value);
+                    setListStatusDropdownOpen(false);
+                    setListCategoryDropdownOpen(false);
+                    setSortDropdownOpen(false);
+                    fetchItems({ search: listSearch, status: pill.value });
+                  }}
+                >
+                  {pill.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {listLoading && (
           <div className="inventory-list-state inventory-list-state--loading">
             <span className="inventory-list-state-icon">◇</span>
@@ -1485,7 +1890,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
           <div className="inventory-list-state inventory-list-state--empty">
             <span className="inventory-list-state-icon" aria-hidden="true">📦</span>
             <p className="inventory-list-message">No items yet.</p>
-            <p className="inventory-list-message inventory-list-message-sub">Add one using the form above.</p>
+            <p className="inventory-list-message inventory-list-message-sub">Use Add item to create stock.</p>
           </div>
         )}
         {!listLoading && !listError && enrichedItems.length > 0 && displayedItems.length === 0 && (
@@ -1495,85 +1900,379 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
             <p className="inventory-list-message inventory-list-message-sub">Try different search or filter options.</p>
           </div>
         )}
-        {!listLoading && !listError && displayedItems.length > 0 && (
-          <ul className="inventory-list">
-            {displayedItems.map((item) => (
-              <li key={item.id} className="inventory-list-item">
-                <div className="inventory-list-item-main">
-                  <div className="inventory-list-thumb">
-                    {item.image_path ? (
-                      <img
-                        src={getImageSrc(item.image_path)}
-                        alt={inventoryItemPrimaryLabel(item)}
-                        className="inventory-list-thumb-img"
-                        onError={(e) => {
-                          e.currentTarget.style.visibility = 'hidden';
-                        }}
-                      />
-                    ) : (
-                      <div className="inventory-list-thumb-placeholder">
-                        <span>NO IMAGE</span>
-                      </div>
-                    )}
-                  </div>
-                  <div className="inventory-list-item-text">
-                    <div className="inventory-list-item-heading">
-                      <span className="inventory-list-item-category">{inventoryItemPrimaryLabel(item)}</span>
-                    {item.effectiveStatus && (
-                        <span className={`inventory-list-item-badge inventory-list-item-badge--${item.effectiveStatus.toLowerCase().replace(/\s+/g, '-')}`}>
-                          {item.effectiveStatus}
-                        </span>
+        {!listLoading && !listError && sortedDisplayedItems.length > 0 && listViewMode === 'list' && (
+          <ul className="upd-inv-list-v2">
+            {sortedDisplayedItems.map((item) => {
+              const stSlug = statusSlugForUi(item.effectiveStatus);
+              const marginLabel = formatMarginPercentLabel(item);
+              const cat = (item.category || '').trim();
+              const showCatPill = cat && !categoryLooksLikeShortCode(cat);
+              const specParts: string[] = [formatItemTypeDisplay(item.item_type)];
+              if (item.weight_carats != null) specParts.push(`${item.weight_carats}ct`);
+              if (item.weight_grams != null) specParts.push(`${item.weight_grams} g`);
+              specParts.push(`${item.pieces}pc${item.pieces === 1 ? '' : 's'}`);
+              const descShort = (item.description || '').trim();
+              return (
+                <li
+                  key={item.id}
+                  className={`upd-inv-list-card-v2${selectedViewItemId === item.id ? ' is-selected' : ''}`}
+                  onClick={() => setSelectedViewItemId(item.id)}
+                >
+                  <div className="upd-inv-list-card-v2__rail">
+                    <span className={`upd-inv-status-dot upd-inv-status-dot--${stSlug}`} title={item.effectiveStatus} aria-hidden />
+                    <div className="upd-inv-list-card-v2__thumb">
+                      {item.image_path ? (
+                        <img
+                          src={getImageSrc(item.image_path)}
+                          alt=""
+                          onError={(e) => {
+                            e.currentTarget.style.visibility = 'hidden';
+                          }}
+                        />
+                      ) : (
+                        <span className="upd-inv-list-card-v2__thumb-ph">No image</span>
                       )}
                     </div>
-                    <span className="inventory-list-item-meta">
-                      {formatItemTypeDisplay(item.item_type)} · {item.pieces} pc{item.pieces !== 1 ? 's' : ''}
-                      {(item.weight_carats != null || item.weight_grams != null) && (
-                        <> · {item.weight_carats != null ? `${item.weight_carats} ct` : ''}
-                          {item.weight_carats != null && item.weight_grams != null && ' / '}
-                          {item.weight_grams != null ? `${item.weight_grams} g` : ''}</>
-                      )}
-                    </span>
-                    {item.item_code && (
-                      <span className="inventory-list-item-sticker">{item.item_code}</span>
-                    )}
-                    {item.selling_total_price != null && (
-                      <span className="inventory-list-item-price">
-                        List: {formatMoneyWhole(item.selling_total_price, item.selling_currency)}
+                  </div>
+                  <div className="upd-inv-list-card-v2__body">
+                    <div className="upd-inv-list-card-v2__title-row">
+                      <h3 className="upd-inv-list-card-v2__title">{inventoryItemPrimaryLabel(item)}</h3>
+                      {item.item_code ? (
+                        <span className="upd-inv-pill upd-inv-pill--code">{item.item_code}</span>
+                      ) : null}
+                      <span className={`upd-inv-pill upd-inv-pill--status upd-inv-pill--status-${stSlug}`}>
+                        {item.effectiveStatus}
                       </span>
-                    )}
-                    <div className="inventory-list-item-dates">
-                      <span title="Added">Added: {formatDateTime(item.created_at)}</span>
-                      {item.updated_at !== item.created_at && (
-                        <span title="Last updated">Updated: {formatDateTime(item.updated_at)}</span>
-                      )}
+                      {showCatPill ? <span className="upd-inv-pill upd-inv-pill--category">{cat}</span> : null}
                     </div>
+                    <div className="upd-inv-spec-chips" aria-label="Specifications">
+                      {specParts.map((t) => (
+                        <span key={t} className="upd-inv-spec-chip">
+                          {t}
+                        </span>
+                      ))}
+                      {descShort ? (
+                        <span className="upd-inv-spec-chip upd-inv-spec-chip--wide">{descShort}</span>
+                      ) : null}
+                    </div>
+                    <div className="upd-inv-list-card-v2__finance" aria-label="Pricing">
+                      <div className="upd-inv-fin-cell">
+                        <span className="upd-inv-fin-label">List price</span>
+                        <span className="upd-inv-fin-value upd-inv-fin-value--list">
+                          {item.selling_total_price != null
+                            ? formatMoneyWhole(item.selling_total_price, item.selling_currency)
+                            : '—'}
+                        </span>
+                      </div>
+                      <div className="upd-inv-fin-cell">
+                        <span className="upd-inv-fin-label">Per carat</span>
+                        <span className="upd-inv-fin-value">
+                          {item.selling_carat_price != null
+                            ? `${formatMoneyAmount(roundMoney2(Number(item.selling_carat_price)), item.selling_currency)}/ct`
+                            : '—'}
+                        </span>
+                      </div>
+                      <div className="upd-inv-fin-cell">
+                        <span className="upd-inv-fin-label">Cost</span>
+                        <span className="upd-inv-fin-value upd-inv-fin-value--cost">
+                          {item.purchasing_total_price != null
+                            ? formatMoneyWhole(item.purchasing_total_price, INVENTORY_FORM_CURRENCY)
+                            : '—'}
+                        </span>
+                      </div>
+                      <div className="upd-inv-fin-cell">
+                        <span className="upd-inv-fin-label">Margin</span>
+                        <span
+                          className={`upd-inv-fin-value upd-inv-fin-value--margin${marginLabel && marginLabel.startsWith('+') ? ' is-positive' : ''}${marginLabel && marginLabel.startsWith('-') ? ' is-negative' : ''}`}
+                        >
+                          {marginLabel ?? '—'}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="upd-inv-list-card-v2__dates">
+                      Added: {formatIsoDateUtc(item.created_at)} · Updated: {formatIsoDateUtc(item.updated_at)}
+                    </p>
                   </div>
-                </div>
-                {canEditOrDelete ? (
-                  <div className="inventory-list-item-actions">
+                  <div
+                    className="upd-inv-list-card-v2__actions"
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  >
                     <button
                       type="button"
-                      className="ghost-button inventory-list-btn"
-                      onClick={() => handleEdit(item)}
+                      className="upd-inv-stack-btn upd-inv-stack-btn--view"
+                      onClick={() => setSelectedViewItemId(item.id)}
+                    >
+                      <IconEye />
+                      <span>View</span>
+                    </button>
+                    {canEditOrDelete ? (
+                      <>
+                        <button type="button" className="upd-inv-stack-btn upd-inv-stack-btn--edit" onClick={() => handleEdit(item)}>
+                          <IconEdit />
+                          <span>Edit</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="upd-inv-stack-btn upd-inv-stack-btn--delete"
+                          onClick={() => handleDelete(item)}
+                        >
+                          <IconDelete />
+                          <span>Delete</span>
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {!listLoading && !listError && sortedDisplayedItems.length > 0 && listViewMode === 'grid' && (
+          <ul className="upd-inv-grid-v2">
+            {sortedDisplayedItems.map((item) => {
+              const stSlug = statusSlugForUi(item.effectiveStatus);
+              const marginLabel = formatMarginPercentLabel(item);
+              const spec1 = [
+                formatItemTypeDisplay(item.item_type),
+                item.weight_carats != null ? `${item.weight_carats}ct` : null,
+                `${item.pieces}pc${item.pieces === 1 ? '' : 's'}`,
+              ]
+                .filter(Boolean)
+                .join(' · ');
+              const descLine = (item.description || '').trim();
+              return (
+                <li key={item.id} className="upd-inv-grid-v2__cell">
+                  <div
+                    className={`upd-inv-grid-card-v2${selectedViewItemId === item.id ? ' is-selected' : ''}`}
+                    onClick={() => setSelectedViewItemId(item.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelectedViewItemId(item.id);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`View ${inventoryItemPrimaryLabel(item)}`}
+                  >
+                    <div className="upd-inv-grid-card-v2__media">
+                      {item.image_path ? (
+                        <img
+                          src={getImageSrc(item.image_path)}
+                          alt=""
+                          onError={(e) => {
+                            e.currentTarget.style.visibility = 'hidden';
+                          }}
+                        />
+                      ) : (
+                        <div className="upd-inv-grid-card-v2__media-ph">No image</div>
+                      )}
+                      <span className={`upd-inv-grid-card-v2__status-ribbon upd-inv-grid-card-v2__status-ribbon--${stSlug}`}>
+                        {item.effectiveStatus}
+                      </span>
+                    </div>
+                    <div className="upd-inv-grid-card-v2__main">
+                      <div className="upd-inv-grid-card-v2__headline">
+                        <span className="upd-inv-grid-card-v2__name">{inventoryItemPrimaryLabel(item)}</span>
+                        {item.item_code ? (
+                          <span className="upd-inv-pill upd-inv-pill--code upd-inv-pill--sm">{item.item_code}</span>
+                        ) : null}
+                      </div>
+                      <p className="upd-inv-grid-card-v2__spec1">{spec1}</p>
+                      {descLine ? <p className="upd-inv-grid-card-v2__spec2">{descLine}</p> : null}
+                      <div className="upd-inv-grid-card-v2__price-row">
+                        <span className="upd-inv-grid-card-v2__list-price">
+                          {item.selling_total_price != null
+                            ? formatMoneyWhole(item.selling_total_price, item.selling_currency)
+                            : '—'}
+                        </span>
+                        <span
+                          className={`upd-inv-grid-card-v2__margin${marginLabel && marginLabel.startsWith('+') ? ' is-positive' : ''}`}
+                        >
+                          {marginLabel ?? ''}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="upd-inv-grid-card-v2__footer" onClick={(e) => e.stopPropagation()}>
+                    {canEditOrDelete ? (
+                      <>
+                        <button
+                          type="button"
+                          className="upd-inv-grid-footer-btn upd-inv-grid-footer-btn--edit"
+                          onClick={() => handleEdit(item)}
+                        >
+                          <IconEdit />
+                          <span>Edit</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="upd-inv-grid-footer-btn upd-inv-grid-footer-btn--delete"
+                          onClick={() => handleDelete(item)}
+                          aria-label="Delete item"
+                        >
+                          <IconDelete />
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="upd-inv-grid-footer-btn upd-inv-grid-footer-btn--edit"
+                        onClick={() => setSelectedViewItemId(item.id)}
+                      >
+                        <IconEye />
+                        <span>View</span>
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+        </div>
+      </div>
+
+      {selectedViewItem ? (
+        <div className="upd-inv-detail-overlay">
+          <button
+            type="button"
+            className="upd-inv-detail-backdrop"
+            aria-label="Close item details"
+            onClick={() => setSelectedViewItemId(null)}
+          />
+          <aside
+            className="upd-inv-detail-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="upd-inv-detail-drawer-title"
+            aria-label="Item details"
+          >
+            <div className="upd-inv-detail-drawer__inner">
+              <header className="upd-inv-detail-drawer__header">
+                <h2 id="upd-inv-detail-drawer-title" className="upd-inv-detail-drawer__header-title">
+                  {inventoryItemPrimaryLabel(selectedViewItem)}
+                </h2>
+                <button
+                  type="button"
+                  className="upd-inv-detail-drawer__close"
+                  onClick={() => setSelectedViewItemId(null)}
+                  aria-label="Close"
+                >
+                  <IconClose />
+                </button>
+              </header>
+              <div className="upd-inv-detail-drawer__rule" aria-hidden="true" />
+              <div className="upd-inv-detail-drawer__body">
+                <div className="upd-inv-detail-drawer__media">
+                  {selectedViewItem.image_path ? (
+                    <img
+                      src={getImageSrc(selectedViewItem.image_path)}
+                      alt=""
+                      className="upd-inv-detail-drawer__img"
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    <div className="upd-inv-detail-drawer__img-ph">
+                      <IconGem />
+                      <span>No photo</span>
+                    </div>
+                  )}
+                </div>
+                <h3 className="upd-inv-detail-drawer__name">{inventoryItemPrimaryLabel(selectedViewItem)}</h3>
+                <div className="upd-inv-detail-drawer__id-row">
+                  <span className="upd-inv-detail-drawer__code">{selectedViewItem.item_code?.trim() || '—'}</span>
+                  <span className="upd-inv-detail-drawer__dot" aria-hidden="true" />
+                  {selectedViewItem.effectiveStatus ? (
+                    <span
+                      className={`inventory-list-item-badge inventory-list-item-badge--${selectedViewItem.effectiveStatus
+                        .toLowerCase()
+                        .replace(/\s+/g, '-')}`}
+                    >
+                      {selectedViewItem.effectiveStatus}
+                    </span>
+                  ) : (
+                    <span className="inventory-list-item-badge">—</span>
+                  )}
+                </div>
+                <section className="upd-inv-detail-drawer__section" aria-label="Physical details">
+                  <h4 className="upd-inv-detail-drawer__section-kicker">Physical details</h4>
+                  <div className="upd-inv-detail-drawer__rule upd-inv-detail-drawer__rule--subtle" aria-hidden="true" />
+                  <dl className="upd-inv-detail-drawer__kv">
+                    <div className="upd-inv-detail-drawer__kv-row">
+                      <dt>Category</dt>
+                      <dd>
+                        {inventoryCategoryDisplay(selectedViewItem.category) ??
+                          (selectedViewItem.category?.trim() || '—')}
+                      </dd>
+                    </div>
+                    <div className="upd-inv-detail-drawer__kv-row">
+                      <dt>Cut / Form</dt>
+                      <dd>{formatItemTypeDisplay(selectedViewItem.item_type)}</dd>
+                    </div>
+                    <div className="upd-inv-detail-drawer__kv-row">
+                      <dt>Pieces</dt>
+                      <dd>{selectedViewItem.pieces}</dd>
+                    </div>
+                    <div className="upd-inv-detail-drawer__kv-row">
+                      <dt>Weight (carats)</dt>
+                      <dd>
+                        {selectedViewItem.weight_carats != null ? `${selectedViewItem.weight_carats} ct` : '—'}
+                      </dd>
+                    </div>
+                    <div className="upd-inv-detail-drawer__kv-row">
+                      <dt>Weight (grams)</dt>
+                      <dd>
+                        {selectedViewItem.weight_grams != null ? `${selectedViewItem.weight_grams} g` : '—'}
+                      </dd>
+                    </div>
+                    <div className="upd-inv-detail-drawer__kv-row">
+                      <dt>Description</dt>
+                      <dd>{selectedViewItem.description?.trim() || '—'}</dd>
+                    </div>
+                  </dl>
+                </section>
+
+                <ItemDetailDrawerFinanceSections item={selectedViewItem} />
+              </div>
+              <footer className="upd-inv-detail-drawer__footer">
+                {canEditOrDelete ? (
+                  <>
+                    <button
+                      type="button"
+                      className="upd-inv-detail-drawer__btn-edit"
+                      onClick={() => handleEdit(selectedViewItem)}
                     >
                       <IconEdit />
-                      <span>Edit</span>
+                      <span>Edit This Item</span>
                     </button>
                     <button
                       type="button"
-                      className="ghost-button inventory-list-btn inventory-list-btn-danger"
-                      onClick={() => handleDelete(item)}
+                      className="upd-inv-detail-drawer__btn-delete"
+                      onClick={() => handleDelete(selectedViewItem)}
                     >
                       <IconDelete />
                       <span>Delete</span>
                     </button>
-                  </div>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="upd-inv-detail-drawer__btn-edit"
+                    onClick={() => setSelectedViewItemId(null)}
+                  >
+                    <span>Close</span>
+                  </button>
+                )}
+              </footer>
+            </div>
+          </aside>
+        </div>
+      ) : null}
     </div>
   );
 };
