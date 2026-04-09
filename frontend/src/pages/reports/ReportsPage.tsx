@@ -7,7 +7,6 @@ import { DEFAULT_CURRENCY_CODE } from '../../lib/currencies';
 import {
   formatUsdOnlyFromAny,
   formatUsdOnlyFromThb,
-  thbEquivalentToUsdCsv,
   thbEquivalentToUsdNumber,
 } from '../../lib/moneyUsdDisplay';
 import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
@@ -134,17 +133,6 @@ interface StockMovementRow {
   note: string | null;
   created_at: string;
   user_name: string | null;
-}
-
-function toCsv(rows: any[], headers: { key: string; label: string }[]) {
-  const escape = (v: any) => {
-    const s = String(v ?? '');
-    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-    return s;
-  };
-  const headerLine = headers.map(h => escape(h.label)).join(',');
-  const lines = rows.map(r => headers.map(h => escape(r[h.key])).join(','));
-  return [headerLine, ...lines].join('\n');
 }
 
 /* —— Icons (lucide-style) —— */
