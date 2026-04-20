@@ -212,9 +212,11 @@ function invoiceLineDiscount(row: ReceiptInvoiceLine): number {
 export function resolveReceiptLogoUrl(): string {
   if (typeof window === 'undefined') return '';
   try {
-    const pub = process.env.PUBLIC_URL || '';
+    const rawPub = process.env.PUBLIC_URL || '';
+    const pub = rawPub === '.' ? '' : rawPub.replace(/\/+$/, '');
     const path = `${pub}/receipt-logo.png`.replace(/\/+/g, '/');
-    return `${window.location.origin}${path}`;
+    const absolutePath = path.startsWith('/') ? path : `/${path}`;
+    return `${window.location.origin}${absolutePath}`;
   } catch {
     return '';
   }
@@ -224,9 +226,11 @@ export function resolveReceiptLogoUrl(): string {
 export function resolveReceiptWatermarkUrl(): string {
   if (typeof window === 'undefined') return '';
   try {
-    const pub = process.env.PUBLIC_URL || '';
+    const rawPub = process.env.PUBLIC_URL || '';
+    const pub = rawPub === '.' ? '' : rawPub.replace(/\/+$/, '');
     const path = `${pub}/receipt-watermark.png`.replace(/\/+/g, '/');
-    return `${window.location.origin}${path}`;
+    const absolutePath = path.startsWith('/') ? path : `/${path}`;
+    return `${window.location.origin}${absolutePath}`;
   } catch {
     return '';
   }
@@ -241,6 +245,15 @@ function fallbackReceiptLogoDataUrl(): string {
 function receiptLogoSrcForHtml(): string {
   const u = resolveReceiptLogoUrl();
   return u || fallbackReceiptLogoDataUrl();
+}
+
+function escapeForSingleQuotedJs(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function receiptLogoOnErrorJs(): string {
+  const fallback = fallbackReceiptLogoDataUrl();
+  return `this.onerror=null;this.src='${escapeForSingleQuotedJs(fallback)}';`;
 }
 
 function fullAddressLines(p: {
@@ -824,7 +837,8 @@ function buildInvoiceDoc(
   currencyCode: string,
   tabId: 'tab-sale' | 'tab-memo',
   docClass: string,
-  logoSrc: string
+  logoSrc: string,
+  logoOnErrorJs: string
 ): string {
   const invPaid = inv ? Number(inv.paid || 0) : 0;
   const invTotal = inv ? Number(inv.total || 0) : 0;
@@ -870,7 +884,7 @@ function buildInvoiceDoc(
   return `<div id="${tabId}" class="doc invoice-receipt-doc ${docClass}">
   <div class="doc-header">
     <div class="header-logo-box">
-      <img class="header-logo-img" src="${escapeHtml(logoSrc)}" alt="${escapeHtml(co.name)}"/>
+      <img class="header-logo-img" src="${escapeHtml(logoSrc)}" alt="${escapeHtml(co.name)}" onerror="${escapeHtmlAttr(logoOnErrorJs)}"/>
             </div>
     <div class="header-center">
       <div class="company-name">${escapeHtml(co.name)}</div>
@@ -1070,7 +1084,8 @@ function buildMemoDoc(
   currencyCode: string,
   tabId: 'tab-sale' | 'tab-memo',
   docClass: string,
-  logoSrc: string
+  logoSrc: string,
+  logoOnErrorJs: string
 ): string {
   const addrLine = [co.addressLine1, co.addressLine2, co.city].filter(x => x?.trim()).join(' ');
   const custName = me?.customer_name?.trim() || '—';
@@ -1127,7 +1142,7 @@ function buildMemoDoc(
   return `<div id="${tabId}" class="doc memo-receipt-doc ${docClass}">
   <div class="doc-header">
     <div class="header-logo-box">
-      <img class="header-logo-img" src="${escapeHtml(logoSrc)}" alt="${escapeHtml(co.name)}"/>
+      <img class="header-logo-img" src="${escapeHtml(logoSrc)}" alt="${escapeHtml(co.name)}" onerror="${escapeHtmlAttr(logoOnErrorJs)}"/>
           </div>
     <div class="header-center">
       <div class="company-name">${escapeHtml(co.name)}</div>
@@ -1236,6 +1251,7 @@ export function buildInvoiceMemoReceiptHtml(
   const memClass = memHidden ? 'is-hidden' : '';
 
   const resolvedLogo = logoSrc ?? receiptLogoSrcForHtml();
+  const resolvedLogoOnErrorJs = receiptLogoOnErrorJs();
   const resolvedWatermark = watermarkSrc ?? resolveReceiptWatermarkUrl();
   const watermarkCss =
     resolvedWatermark ?
@@ -1243,8 +1259,8 @@ export function buildInvoiceMemoReceiptHtml(
       '';
   const watermarkAttr = watermarkCss ? ` style="${escapeHtmlAttr(watermarkCss)}"` : '';
 
-  const invoiceDoc = buildInvoiceDoc(companyForDoc, invoice, currencyCode, 'tab-sale', invClass, resolvedLogo);
-  const memoDoc = buildMemoDoc(companyForDoc, memo, currencyCode, 'tab-memo', memClass, resolvedLogo);
+  const invoiceDoc = buildInvoiceDoc(companyForDoc, invoice, currencyCode, 'tab-sale', invClass, resolvedLogo, resolvedLogoOnErrorJs);
+  const memoDoc = buildMemoDoc(companyForDoc, memo, currencyCode, 'tab-memo', memClass, resolvedLogo, resolvedLogoOnErrorJs);
 
   const tabsHtml = showTabs
     ? `<div class="tab-bar" role="tablist">

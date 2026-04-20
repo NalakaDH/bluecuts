@@ -82,6 +82,7 @@ interface MemoDetail {
   created_at: string;
   updated_at: string;
   currency_code?: string | null;
+  order_discount?: number;
   items: MemoItemRow[];
 }
 
@@ -591,6 +592,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
   const [itemSuggestions, setItemSuggestions] = useState<InventoryItem[]>([]);
   const [cart, setCart] = useState<MemoCartItem[]>([]);
   const [memoCurrency, setMemoCurrency] = useState<string>(MEMO_DEFAULT_CURRENCY);
+  const [memoOrderDiscount, setMemoOrderDiscount] = useState<number>(0);
   const [thbPerUnit, setThbPerUnit] = useState<ThbPerUnitMap>({ THB: 1 });
   const [creating, setCreating] = useState(false);
   // memo list
@@ -826,9 +828,17 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
     return cart.reduce((sum, c) => sum + memoLineDerivedDiscount(c, memoCurrency), 0);
   }, [cart, memoCurrency]);
 
+  const memoCartOrderDiscount = useMemo(() => {
+    const max = Math.max(0, roundMoney2(memoCartSubtotalGross - memoCartItemsDiscountTotal));
+    return Math.min(max, Math.max(0, roundMoney2(Number(memoOrderDiscount) || 0)));
+  }, [memoCartItemsDiscountTotal, memoCartSubtotalGross, memoOrderDiscount]);
+
   const memoCartNetTotal = useMemo(() => {
-    return Math.max(0, roundMoney2(memoCartSubtotalGross - memoCartItemsDiscountTotal));
-  }, [memoCartSubtotalGross, memoCartItemsDiscountTotal]);
+    return Math.max(
+      0,
+      roundMoney2(memoCartSubtotalGross - memoCartItemsDiscountTotal - memoCartOrderDiscount)
+    );
+  }, [memoCartSubtotalGross, memoCartItemsDiscountTotal, memoCartOrderDiscount]);
 
   const handleNewCustomerChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -903,6 +913,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
     setDueDate('');
     setNotes('');
     setMemoCurrency(MEMO_DEFAULT_CURRENCY);
+    setMemoOrderDiscount(0);
     setCustomerSearch('');
     setSelectedCustomer(null);
     setCustomerSuggestions([]);
@@ -968,6 +979,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
           due_date: dueDate || null,
           notes: notes.trim() || null,
           currency_code: memoCurrency,
+          order_discount: memoCartOrderDiscount,
           items: cart.map(c => ({
             inventory_item_id: c.inventory_item_id,
             quantity: c.quantity,
@@ -1043,6 +1055,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
     setDueDate(detail.due_date || '');
     setNotes(detail.notes || '');
     setMemoCurrency(normalizeCurrencyCode(detail.currency_code || DEFAULT_CURRENCY_CODE));
+    setMemoOrderDiscount(roundMoney2(Number(detail.order_discount || 0)));
     if (detail.customer_id != null) {
       setSelectedCustomer({
         id: detail.customer_id,
@@ -1164,6 +1177,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
         memo_date: string;
         due_date: string | null;
         notes: string | null;
+        order_discount: number;
         customer_id?: number | null;
         items?: Array<{
           memo_item_id: number | null;
@@ -1178,6 +1192,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
         memo_date: memoDate,
         due_date: dueDate.trim() || null,
         notes: notes.trim() || null,
+        order_discount: memoCartOrderDiscount,
       };
       if (!editingMemoConvertedInvoiceId) {
         body.customer_id = selectedCustomer?.id ?? null;
@@ -1855,6 +1870,30 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
                           <span className="selling2-summary-key">Item discounts</span>
                           <span className="selling2-summary-val selling2-neg">
                             −{formatMoneyAmount(memoCartItemsDiscountTotal, memoCurrency)}
+                          </span>
+                        </div>
+                        <div className="selling2-order-discount">
+                          <label className="selling2-order-discount-label">Memo discount</label>
+                          <div className="selling2-order-discount-inputrow">
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              inputMode="decimal"
+                              value={memoOrderDiscount}
+                              disabled={memoLinesReadOnly}
+                              onChange={(e) => {
+                                const n = parseMoneyInput(e.target.value);
+                                setMemoOrderDiscount(Number.isFinite(n) ? Math.max(0, n) : 0);
+                              }}
+                            />
+                            <span className="selling2-percent">{memoCurrency}</span>
+                          </div>
+                        </div>
+                        <div className="selling2-summary-row selling2-summary-row--gem">
+                          <span className="selling2-summary-key">Total discounts</span>
+                          <span className="selling2-summary-val selling2-neg">
+                            −{formatMoneyAmount(roundMoney2(memoCartItemsDiscountTotal + memoCartOrderDiscount), memoCurrency)}
                           </span>
                         </div>
                       </div>

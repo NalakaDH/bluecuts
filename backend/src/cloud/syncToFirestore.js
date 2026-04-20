@@ -283,7 +283,6 @@ async function syncToFirestore(deps, opts) {
     SQL_THB_PER_INV,
     SQL_LINE_PURCH_COST_THB,
     SQL_INV_LINE_NET,
-    SQL_THB_PER_INVITEM,
     sqlInvLineThbGrossRow,
   } = sqlPieces;
 
@@ -332,18 +331,16 @@ async function syncToFirestore(deps, opts) {
   const inventoryValueSql = `
     SELECT
       IFNULL(SUM(inv.pieces_remaining), 0) AS remaining_pcs,
-      IFNULL(SUM(inv.pieces_remaining * IFNULL(inv.selling_total_price, 0) * ${SQL_THB_PER_INVITEM}), 0) AS inventory_value
+      IFNULL(SUM(inv.pieces_remaining * IFNULL(inv.selling_total_price, 0)), 0) AS inventory_value
     FROM inventory_items inv
-    ${SQL_INVITEM_FX_JOIN}
   `;
 
   const inventoryByStatusSql = `
     SELECT
       inv.status AS status,
       IFNULL(SUM(inv.pieces_remaining), 0) AS pcs_remaining,
-      IFNULL(SUM(inv.pieces_remaining * IFNULL(inv.selling_total_price, 0) * ${SQL_THB_PER_INVITEM}), 0) AS value
+      IFNULL(SUM(inv.pieces_remaining * IFNULL(inv.selling_total_price, 0)), 0) AS value
     FROM inventory_items inv
-    ${SQL_INVITEM_FX_JOIN}
     GROUP BY inv.status
     ORDER BY value DESC
   `;

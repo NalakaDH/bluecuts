@@ -215,14 +215,18 @@ const SQL_INV_FX_JOIN = `LEFT JOIN exchange_rates er_i ON er_i.currency_code = C
 const SQL_THB_PER_INV = `COALESCE(er_i.thb_per_unit, 1.0)`;
 /** Cents-rounded native amounts before × THB rate (avoids aggregate FX drift vs invoice face amounts). */
 const SQL_INV_TOTAL_NATIVE = `ROUND(IFNULL(i.total, 0), 2)`;
-const SQL_INV_PAID_NATIVE = `ROUND(IFNULL(ip.paid, 0), 2)`;
+const SQL_INV_PAID_NATIVE = `ROUND(MIN(IFNULL(ip.paid, 0), IFNULL(i.total, 0)), 2)`;
 const SQL_INV_OUTSTANDING_NATIVE = `ROUND(MAX(0, IFNULL(i.total, 0) - IFNULL(ip.paid, 0)), 2)`;
 const SQL_MEMO_FX_JOIN = `LEFT JOIN exchange_rates er_m ON er_m.currency_code = COALESCE(NULLIF(TRIM(m.currency_code), ''), 'THB')`;
 const SQL_THB_PER_MEMO = `COALESCE(er_m.thb_per_unit, 1.0)`;
 const SQL_INVITEM_FX_JOIN = `LEFT JOIN exchange_rates er_inv ON er_inv.currency_code = COALESCE(NULLIF(TRIM(inv.selling_currency), ''), 'THB')`;
 const SQL_THB_PER_INVITEM = `COALESCE(er_inv.thb_per_unit, 1.0)`;
-/** COGS: purchasing_total_price is stored in the same currency as list price (`selling_currency`), not invoice currency. */
-const SQL_LINE_PURCH_COST_THB = `(ii.quantity * IFNULL(inv.purchasing_total_price, 0) * ${SQL_THB_PER_INVITEM})`;
+/** Remaining pieces on invoice line after returns (never negative). */
+const SQL_INV_LINE_REMAINING_QTY = `CASE WHEN IFNULL(ii.quantity, 0) > IFNULL(ii.returned_qty, 0) THEN ii.quantity - ii.returned_qty ELSE 0 END`;
+/** Remaining native line value after returns, proportional to original line_total. */
+const SQL_INV_LINE_REMAINING_NATIVE = `CASE WHEN IFNULL(ii.quantity, 0) > 0 THEN IFNULL(ii.line_total, 0) * (${SQL_INV_LINE_REMAINING_QTY} * 1.0 / ii.quantity) ELSE 0 END`;
+/** COGS: purchasing_total_price is stored in same currency as list price (`selling_currency`), not invoice currency. */
+const SQL_LINE_PURCH_COST_THB = `(${SQL_INV_LINE_REMAINING_QTY} * IFNULL(inv.purchasing_total_price, 0) * ${SQL_THB_PER_INVITEM})`;
 /** Per-invoice paid sum, cents-rounded (stable balance vs payment rows). Alias `ip`. */
 const SQL_PAYMENTS_AGG_IP = `(SELECT invoice_id, ROUND(SUM(amount), 2) AS paid FROM payments GROUP BY invoice_id) ip`;
 /** Same subquery with alias `p` for queries that join as `p`. */
@@ -234,11 +238,21 @@ const sqlInvThbPaidRow = () => `ROUND(${SQL_INV_PAID_NATIVE} * ${SQL_THB_PER_INV
 const sqlInvThbTotalRow = () => `ROUND(${SQL_INV_TOTAL_NATIVE} * ${SQL_THB_PER_INV}, 2)`;
 
 /**
- * Invoice items store line_total after line discounts only; i.total also subtracts order-level discount.
- * SUM(line_total) can exceed i.total. Scale each line to the invoice net so profit/sales match KPI totals.
+ * Invoice totals are net of order discounts and returns. Distribute invoice net across remaining line value
+ * so sales/profit KPIs stay aligned with invoice face totals after returns.
  */
-const SQL_INV_LINES_SUM_JOIN = `JOIN (SELECT invoice_id, IFNULL(SUM(line_total), 0) AS lines_sum FROM invoice_items GROUP BY invoice_id) ls ON ls.invoice_id = i.id`;
-const SQL_INV_LINE_NET = `(ii.line_total * (i.total / NULLIF(ls.lines_sum, 0)))`;
+const SQL_INV_LINES_SUM_JOIN = `JOIN (
+  SELECT
+    invoice_id,
+    IFNULL(SUM(CASE
+      WHEN IFNULL(quantity, 0) > IFNULL(returned_qty, 0) AND IFNULL(quantity, 0) > 0
+      THEN IFNULL(line_total, 0) * ((quantity - returned_qty) * 1.0 / quantity)
+      ELSE 0
+    END), 0) AS lines_sum
+  FROM invoice_items
+  GROUP BY invoice_id
+) ls ON ls.invoice_id = i.id`;
+const SQL_INV_LINE_NET = `(CASE WHEN IFNULL(ls.lines_sum, 0) > 0 THEN (${SQL_INV_LINE_REMAINING_NATIVE}) * (i.total / ls.lines_sum) ELSE 0 END)`;
 const sqlInvLineThbGrossRow = () => `ROUND((${SQL_INV_LINE_NET}) * ${SQL_THB_PER_INV}, 2)`;
 
 /** Memo line: proportional `line_total` for pieces still on memo (not returned). Alias `mi`. */
@@ -389,6 +403,7 @@ db.serialize(() => {
     )
   `);
   ensureColumn('memos', 'currency_code', "TEXT NOT NULL DEFAULT 'THB'");
+  ensureColumn('memos', 'order_discount', 'REAL NOT NULL DEFAULT 0');
 
   db.run(`
     CREATE TABLE IF NOT EXISTS memo_items (
@@ -594,17 +609,15 @@ async function buildInventoryMonthlyReport(year, month) {
           WHEN (i.pieces_remaining - IFNULL(after_start.sum_q, 0)) < 0 THEN 0
           ELSE (i.pieces_remaining - IFNULL(after_start.sum_q, 0))
         END AS opening,
-        IFNULL(sale_m.sold, 0) AS sold,
+        IFNULL(sale_net_m.sold, 0) AS sold,
         IFNULL(ret_m.ret, 0) AS returned,
         IFNULL(sh_m.shrink, 0) AS shrinkage,
         IFNULL(rst_m.rest, 0) AS restocked,
+        IFNULL(memo_o.memo_out_qty, 0) AS memo_out_qty,
+        IFNULL(memo_o.memo_item_notes, '') AS memo_item_notes,
         IFNULL(rev_m.rev_thb, 0) AS revenue_thb,
-        ROUND(
-          i.pieces_remaining * IFNULL(i.selling_total_price, 0) * COALESCE(er_sell.thb_per_unit, 1.0),
-          2
-        ) AS stock_value_thb
+        ROUND(i.pieces_remaining * IFNULL(i.selling_total_price, 0), 2) AS stock_value_usd
       FROM inventory_items i
-      LEFT JOIN exchange_rates er_sell ON er_sell.currency_code = COALESCE(NULLIF(TRIM(i.selling_currency), ''), 'THB')
       LEFT JOIN (
         SELECT inventory_item_id, SUM(qty_change) AS sum_q
         FROM stock_movements
@@ -612,11 +625,19 @@ async function buildInventoryMonthlyReport(year, month) {
         GROUP BY inventory_item_id
       ) after_start ON after_start.inventory_item_id = i.id
       LEFT JOIN (
-        SELECT inventory_item_id, SUM(-qty_change) AS sold
+        SELECT
+          inventory_item_id,
+          SUM(
+            CASE
+              WHEN type = 'SALE' THEN -qty_change
+              WHEN type = 'INVOICE_RETURN' THEN -qty_change
+              ELSE 0
+            END
+          ) AS sold
         FROM stock_movements
-        WHERE type = 'SALE' AND strftime('%Y-%m', created_at) = ?
+        WHERE type IN ('SALE', 'INVOICE_RETURN') AND strftime('%Y-%m', created_at) = ?
         GROUP BY inventory_item_id
-      ) sale_m ON sale_m.inventory_item_id = i.id
+      ) sale_net_m ON sale_net_m.inventory_item_id = i.id
       LEFT JOIN (
         SELECT inventory_item_id, SUM(qty_change) AS ret
         FROM stock_movements
@@ -637,13 +658,52 @@ async function buildInventoryMonthlyReport(year, month) {
       ) rst_m ON rst_m.inventory_item_id = i.id
       LEFT JOIN (
         SELECT
+          mi.inventory_item_id,
+          SUM(
+            CASE
+              WHEN IFNULL(mi.quantity, 0) > IFNULL(mi.returned_qty, 0)
+              THEN mi.quantity - mi.returned_qty
+              ELSE 0
+            END
+          ) AS memo_out_qty,
+          GROUP_CONCAT(
+            DISTINCT NULLIF(TRIM(COALESCE(mi.description, m.notes, '')), '')
+          ) AS memo_item_notes
+        FROM memo_items mi
+        JOIN memos m ON m.id = mi.memo_id
+        WHERE m.status IN ('Open', 'Partially Returned')
+        GROUP BY mi.inventory_item_id
+      ) memo_o ON memo_o.inventory_item_id = i.id
+      LEFT JOIN (
+        SELECT
           sm.inventory_item_id,
           SUM(
             ROUND(
               CASE
-                WHEN IFNULL(ii.quantity, 0) > 0
-                THEN IFNULL(ii.line_total, 0) * (ABS(sm.qty_change) * 1.0 / ii.quantity)
-                ELSE ABS(sm.qty_change) * IFNULL(ii.unit_price, 0)
+                WHEN IFNULL(ii.quantity, 0) > 0 THEN
+                  (IFNULL(ii.line_total, 0) * 1.0 / ii.quantity) *
+                  CASE
+                    WHEN IFNULL(inv_lines_agg.sum_line_total, 0) > 0.000001
+                    THEN (IFNULL(inv_rev.total, 0) * 1.0 / inv_lines_agg.sum_line_total)
+                    ELSE 1.0
+                  END *
+                  CASE
+                    WHEN sm.type = 'SALE' THEN ABS(sm.qty_change)
+                    WHEN sm.type = 'INVOICE_RETURN' THEN -ABS(sm.qty_change)
+                    ELSE 0
+                  END
+                ELSE
+                  IFNULL(ii.unit_price, 0) *
+                  CASE
+                    WHEN IFNULL(inv_lines_agg.sum_line_total, 0) > 0.000001
+                    THEN (IFNULL(inv_rev.total, 0) * 1.0 / inv_lines_agg.sum_line_total)
+                    ELSE 1.0
+                  END *
+                  CASE
+                    WHEN sm.type = 'SALE' THEN ABS(sm.qty_change)
+                    WHEN sm.type = 'INVOICE_RETURN' THEN -ABS(sm.qty_change)
+                    ELSE 0
+                  END
               END,
               2
             ) * COALESCE(er_rev.thb_per_unit, 1.0)
@@ -651,8 +711,13 @@ async function buildInventoryMonthlyReport(year, month) {
         FROM stock_movements sm
         JOIN invoice_items ii ON ii.invoice_id = sm.ref_id AND ii.inventory_item_id = sm.inventory_item_id
         JOIN invoices inv_rev ON inv_rev.id = sm.ref_id
+        LEFT JOIN (
+          SELECT invoice_id, SUM(IFNULL(line_total, 0)) AS sum_line_total
+          FROM invoice_items
+          GROUP BY invoice_id
+        ) inv_lines_agg ON inv_lines_agg.invoice_id = sm.ref_id
         LEFT JOIN exchange_rates er_rev ON er_rev.currency_code = COALESCE(NULLIF(TRIM(inv_rev.currency_code), ''), 'THB')
-        WHERE sm.type = 'SALE'
+        WHERE sm.type IN ('SALE', 'INVOICE_RETURN')
           AND IFNULL(sm.ref_type, '') = 'INVOICE'
           AND strftime('%Y-%m', sm.created_at) = ?
         GROUP BY sm.inventory_item_id
@@ -679,7 +744,7 @@ async function buildInventoryMonthlyReport(year, month) {
     const restocked = Math.max(0, Math.round(Number(r.restocked) || 0));
     const unit_price = Number(r.unit_price);
     const revenueThb = Math.round((Number(r.revenue_thb) || 0) * 100) / 100;
-    const stockValueThb = Math.round((Number(r.stock_value_thb) || 0) * 100) / 100;
+    const stockValueUsd = Math.round((Number(r.stock_value_usd) || 0) * 100) / 100;
     return {
       id: r.id,
       category: r.category,
@@ -691,21 +756,30 @@ async function buildInventoryMonthlyReport(year, month) {
       returned,
       shrinkage,
       restocked,
+      memo_out_qty: Math.max(0, Math.round(Number(r.memo_out_qty) || 0)),
+      memo_item_notes: String(r.memo_item_notes || ''),
       remaining,
       unit_price: Number.isFinite(unit_price) ? unit_price : null,
       selling_currency: r.selling_currency || 'THB',
       revenue_thb: revenueThb,
       revenue_usd: thbToUsd(revenueThb),
-      stock_value_thb: stockValueThb,
-      stock_value_usd: thbToUsd(stockValueThb),
+      stock_value: stockValueUsd,
+      stock_value_usd: stockValueUsd,
+      // Backward-compatible alias for older clients.
+      stock_value_thb: stockValueUsd,
       status: r.status,
     };
   });
 
   const totalSold = items.reduce((s, i) => s + i.sold, 0);
+  const totalReturned = items.reduce((s, i) => s + i.returned, 0);
   const totalRevenueThb = Math.round(items.reduce((s, i) => s + i.revenue_thb, 0) * 100) / 100;
-  const totalStockValueThb = Math.round(items.reduce((s, i) => s + i.stock_value_thb, 0) * 100) / 100;
-  const noMovement = items.filter(i => i.sold === 0).length;
+  const totalRevenueUsdFromRows =
+    thbPerUsd != null && thbPerUsd > 0
+      ? Math.round(items.reduce((s, i) => s + (Number(i.revenue_usd) || 0), 0) * 100) / 100
+      : null;
+  const totalStockValueUsd = Math.round(items.reduce((s, i) => s + i.stock_value_usd, 0) * 100) / 100;
+  const noMovement = items.filter(i => i.sold === 0 && i.returned === 0).length;
   const totalShrinkage = items.reduce((s, i) => s + i.shrinkage, 0);
   const outOfStock = items.filter(i => i.remaining === 0).length;
 
@@ -720,10 +794,14 @@ async function buildInventoryMonthlyReport(year, month) {
     items,
     summary: {
       totalSold,
+      totalReturned,
       totalRevenueThb,
-      totalRevenueUsd: thbToUsd(totalRevenueThb),
-      stockValueThb: totalStockValueThb,
-      stockValueUsd: thbToUsd(totalStockValueThb),
+      /** Sum of per-line USD (matches Revenue column rounding); falls back to THB aggregate if no FX. */
+      totalRevenueUsd: totalRevenueUsdFromRows != null ? totalRevenueUsdFromRows : thbToUsd(totalRevenueThb),
+      stockValue: totalStockValueUsd,
+      stockValueUsd: totalStockValueUsd,
+      // Backward-compatible alias for older clients.
+      stockValueThb: totalStockValueUsd,
       noMovement,
       totalShrinkage,
       outOfStock,
@@ -2017,10 +2095,14 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
   const notes = body.notes == null ? null : String(body.notes).trim() || null;
   const items = Array.isArray(body.items) ? body.items : [];
   const currency_code = normalizeCurrencyCode(body.currency_code);
+  const orderDiscountRaw = Number(body.order_discount || 0);
 
   if (!items.length) return res.status(400).json({ error: 'At least one item is required' });
   if (customerId != null && (!Number.isFinite(customerId) || customerId <= 0)) {
     return res.status(400).json({ error: 'Invalid customer id' });
+  }
+  if (!Number.isFinite(orderDiscountRaw) || orderDiscountRaw < 0) {
+    return res.status(400).json({ error: 'Invalid memo discount' });
   }
 
   let subtotalGross = 0;
@@ -2046,7 +2128,9 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
     subtotalGross += lineGross;
     itemsDiscountTotal += Math.min(discount, lineGross);
   }
-  const memoNetTotal = Math.max(0, subtotalGross - itemsDiscountTotal);
+  const memoNetBeforeOrderDiscount = Math.max(0, subtotalGross - itemsDiscountTotal);
+  const orderDiscount = Math.min(roundMoney2(orderDiscountRaw), memoNetBeforeOrderDiscount);
+  const memoNetTotal = Math.max(0, roundMoney2(memoNetBeforeOrderDiscount - orderDiscount));
 
   try {
     const businessToday = businessTodayYmd();
@@ -2073,10 +2157,10 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
 
     const memoInsert = await dbRun(
       `
-      INSERT INTO memos (memo_no, customer_id, status, memo_date, due_date, notes, currency_code, created_at, updated_at)
-      VALUES (?, ?, 'Open', COALESCE(?, ?), ?, ?, ?, datetime('now'), datetime('now'))
+      INSERT INTO memos (memo_no, customer_id, status, memo_date, due_date, notes, currency_code, order_discount, created_at, updated_at)
+      VALUES (?, ?, 'Open', COALESCE(?, ?), ?, ?, ?, ?, datetime('now'), datetime('now'))
     `,
-      [null, customerId, memoDate, businessToday, dueDate, notes, currency_code]
+      [null, customerId, memoDate, businessToday, dueDate, notes, currency_code, orderDiscount]
     );
     const memoId = memoInsert.lastID;
     const memoNo = await nextSerialDocNumber('MEM', 'memos', effectiveMemoYmd);
@@ -2157,6 +2241,7 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
       due_date: dueDate,
       notes,
       total: memoNetTotal,
+      order_discount: orderDiscount,
       currency_code,
     });
   } catch (err) {
@@ -2192,6 +2277,7 @@ app.get('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), (req,
       m.due_date,
       m.notes,
       m.converted_invoice_id,
+      IFNULL(m.order_discount, 0) AS order_discount,
       m.created_at,
       m.updated_at,
       IFNULL(m.currency_code, 'THB') AS currency_code
@@ -2257,7 +2343,7 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
 
   try {
     const memo = await dbGet(
-      `SELECT id, memo_date, due_date, notes, customer_id, converted_invoice_id, status, memo_no FROM memos WHERE id = ?`,
+      `SELECT id, memo_date, due_date, notes, customer_id, converted_invoice_id, status, memo_no, IFNULL(order_discount, 0) AS order_discount FROM memos WHERE id = ?`,
       [memoId]
     );
     if (!memo) return res.status(404).json({ error: 'Memo not found' });
@@ -2319,10 +2405,12 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
 
     await dbRun('BEGIN TRANSACTION');
 
-    await dbRun(
-      `UPDATE memos SET memo_date = ?, due_date = ?, notes = ?, customer_id = ?, updated_at = datetime('now') WHERE id = ?`,
-      [nextMemoDate, nextDue, nextNotes, nextCustomerId, memoId]
-    );
+    const hasOrderDiscountInBody = Object.prototype.hasOwnProperty.call(body, 'order_discount');
+    const requestedOrderDiscount = hasOrderDiscountInBody ? Number(body.order_discount || 0) : Number(memo.order_discount || 0);
+    if (!Number.isFinite(requestedOrderDiscount) || requestedOrderDiscount < 0) {
+      await dbRun('ROLLBACK');
+      return res.status(400).json({ error: 'Invalid memo discount' });
+    }
 
     if (wantsItemUpdate) {
       const rawItems = Array.isArray(body.items) ? body.items : [];
@@ -2570,6 +2658,18 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
       }
     }
 
+    const netRow = await dbGet(`SELECT IFNULL(SUM(line_total), 0) AS net_before_order FROM memo_items WHERE memo_id = ?`, [memoId]);
+    const netBeforeOrder = roundMoney2(Number(netRow?.net_before_order || 0));
+    const nextOrderDiscount = Math.min(roundMoney2(requestedOrderDiscount), netBeforeOrder);
+    const nextTotal = Math.max(0, roundMoney2(netBeforeOrder - nextOrderDiscount));
+
+    await dbRun(
+      `UPDATE memos
+       SET memo_date = ?, due_date = ?, notes = ?, customer_id = ?, order_discount = ?, total = ?, updated_at = datetime('now')
+       WHERE id = ?`,
+      [nextMemoDate, nextDue, nextNotes, nextCustomerId, nextOrderDiscount, nextTotal, memoId]
+    );
+
     await dbRun('COMMIT');
 
     const updated = await dbGet(
@@ -2585,6 +2685,7 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
         m.due_date,
         m.notes,
         m.converted_invoice_id,
+        IFNULL(m.order_discount, 0) AS order_discount,
         IFNULL(m.currency_code, 'THB') AS currency_code
       FROM memos m
       LEFT JOIN customers c ON c.id = m.customer_id
@@ -2775,7 +2876,7 @@ app.post('/api/memos/:id/convert-to-invoice', authMiddleware, requireRole(['owne
 
   try {
     const memo = await dbGet(
-      `SELECT id, memo_no, customer_id, converted_invoice_id, status, currency_code FROM memos WHERE id = ?`,
+      `SELECT id, memo_no, customer_id, converted_invoice_id, status, currency_code, IFNULL(order_discount, 0) AS order_discount FROM memos WHERE id = ?`,
       [memoId]
     );
     if (!memo) return res.status(404).json({ error: 'Memo not found' });
@@ -2800,6 +2901,10 @@ app.post('/api/memos/:id/convert-to-invoice', authMiddleware, requireRole(['owne
 
     let subtotalGross = 0;
     let itemsDiscountTotal = 0;
+    let remainingNetBeforeOrder = 0;
+    const memoNetBeforeOrderAll = roundMoney2(
+      lines.reduce((sum, l) => sum + (Number(l.line_total || 0) || 0), 0)
+    );
     for (const l of toBill) {
       const q = Math.floor(Number(l.quantity || 0));
       const grossPc = Number(l.unit_price || 0);
@@ -2811,8 +2916,13 @@ app.post('/api/memos/:id/convert-to-invoice', authMiddleware, requireRole(['owne
       const lineDisc = Math.max(0, Math.round((lineGross - lineNetRounded) * 100) / 100);
       subtotalGross += lineGross;
       itemsDiscountTotal += lineDisc;
+      remainingNetBeforeOrder += lineNetRounded;
     }
-    const totalDiscount = Math.min(subtotalGross, itemsDiscountTotal);
+    const proportionalOrderDiscount =
+      memoNetBeforeOrderAll > 0
+        ? roundMoney2((Number(memo.order_discount || 0) * remainingNetBeforeOrder) / memoNetBeforeOrderAll)
+        : 0;
+    const totalDiscount = Math.min(subtotalGross, itemsDiscountTotal + proportionalOrderDiscount);
     const total = Math.max(0, Math.round((subtotalGross - totalDiscount) * 100) / 100);
     const customerId =
       memo.customer_id == null || memo.customer_id === '' ? null : Number(memo.customer_id);
@@ -2893,6 +3003,7 @@ app.get('/api/invoices', authMiddleware, requireRole(['owner', 'staff']), (req, 
   const customerId = req.query.customer_id ? Number(req.query.customer_id) : null;
   const search = req.query.search ? String(req.query.search).trim() : '';
   const statusQ = req.query.status ? String(req.query.status) : '';
+  const returnableOnly = String(req.query.returnable_only || '').trim() === '1';
 
   const where = [];
   const params = [];
@@ -2909,6 +3020,9 @@ app.get('/api/invoices', authMiddleware, requireRole(['owner', 'staff']), (req, 
     where.push('i.status = ?');
     params.push(statusQ);
   }
+  if (returnableOnly) {
+    where.push('IFNULL(ir.returnable_qty, 0) > 0');
+  }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
@@ -2920,13 +3034,23 @@ app.get('/api/invoices', authMiddleware, requireRole(['owner', 'staff']), (req, 
       i.invoice_no,
       c.name AS customer_name,
       i.total,
-      IFNULL(ip.paid, 0) AS paid,
+      MIN(IFNULL(ip.paid, 0), IFNULL(i.total, 0)) AS paid,
       i.status,
       i.created_at,
-      IFNULL(i.currency_code, 'THB') AS currency_code
+      IFNULL(i.currency_code, 'THB') AS currency_code,
+      IFNULL(ir.returnable_qty, 0) AS returnable_qty,
+      IFNULL(ir.returned_qty, 0) AS returned_qty
     FROM invoices i
     LEFT JOIN customers c ON c.id = i.customer_id
     LEFT JOIN ${paymentsAgg} ON ip.invoice_id = i.id
+    LEFT JOIN (
+      SELECT
+        ii.invoice_id,
+        SUM(CASE WHEN IFNULL(ii.quantity, 0) > IFNULL(ii.returned_qty, 0) THEN ii.quantity - ii.returned_qty ELSE 0 END) AS returnable_qty,
+        SUM(CASE WHEN IFNULL(ii.returned_qty, 0) > 0 THEN ii.returned_qty ELSE 0 END) AS returned_qty
+      FROM invoice_items ii
+      GROUP BY ii.invoice_id
+    ) ir ON ir.invoice_id = i.id
     ${whereSql}
     ORDER BY i.created_at DESC
     LIMIT ?
@@ -2944,6 +3068,7 @@ app.get('/api/invoices/stats', authMiddleware, requireRole(['owner', 'staff']), 
   const rawStatus = req.query.status ? String(req.query.status) : 'all';
   const statusFilter = ['all', 'Unpaid', 'Partial', 'Paid'].includes(rawStatus) ? rawStatus : 'all';
   const customerId = req.query.customer_id ? Number(req.query.customer_id) : null;
+  const returnableOnly = String(req.query.returnable_only || '').trim() === '1';
 
   const where = [];
   const params = [];
@@ -2960,6 +3085,9 @@ app.get('/api/invoices/stats', authMiddleware, requireRole(['owner', 'staff']), 
     where.push('i.status = ?');
     params.push(statusFilter);
   }
+  if (returnableOnly) {
+    where.push('IFNULL(ir.returnable_qty, 0) > 0');
+  }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
   const paymentsAgg = SQL_PAYMENTS_AGG_IP;
@@ -2970,12 +3098,19 @@ app.get('/api/invoices/stats', authMiddleware, requireRole(['owner', 'staff']), 
       SUM(CASE WHEN i.status = 'Unpaid' THEN 1 ELSE 0 END) AS unpaid_count,
       SUM(CASE WHEN i.status = 'Partial' THEN 1 ELSE 0 END) AS partial_count,
       SUM(CASE WHEN i.status = 'Paid' THEN 1 ELSE 0 END) AS paid_count,
-      SUM(CASE WHEN i.status IN ('Unpaid', 'Partial') THEN 1 ELSE 0 END) AS return_eligible_count,
+      SUM(CASE WHEN IFNULL(ir.returnable_qty, 0) > 0 THEN 1 ELSE 0 END) AS return_eligible_count,
       IFNULL(SUM(${sqlInvThbOutstandingRow()}), 0) AS outstanding_thb,
       IFNULL(SUM(${sqlInvThbPaidRow()}), 0) AS collected_thb
     FROM invoices i
     LEFT JOIN customers c ON c.id = i.customer_id
     LEFT JOIN ${paymentsAgg} ON ip.invoice_id = i.id
+    LEFT JOIN (
+      SELECT
+        ii.invoice_id,
+        SUM(CASE WHEN IFNULL(ii.quantity, 0) > IFNULL(ii.returned_qty, 0) THEN ii.quantity - ii.returned_qty ELSE 0 END) AS returnable_qty
+      FROM invoice_items ii
+      GROUP BY ii.invoice_id
+    ) ir ON ir.invoice_id = i.id
     ${SQL_INV_FX_JOIN}
     ${whereSql}
   `;
@@ -3020,7 +3155,7 @@ app.get('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), (r
       i.discount,
       i.total,
       i.status,
-      IFNULL(ip.paid, 0) AS paid,
+      MIN(IFNULL(ip.paid, 0), IFNULL(i.total, 0)) AS paid,
       i.created_at,
       i.updated_at,
       IFNULL(i.currency_code, 'THB') AS currency_code
@@ -3119,11 +3254,11 @@ app.post('/api/returns/from-invoice', authMiddleware, requireRole(['owner', 'sta
   }
 
   try {
-    const inv = await dbGet(`SELECT id, invoice_no FROM invoices WHERE id = ?`, [invoiceId]);
+    const inv = await dbGet(`SELECT id, invoice_no, total FROM invoices WHERE id = ?`, [invoiceId]);
     if (!inv) return res.status(404).json({ error: 'Invoice not found' });
 
     const lines = await dbAll(
-      `SELECT id, invoice_id, inventory_item_id, quantity, IFNULL(returned_qty, 0) AS returned_qty
+      `SELECT id, invoice_id, inventory_item_id, quantity, IFNULL(returned_qty, 0) AS returned_qty, line_total
        FROM invoice_items WHERE invoice_id = ? ORDER BY id ASC`,
       [invoiceId]
     );
@@ -3131,6 +3266,7 @@ app.post('/api/returns/from-invoice', authMiddleware, requireRole(['owner', 'sta
 
     const lineById = new Map(lines.map(l => [l.id, l]));
     let any = false;
+    let returnedValueTotal = 0;
 
     await dbRun('BEGIN TRANSACTION');
     const invNo = String(inv.invoice_no || `INV-${invoiceId}`);
@@ -3147,6 +3283,9 @@ app.post('/api/returns/from-invoice', authMiddleware, requireRole(['owner', 'sta
       const take = Math.min(canReturn, want);
       if (take <= 0) continue;
       any = true;
+      const lineNet = Number(line.line_total || 0);
+      const perUnitNet = qLine > 0 ? lineNet / qLine : 0;
+      returnedValueTotal += perUnitNet * take;
 
       await dbRun(`UPDATE invoice_items SET returned_qty = IFNULL(returned_qty, 0) + ? WHERE id = ? AND invoice_id = ?`, [
         take,
@@ -3180,8 +3319,32 @@ app.post('/api/returns/from-invoice', authMiddleware, requireRole(['owner', 'sta
       return res.status(400).json({ error: 'Nothing left to return for the selected lines' });
     }
 
+    const returnedValue = roundMoney2(returnedValueTotal);
+    const currentTotal = roundMoney2(Number(inv.total || 0));
+    const nextTotal = roundMoney2(Math.max(0, currentTotal - returnedValue));
+    const paidRow = await dbGet('SELECT IFNULL(SUM(amount), 0) AS paid FROM payments WHERE invoice_id = ?', [invoiceId]);
+    const paid = roundMoney2(Number(paidRow?.paid || 0));
+    const nextStatus = paid >= nextTotal ? 'Paid' : paid > 0 ? 'Partial' : 'Unpaid';
+
+    await dbRun(
+      `UPDATE invoices
+       SET total = ?, status = ?, updated_at = datetime('now')
+       WHERE id = ?`,
+      [nextTotal, nextStatus, invoiceId]
+    );
+
     await dbRun('COMMIT');
-    return res.json({ ok: true });
+    return res.json({
+      ok: true,
+      invoice: {
+        id: invoiceId,
+        invoice_no: invNo,
+        returned_value: returnedValue,
+        total: nextTotal,
+        paid,
+        status: nextStatus,
+      },
+    });
   } catch (err) {
     try {
       await dbRun('ROLLBACK');
@@ -3848,9 +4011,10 @@ app.post('/api/invoices/:id/payments', authMiddleware, requireRole(['owner', 'st
     );
 
     const paidRow = await dbGet('SELECT IFNULL(SUM(amount), 0) AS paid FROM payments WHERE invoice_id = ?', [invoiceId]);
-    const paid = Number(paidRow?.paid || 0);
+    const paidRaw = Number(paidRow?.paid || 0);
     const total = Number(invoice.total || 0);
-    const newStatus = paid >= total ? 'Paid' : paid > 0 ? 'Partial' : 'Unpaid';
+    const paid = roundMoney2(Math.min(paidRaw, total));
+    const newStatus = paidRaw >= total ? 'Paid' : paidRaw > 0 ? 'Partial' : 'Unpaid';
 
     await dbRun('UPDATE invoices SET status = ?, updated_at = datetime(\'now\') WHERE id = ?', [newStatus, invoiceId]);
 
@@ -4104,8 +4268,8 @@ app.get('/api/customers/:id', authMiddleware, requireRole(['owner', 'staff']), (
       i.invoice_no,
       i.created_at,
       IFNULL(i.total, 0) AS total,
-      IFNULL(ip.paid, 0) AS paid,
-      (IFNULL(i.total, 0) - IFNULL(ip.paid, 0)) AS balance,
+      MIN(IFNULL(ip.paid, 0), IFNULL(i.total, 0)) AS paid,
+      (IFNULL(i.total, 0) - MIN(IFNULL(ip.paid, 0), IFNULL(i.total, 0))) AS balance,
       i.status,
       IFNULL(i.currency_code, 'THB') AS currency_code,
       IFNULL(SUM(ii.quantity), 0) AS items_count
@@ -4393,18 +4557,16 @@ app.get('/api/reports/summary', authMiddleware, requireRole(['owner', 'staff']),
   const inventoryValueSql = `
     SELECT
       IFNULL(SUM(inv.pieces_remaining), 0) AS remaining_pcs,
-      IFNULL(SUM(inv.pieces_remaining * IFNULL(inv.selling_total_price, 0) * ${SQL_THB_PER_INVITEM}), 0) AS inventory_value
+      IFNULL(SUM(inv.pieces_remaining * IFNULL(inv.selling_total_price, 0)), 0) AS inventory_value
     FROM inventory_items inv
-    ${SQL_INVITEM_FX_JOIN}
   `;
 
   const inventoryByStatusSql = `
     SELECT
       inv.status AS status,
       IFNULL(SUM(inv.pieces_remaining), 0) AS pcs_remaining,
-      IFNULL(SUM(inv.pieces_remaining * IFNULL(inv.selling_total_price, 0) * ${SQL_THB_PER_INVITEM}), 0) AS value
+      IFNULL(SUM(inv.pieces_remaining * IFNULL(inv.selling_total_price, 0)), 0) AS value
     FROM inventory_items inv
-    ${SQL_INVITEM_FX_JOIN}
     GROUP BY inv.status
     ORDER BY value DESC
   `;

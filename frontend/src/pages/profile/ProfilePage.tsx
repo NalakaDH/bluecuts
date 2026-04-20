@@ -30,6 +30,53 @@ const authHeaders = (token: string) => ({
   Authorization: `Bearer ${token}`,
 });
 
+// ── Section icon tiles ────────────────────────────────────────────────────────
+function IconSecurity() {
+  return (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+  );
+}
+function IconTeam() {
+  return (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  );
+}
+function IconRates() {
+  return (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="12" y1="1" x2="12" y2="23" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+    </svg>
+  );
+}
+function IconBackup() {
+  return (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 9 20 20 4 20 4 9" /><path d="M9 22V12h6v10" /><path d="M3 9l9-7 9 7" />
+    </svg>
+  );
+}
+function IconCloud() {
+  return (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="16 16 12 12 8 16" /><line x1="12" y1="12" x2="12" y2="21" />
+      <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+    </svg>
+  );
+}
+function IconLogout() {
+  return (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+    </svg>
+  );
+}
+
+// ── Page access checkboxes ─────────────────────────────────────────────────────
 function PageAccessCheckboxes({
   selected,
   onChange,
@@ -48,26 +95,94 @@ function PageAccessCheckboxes({
   };
 
   return (
-    <div className="profile-page-access-grid" role="group" aria-label="Page access">
-      {ASSIGNABLE_STAFF_PAGE_IDS.map(id => (
-        <label key={id} className="profile-page-access-item">
-          <input
-            type="checkbox"
-            checked={selected.has(id)}
-            onChange={() => toggle(id)}
-            disabled={disabled}
-          />
-          <span>{ASSIGNABLE_STAFF_PAGE_LABELS[id]}</span>
-        </label>
-      ))}
-      <p className="profile-page-access-hint">
-        Staff always have access to <strong>Profile</strong> (sign out). If <strong>Payments</strong> is on, they can open{' '}
-        <strong>Invoice checkout</strong> from that flow.
+    <div className="prf2-access-grid" role="group" aria-label="Page access">
+      <p className="prf2-access-label">Page access</p>
+      <div className="prf2-access-checks">
+        {ASSIGNABLE_STAFF_PAGE_IDS.map(id => (
+          <label key={id} className={`prf2-check-item${selected.has(id) ? ' prf2-check-item--on' : ''}${disabled ? ' prf2-check-item--disabled' : ''}`}>
+            <input
+              type="checkbox"
+              checked={selected.has(id)}
+              onChange={() => toggle(id)}
+              disabled={disabled}
+              className="prf2-check-input"
+            />
+            <span className="prf2-check-mark" aria-hidden="true">
+              {selected.has(id) ? (
+                <svg width={10} height={10} viewBox="0 0 12 12" fill="none"><polyline points="2,6 5,9 10,3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              ) : null}
+            </span>
+            <span className="prf2-check-label">{ASSIGNABLE_STAFF_PAGE_LABELS[id]}</span>
+          </label>
+        ))}
+      </div>
+      <p className="prf2-access-hint">
+        Staff always have access to <strong>Profile</strong> (sign out). If <strong>Payments</strong> is on, they can open <strong>Invoice checkout</strong> from that flow.
       </p>
     </div>
   );
 }
 
+// ── Avatar initial tile ────────────────────────────────────────────────────────
+function AvatarTile({ name, size = 'lg' }: { name: string; size?: 'sm' | 'md' | 'lg' }) {
+  const palettes = [
+    ['#4f46e5', '#818cf8'], ['#0d9488', '#34d399'], ['#d97706', '#fbbf24'],
+    ['#e11d48', '#fb7185'], ['#0284c7', '#38bdf8'], ['#7c3aed', '#c4b5fd'],
+  ];
+  const idx = name.charCodeAt(0) % palettes.length;
+  const [from, to] = palettes[idx];
+  const initial = name.slice(0, 1).toUpperCase() || '?';
+  return (
+    <span
+      className={`prf2-avatar prf2-avatar--${size}`}
+      style={{ background: `linear-gradient(135deg, ${from}, ${to})` }}
+      aria-hidden="true"
+    >
+      {initial}
+    </span>
+  );
+}
+
+// ── Section card wrapper ───────────────────────────────────────────────────────
+function SectionCard({
+  icon,
+  iconColor,
+  kicker,
+  title,
+  description,
+  children,
+  className = '',
+  id,
+}: {
+  icon: React.ReactNode;
+  iconColor: string;
+  kicker: string;
+  title: string;
+  description?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+  id?: string;
+}) {
+  return (
+    <section className={`prf2-card ${className}`} aria-labelledby={id}>
+      <div className="prf2-card-head">
+        <div className="prf2-card-icon" style={{ '--icon-color': iconColor } as React.CSSProperties}>
+          {icon}
+        </div>
+        <div className="prf2-card-head-text">
+          <span className="prf2-kicker" style={{ color: iconColor }}>{kicker}</span>
+          <h3 className="prf2-card-title" id={id}>{title}</h3>
+          {description ? <p className="prf2-card-desc">{description}</p> : null}
+        </div>
+      </div>
+      <div className="prf2-card-body">{children}</div>
+    </section>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MAIN COMPONENT
+// ══════════════════════════════════════════════════════════════════════════════
 export const ProfilePage: React.FC<ProfilePageProps> = ({
   token,
   username,
@@ -79,6 +194,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   const { showAlert, showConfirm } = useAlertDialog();
   const roleLabel = role === 'owner' ? 'Shop owner' : 'Staff';
 
+  // ── State (unchanged) ──────────────────────────────────────────────────────
   const [cloudSyncLoading, setCloudSyncLoading] = useState(false);
   const [cloudSyncMsg, setCloudSyncMsg] = useState<string | null>(null);
   const [cloudSyncErr, setCloudSyncErr] = useState<string | null>(null);
@@ -115,9 +231,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   const [fxFrankfurterSyncing, setFxFrankfurterSyncing] = useState(false);
   const [fxErr, setFxErr] = useState<string | null>(null);
   const [fxMsg, setFxMsg] = useState<string | null>(null);
-  /** THB per 1 USD (standard quote: how many baht one dollar is worth). */
   const [fxThbPerUsd, setFxThbPerUsd] = useState('');
-  /** Units of each foreign currency per 1 USD (e.g. EUR per USD, JPY per USD). */
   const [fxUnitsPerUsd, setFxUnitsPerUsd] = useState<Record<string, string>>(() => {
     const d: Record<string, string> = {};
     for (const { code } of SUPPORTED_CURRENCIES) {
@@ -136,6 +250,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   usernameRef.current = username;
   allowedPagesRef.current = allowedPages;
 
+  // ── Data fetching (unchanged) ──────────────────────────────────────────────
   const fetchAccount = useCallback(async () => {
     try {
       const res = await fetch(apiUrl('/api/account'), { headers: { Authorization: `Bearer ${token}` } });
@@ -161,9 +276,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     }
   }, [token, onAccountUpdated]);
 
-  useEffect(() => {
-    fetchAccount();
-  }, [fetchAccount]);
+  useEffect(() => { fetchAccount(); }, [fetchAccount]);
 
   const fetchTeam = useCallback(async () => {
     if (role !== 'owner') return;
@@ -187,9 +300,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     }
   }, [role, token, showAlert]);
 
-  useEffect(() => {
-    fetchTeam();
-  }, [fetchTeam]);
+  useEffect(() => { fetchTeam(); }, [fetchTeam]);
 
   const fetchExchangeRates = useCallback(async () => {
     setFxLoading(true);
@@ -206,7 +317,6 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       const thbPerUsd = Number(map.USD);
       const hasBridge = Number.isFinite(thbPerUsd) && thbPerUsd > 0;
       setFxThbPerUsd(hasBridge ? String(roundRate6(thbPerUsd)) : '');
-
       const nextUnits: Record<string, string> = {};
       for (const { code } of SUPPORTED_CURRENCIES) {
         if (code === 'USD' || code === 'THB') continue;
@@ -227,9 +337,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     }
   }, [token, showAlert]);
 
-  useEffect(() => {
-    void fetchExchangeRates();
-  }, [fetchExchangeRates]);
+  useEffect(() => { void fetchExchangeRates(); }, [fetchExchangeRates]);
 
   const syncCloudDashboard = useCallback(async () => {
     setCloudSyncErr(null);
@@ -277,9 +385,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       await fetchExchangeRates();
       showAlert({
         title: 'Exchange rates updated',
-        message: data.rate_date
-          ? `Frankfurter rates saved. ECB reference date: ${data.rate_date}.`
-          : 'Frankfurter rates saved.',
+        message: data.rate_date ? `Frankfurter rates saved. ECB reference date: ${data.rate_date}.` : 'Frankfurter rates saved.',
         variant: 'success',
       });
     } catch (e: unknown) {
@@ -291,10 +397,9 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     }
   }, [token, fetchExchangeRates, showAlert]);
 
-  useEffect(() => {
-    setNewUser(username);
-  }, [username]);
+  useEffect(() => { setNewUser(username); }, [username]);
 
+  // ── Form submissions (unchanged) ──────────────────────────────────────────
   const submitAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     setAccountErr(null);
@@ -337,17 +442,12 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       const u = data.user;
       onAccountUpdated({
         username: u.username,
-        allowedPages:
-          u.role === 'owner' ? null : normalizeStaffAllowedPagesFromApi(u.allowed_pages as string[] | null),
+        allowedPages: u.role === 'owner' ? null : normalizeStaffAllowedPagesFromApi(u.allowed_pages as string[] | null),
       });
       setCurPwd('');
       setNewPwd('');
       setAccountMsg('Account updated.');
-      showAlert({
-        title: 'Account updated',
-        message: 'Your login details were saved successfully.',
-        variant: 'success',
-      });
+      showAlert({ title: 'Account updated', message: 'Your login details were saved successfully.', variant: 'success' });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Could not update account';
       setAccountErr(msg);
@@ -361,30 +461,21 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     e.preventDefault();
     setFxErr(null);
     setFxMsg(null);
-
     const tRaw = fxThbPerUsd.trim().replace(/,/g, '');
     const tUsd = Number(tRaw);
     const thbPerUsd = Number.isFinite(tUsd) && tUsd > 0 ? roundRate6(tUsd) : NaN;
-
     const otherFilled = SUPPORTED_CURRENCIES.some(({ code }) => {
       if (code === 'USD' || code === 'THB') return false;
       return (fxUnitsPerUsd[code] ?? '').trim() !== '';
     });
-
     if (otherFilled && (!Number.isFinite(thbPerUsd) || thbPerUsd <= 0)) {
-      const msg =
-        'Set how many THB equal 1 USD first, then enter other currencies as “how much of that currency per 1 USD”.';
+      const msg = 'Set how many THB equal 1 USD first, then enter other currencies as "how much of that currency per 1 USD".';
       setFxErr(msg);
       showAlert({ title: 'Exchange rates', message: msg, variant: 'warning' });
       return;
     }
-
     const thb_per_unit: Record<string, number> = {};
-
-    if (Number.isFinite(thbPerUsd) && thbPerUsd > 0) {
-      thb_per_unit.USD = thbPerUsd;
-    }
-
+    if (Number.isFinite(thbPerUsd) && thbPerUsd > 0) thb_per_unit.USD = thbPerUsd;
     if (otherFilled) {
       for (const { code } of SUPPORTED_CURRENCIES) {
         if (code === 'USD' || code === 'THB') continue;
@@ -400,15 +491,12 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
         thb_per_unit[code] = roundRate6(thbPerUsd / n);
       }
     }
-
     if (Object.keys(thb_per_unit).length === 0) {
-      const msg =
-        'Enter 1 USD in THB and/or at least one other currency (units per 1 USD), then save. Use Reload to refresh.';
+      const msg = 'Enter 1 USD in THB and/or at least one other currency (units per 1 USD), then save. Use Reload to refresh.';
       setFxErr(msg);
       showAlert({ title: 'Exchange rates', message: msg, variant: 'warning' });
       return;
     }
-
     setFxSaving(true);
     try {
       const res = await fetch(apiUrl('/api/exchange-rates'), {
@@ -423,11 +511,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       await res.json();
       setFxMsg('Exchange rates saved.');
       await fetchExchangeRates();
-      showAlert({
-        title: 'Exchange rates saved',
-        message: 'Rates saved (stored internally as THB per unit for conversions).',
-        variant: 'success',
-      });
+      showAlert({ title: 'Exchange rates saved', message: 'Rates saved (stored internally as THB per unit for conversions).', variant: 'success' });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Could not save exchange rates';
       setFxErr(msg);
@@ -440,13 +524,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   function parseBackupFilename(cd: string | null): string {
     if (!cd) return 'blue-cuts-backup.db';
     const star = /filename\*=UTF-8''([^;\s]+)/i.exec(cd);
-    if (star) {
-      try {
-        return decodeURIComponent(star[1].trim());
-      } catch {
-        return star[1].trim();
-      }
-    }
+    if (star) { try { return decodeURIComponent(star[1].trim()); } catch { return star[1].trim(); } }
     const quoted = /filename="([^"]+)"/i.exec(cd);
     if (quoted) return quoted[1];
     const plain = /filename=([^;\s]+)/i.exec(cd);
@@ -458,9 +536,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     setBackupErr(null);
     setBackupDownloading(true);
     try {
-      const res = await fetch(apiUrl('/api/backup/download'), {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch(apiUrl('/api/backup/download'), { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) {
         const msg = await parseErrorResponse(res, 'Could not download backup');
         throw new Error(msg);
@@ -469,12 +545,8 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       const filename = parseBackupFilename(res.headers.get('Content-Disposition'));
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.rel = 'noopener';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      a.href = url; a.download = filename; a.rel = 'noopener';
+      document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
       showAlert({ title: 'Backup ready', message: 'Save the .db file in a safe place.', variant: 'success' });
     } catch (e: unknown) {
@@ -489,24 +561,14 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   const restoreDatabaseBackup = async () => {
     const input = restoreFileRef.current;
     const file = input?.files?.[0];
-    if (!file) {
-      showAlert({ title: 'Restore', message: 'Choose a .db backup file first.', variant: 'warning' });
-      return;
-    }
-    if (!file.name.toLowerCase().endsWith('.db')) {
-      showAlert({ title: 'Restore', message: 'Use a .db file from a previous backup.', variant: 'warning' });
-      return;
-    }
+    if (!file) { showAlert({ title: 'Restore', message: 'Choose a .db backup file first.', variant: 'warning' }); return; }
+    if (!file.name.toLowerCase().endsWith('.db')) { showAlert({ title: 'Restore', message: 'Use a .db file from a previous backup.', variant: 'warning' }); return; }
     const ok = await showConfirm({
       title: 'Restore database?',
-      message:
-        'This replaces all shop data with the backup. Everyone should stop using the app until it finishes. You will need to refresh the page after restore. This cannot be undone.',
-      confirmLabel: 'Restore',
-      cancelLabel: 'Cancel',
-      danger: true,
+      message: 'This replaces all shop data with the backup. Everyone should stop using the app until it finishes. You will need to refresh the page after restore. This cannot be undone.',
+      confirmLabel: 'Restore', cancelLabel: 'Cancel', danger: true,
     });
     if (!ok) return;
-
     setBackupErr(null);
     setRestoreUploading(true);
     try {
@@ -522,14 +584,8 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
         throw new Error(msg);
       }
       if (input) input.value = '';
-      showAlert({
-        title: 'Database restored',
-        message: 'The page will reload so the app uses the restored data.',
-        variant: 'success',
-      });
-      window.setTimeout(() => {
-        window.location.reload();
-      }, 800);
+      showAlert({ title: 'Database restored', message: 'The page will reload so the app uses the restored data.', variant: 'success' });
+      window.setTimeout(() => { window.location.reload(); }, 800);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Restore failed';
       setBackupErr(msg);
@@ -540,9 +596,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   };
 
   const openAdd = () => {
-    setAddErr(null);
-    setAddUsername('');
-    setAddPassword('');
+    setAddErr(null); setAddUsername(''); setAddPassword('');
     setAddPages(new Set(normalizeStaffAllowedPagesFromApi(null)));
     setAddOpen(true);
   };
@@ -550,46 +604,20 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   const submitAddStaff = async (e: React.FormEvent) => {
     e.preventDefault();
     setAddErr(null);
-    if (!addUsername.trim()) {
-      const msg = 'Username is required.';
-      setAddErr(msg);
-      showAlert({ title: 'Add staff', message: msg, variant: 'warning' });
-      return;
-    }
-    if (addPassword.length < 6) {
-      const msg = 'Password must be at least 6 characters.';
-      setAddErr(msg);
-      showAlert({ title: 'Add staff', message: msg, variant: 'warning' });
-      return;
-    }
-    if (addPages.size === 0) {
-      const msg = 'Select at least one page.';
-      setAddErr(msg);
-      showAlert({ title: 'Add staff', message: msg, variant: 'warning' });
-      return;
-    }
+    if (!addUsername.trim()) { const msg = 'Username is required.'; setAddErr(msg); showAlert({ title: 'Add staff', message: msg, variant: 'warning' }); return; }
+    if (addPassword.length < 6) { const msg = 'Password must be at least 6 characters.'; setAddErr(msg); showAlert({ title: 'Add staff', message: msg, variant: 'warning' }); return; }
+    if (addPages.size === 0) { const msg = 'Select at least one page.'; setAddErr(msg); showAlert({ title: 'Add staff', message: msg, variant: 'warning' }); return; }
     setAddSaving(true);
     try {
       const res = await fetch(apiUrl('/api/users'), {
         method: 'POST',
         headers: authHeaders(token),
-        body: JSON.stringify({
-          username: addUsername.trim(),
-          password: addPassword,
-          allowed_pages: Array.from(addPages),
-        }),
+        body: JSON.stringify({ username: addUsername.trim(), password: addPassword, allowed_pages: Array.from(addPages) }),
       });
-      if (!res.ok) {
-        const msg = await parseErrorResponse(res, 'Could not create staff');
-        throw new Error(msg);
-      }
+      if (!res.ok) { const msg = await parseErrorResponse(res, 'Could not create staff'); throw new Error(msg); }
       setAddOpen(false);
       await fetchTeam();
-      showAlert({
-        title: 'Staff member added',
-        message: 'The new account was created successfully.',
-        variant: 'success',
-      });
+      showAlert({ title: 'Staff member added', message: 'The new account was created successfully.', variant: 'success' });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Could not create staff';
       setAddErr(msg);
@@ -601,10 +629,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
 
   const openEdit = (u: TeamUserRow) => {
     if (u.role === 'owner') return;
-    setEditErr(null);
-    setEditUser(u);
-    setEditUsername(u.username);
-    setEditNewPassword('');
+    setEditErr(null); setEditUser(u); setEditUsername(u.username); setEditNewPassword('');
     setEditPages(new Set(normalizeStaffAllowedPagesFromApi(u.allowed_pages ?? undefined)));
   };
 
@@ -612,29 +637,13 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     e.preventDefault();
     if (!editUser) return;
     setEditErr(null);
-    if (!editUsername.trim()) {
-      const msg = 'Username is required.';
-      setEditErr(msg);
-      showAlert({ title: 'Edit staff', message: msg, variant: 'warning' });
-      return;
-    }
-    if (editNewPassword && editNewPassword.length < 6) {
-      const msg = 'New password must be at least 6 characters.';
-      setEditErr(msg);
-      showAlert({ title: 'Edit staff', message: msg, variant: 'warning' });
-      return;
-    }
-    if (editPages.size === 0) {
-      const msg = 'Select at least one page.';
-      setEditErr(msg);
-      showAlert({ title: 'Edit staff', message: msg, variant: 'warning' });
-      return;
-    }
+    if (!editUsername.trim()) { const msg = 'Username is required.'; setEditErr(msg); showAlert({ title: 'Edit staff', message: msg, variant: 'warning' }); return; }
+    if (editNewPassword && editNewPassword.length < 6) { const msg = 'New password must be at least 6 characters.'; setEditErr(msg); showAlert({ title: 'Edit staff', message: msg, variant: 'warning' }); return; }
+    if (editPages.size === 0) { const msg = 'Select at least one page.'; setEditErr(msg); showAlert({ title: 'Edit staff', message: msg, variant: 'warning' }); return; }
     setEditSaving(true);
     try {
       const body: { username: string; allowed_pages: string[]; password?: string } = {
-        username: editUsername.trim(),
-        allowed_pages: Array.from(editPages),
+        username: editUsername.trim(), allowed_pages: Array.from(editPages),
       };
       if (editNewPassword) body.password = editNewPassword;
       const res = await fetch(apiUrl(`/api/users/${editUser.id}`), {
@@ -642,18 +651,11 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
         headers: authHeaders(token),
         body: JSON.stringify(body),
       });
-      if (!res.ok) {
-        const msg = await parseErrorResponse(res, 'Could not update staff');
-        throw new Error(msg);
-      }
+      if (!res.ok) { const msg = await parseErrorResponse(res, 'Could not update staff'); throw new Error(msg); }
       await res.json();
       setEditUser(null);
       await fetchTeam();
-      showAlert({
-        title: 'Staff member updated',
-        message: 'Changes were saved successfully.',
-        variant: 'success',
-      });
+      showAlert({ title: 'Staff member updated', message: 'Changes were saved successfully.', variant: 'success' });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Could not update staff';
       setEditErr(msg);
@@ -663,474 +665,477 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     }
   };
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // RENDER
+  // ══════════════════════════════════════════════════════════════════════════
   return (
-    <div className="page page-profile">
-      <header className="page-header page-header-with-icon profile-page-intro">
-        <div className="page-header-icon page-header-icon--profile" aria-hidden="true">
-          <svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-            <circle cx="12" cy="7" r="4" />
-          </svg>
-        </div>
-        <div className="profile-intro-copy">
-          <h2>Profile &amp; account</h2>
-          <p className="page-description">
-            {role === 'owner'
-              ? 'Manage your sign-in, invite staff, and control which areas of the app they can use.'
-              : 'Update your sign-in. Which pages you can open is set by the shop owner.'}
-          </p>
-        </div>
-      </header>
+    <div className="page page-profile prf2-root">
 
-      <div className="profile-shell">
-        <section className="profile-overview-card" aria-label="Account summary">
-          <div className="profile-overview-main">
-            <div className="profile-avatar-block" aria-hidden="true">
-              <span className="profile-card__avatar-inner profile-card__avatar-inner--rounded">
-                {username.slice(0, 1).toUpperCase() || '?'}
-              </span>
-            </div>
-            <div className="profile-overview-body">
-              <p className="profile-display-name">{username}</p>
-              <div className="profile-overview-meta">
-                <span className={`profile-role-tag profile-role-tag--${role}`}>{roleLabel}</span>
-                {role === 'owner' ? (
-                  <span className="profile-overview-hint">Full access to all modules</span>
-                ) : null}
-              </div>
-              {role === 'staff' && allowedPages && allowedPages.length > 0 ? (
-                <div className="profile-access-block">
-                  <span className="profile-access-block-label">Your access</span>
-                  <div className="profile-access-list profile-access-list--wrap">
-                    {allowedPages.map((p, i) => (
-                      <span
-                        key={p}
-                        className={`profile-access-pill profile-access-pill--tone-${(i % 4) + 1}`}
-                      >
-                        {ASSIGNABLE_STAFF_PAGE_LABELS[p as StaffAssignablePageId] || p}
-                      </span>
-                    ))}
-                  </div>
-                </div>
+      {/* ── Hero identity card ─────────────────────────────────────────────── */}
+      <div className="prf2-hero">
+        <div className="prf2-hero-rainbow" aria-hidden="true" />
+        <div className="prf2-hero-inner">
+          <AvatarTile name={username} size="lg" />
+          <div className="prf2-hero-text">
+            <p className="prf2-hero-name">{username}</p>
+            <div className="prf2-hero-meta">
+              <span className={`prf2-role-badge prf2-role-badge--${role}`}>{roleLabel}</span>
+              {role === 'owner' ? (
+                <span className="prf2-hero-hint">
+                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                  Full access to all modules
+                </span>
               ) : null}
             </div>
-          </div>
-        </section>
-
-        <div className="profile-panels">
-          <section className="profile-section-card profile-section-card--security">
-            <div className="profile-section-head">
-              <span className="profile-section-kicker">Security</span>
-              <h3 className="profile-section-title">Sign-in &amp; password</h3>
-              <p className="profile-section-desc">
-                Enter your <strong className="profile-emphasis">current password</strong>, then set a new username
-                and/or password if you want to change them.
-              </p>
-            </div>
-        <form className="profile-account-form" onSubmit={submitAccount}>
-          <label>
-            <span>Current password</span>
-            <input
-              type="password"
-              value={curPwd}
-              onChange={e => setCurPwd(e.target.value)}
-              autoComplete="current-password"
-            />
-          </label>
-          <label>
-            <span>New username (optional)</span>
-            <input
-              type="text"
-              value={newUser}
-              onChange={e => setNewUser(e.target.value)}
-              autoComplete="username"
-            />
-          </label>
-          <label>
-            <span>New password (optional)</span>
-            <input
-              type="password"
-              value={newPwd}
-              onChange={e => setNewPwd(e.target.value)}
-              autoComplete="new-password"
-            />
-          </label>
-          {accountErr ? <p className="profile-form-error">{accountErr}</p> : null}
-          {accountMsg ? <p className="profile-form-success">{accountMsg}</p> : null}
-          <button type="submit" className="primary-button profile-section-submit" disabled={accountSaving}>
-            {accountSaving ? 'Saving…' : 'Save changes'}
-          </button>
-        </form>
-      </section>
-
-      {role === 'owner' ? (
-        <section className="profile-section-card profile-section-card--team">
-          <div className="profile-team-header">
-            <div className="profile-section-head profile-section-head--inline">
-              <span className="profile-section-kicker profile-section-kicker--violet">Team</span>
-              <h3 className="profile-section-title">Staff accounts</h3>
-              <p className="profile-section-desc">
-                Add logins for your team and tick which screens each person may use. You can edit this later.
-              </p>
-            </div>
-            <button type="button" className="primary-button" onClick={openAdd}>
-              + Add staff
-            </button>
-          </div>
-
-          {teamErr ? <p className="profile-form-error">{teamErr}</p> : null}
-          {teamLoading ? (
-            <p className="profile-team-loading">Loading team…</p>
-          ) : (
-            <div className="profile-team-table-wrap">
-              <table className="profile-team-table">
-                <thead>
-                  <tr>
-                    <th>Username</th>
-                    <th>Role</th>
-                    <th>Page access</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {team.map(u => (
-                    <tr key={u.id}>
-                      <td>{u.username}</td>
-                      <td>{u.role === 'owner' ? 'Owner' : 'Staff'}</td>
-                      <td className="profile-team-pages">
-                        {u.role === 'owner' ? (
-                          <span className="profile-access-all">All pages</span>
-                        ) : (
-                          normalizeStaffAllowedPagesFromApi(u.allowed_pages ?? undefined).map((p, i) => (
-                            <span
-                              key={p}
-                              className={`profile-access-pill profile-access-pill--sm profile-access-pill--tone-${(i % 4) + 1}`}
-                            >
-                              {ASSIGNABLE_STAFF_PAGE_LABELS[p]}
-                            </span>
-                          ))
-                        )}
-                      </td>
-                      <td className="profile-team-actions">
-                        {u.role === 'staff' ? (
-                          <button type="button" className="ghost-button small" onClick={() => openEdit(u)}>
-                            Edit
-                          </button>
-                        ) : null}
-                      </td>
-                    </tr>
+            {role === 'staff' && allowedPages && allowedPages.length > 0 ? (
+              <div className="prf2-hero-access">
+                <span className="prf2-hero-access-label">Your access</span>
+                <div className="prf2-hero-access-pills">
+                  {allowedPages.map((p, i) => (
+                    <span key={p} className={`profile-access-pill profile-access-pill--tone-${(i % 4) + 1}`}>
+                      {ASSIGNABLE_STAFF_PAGE_LABELS[p as StaffAssignablePageId] || p}
+                    </span>
                   ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      ) : null}
-
-      <section className="profile-section-card profile-section-card--fx" aria-label="Exchange rates">
-          <div className="profile-section-head">
-            <span className="profile-section-kicker profile-section-kicker--violet">Rates</span>
-            <h3 className="profile-section-title">Exchange rates (USD is primary)</h3>
-            <p className="profile-section-desc">
-              The shop&apos;s main reference currency is <strong>USD</strong>. Enter rates as <strong>how much of each currency one US dollar
-              is worth</strong>: <strong>1 USD = ? THB</strong>, then <strong>1 USD = ? EUR</strong>, <strong>1 USD = ? JPY</strong>, and so
-              on—the same way most FX tables quote against the dollar. Internally the app still stores a THB-per-unit bridge for totals. Use{' '}
-              <strong>Fetch live rates</strong> to pull ECB spot rates via the free{' '}
-              <a href="https://www.frankfurter.app/" target="_blank" rel="noopener noreferrer">
-                Frankfurter
-              </a>{' '}
-              API (USD base). The server can also refresh these automatically once per day while it is running. Changing rates does{' '}
-              <strong>not</strong> change stored inventory list prices—it only affects conversions (invoices, memos, reports, prefill). Leave a
-              currency blank when saving manually to keep its current stored rate.
-              {role === 'staff' ? (
-                <>
-                  {' '}
-                  Staff can update these rates; they apply shop-wide for everyone.
-                </>
-              ) : null}
-            </p>
+                </div>
+              </div>
+            ) : null}
           </div>
-          {fxErr ? <p className="profile-form-error">{fxErr}</p> : null}
-          {fxMsg ? <p className="profile-form-success">{fxMsg}</p> : null}
-          {fxLoading ? (
-            <p className="profile-team-loading">Loading rates…</p>
-          ) : (
-            <form className="profile-fx-form" onSubmit={submitExchangeRates}>
-              <div className="profile-team-table-wrap profile-fx-table-wrap">
-                <table className="profile-team-table profile-fx-table">
+        </div>
+      </div>
+
+      {/* ── Section grid ──────────────────────────────────────────────────── */}
+      <div className="prf2-grid">
+
+        {/* Security */}
+        <SectionCard
+          id="prf2-security"
+          icon={<IconSecurity />}
+          iconColor="#2563eb"
+          kicker="Security"
+          title="Sign-in & password"
+          description={<>Enter your <strong>current password</strong>, then set a new username and/or password if you want to change them.</>}
+          className="prf2-card--security"
+        >
+          <form className="prf2-form" onSubmit={submitAccount}>
+            <div className="prf2-field">
+              <label className="prf2-field-label" htmlFor="prf2-cur-pwd">Current password <span className="prf2-required">*</span></label>
+              <input
+                id="prf2-cur-pwd"
+                type="password"
+                className="prf2-input"
+                value={curPwd}
+                onChange={e => setCurPwd(e.target.value)}
+                autoComplete="current-password"
+                placeholder="Enter your current password"
+              />
+            </div>
+            <div className="prf2-field-row">
+              <div className="prf2-field">
+                <label className="prf2-field-label" htmlFor="prf2-new-user">New username <span className="prf2-optional">optional</span></label>
+                <input
+                  id="prf2-new-user"
+                  type="text"
+                  className="prf2-input"
+                  value={newUser}
+                  onChange={e => setNewUser(e.target.value)}
+                  autoComplete="username"
+                  placeholder="New username"
+                />
+              </div>
+              <div className="prf2-field">
+                <label className="prf2-field-label" htmlFor="prf2-new-pwd">New password <span className="prf2-optional">optional</span></label>
+                <input
+                  id="prf2-new-pwd"
+                  type="password"
+                  className="prf2-input"
+                  value={newPwd}
+                  onChange={e => setNewPwd(e.target.value)}
+                  autoComplete="new-password"
+                  placeholder="Min 6 characters"
+                />
+              </div>
+            </div>
+            {accountErr ? <p className="prf2-msg prf2-msg--error">{accountErr}</p> : null}
+            {accountMsg ? <p className="prf2-msg prf2-msg--success">✓ {accountMsg}</p> : null}
+            <button type="submit" className="primary-button prf2-submit-btn" disabled={accountSaving}>
+              {accountSaving ? 'Saving…' : 'Save changes'}
+            </button>
+          </form>
+        </SectionCard>
+
+        {/* Logout */}
+        <SectionCard
+          id="prf2-logout"
+          icon={<IconLogout />}
+          iconColor="#e11d48"
+          kicker="Session"
+          title="End session"
+          description="Sign out on this device. You'll need your password to sign in again."
+          className="prf2-card--logout"
+        >
+          <button type="button" className="prf2-logout-btn" onClick={onLogout}>
+            <IconLogout />
+            Log out
+          </button>
+        </SectionCard>
+
+        {/* Team — owner only */}
+        {role === 'owner' ? (
+          <SectionCard
+            id="prf2-team"
+            icon={<IconTeam />}
+            iconColor="#db2777"
+            kicker="Team"
+            title="Staff accounts"
+            description="Add logins for your team and control which screens each person can access."
+            className="prf2-card--team prf2-card--wide"
+          >
+            <div className="prf2-team-toolbar">
+              {teamErr ? <p className="prf2-msg prf2-msg--error">{teamErr}</p> : null}
+              <button type="button" className="prf2-add-btn" onClick={openAdd}>
+                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Add staff member
+              </button>
+            </div>
+            {teamLoading ? (
+              <p className="prf2-loading">Loading team…</p>
+            ) : team.length === 0 ? (
+              <div className="prf2-team-empty">
+                <div className="prf2-team-empty-icon"><IconTeam /></div>
+                <p>No staff accounts yet. Add your first team member above.</p>
+              </div>
+            ) : (
+              <div className="prf2-team-table-wrap">
+                <table className="prf2-team-table">
                   <thead>
                     <tr>
-                      <th>Currency</th>
-                      <th>Your rate</th>
+                      <th>Member</th>
+                      <th>Role</th>
+                      <th>Page access</th>
+                      <th style={{ width: '72px' }} />
                     </tr>
                   </thead>
                   <tbody>
-                    {[
-                      SUPPORTED_CURRENCIES.find(c => c.code === 'USD')!,
-                      SUPPORTED_CURRENCIES.find(c => c.code === 'THB')!,
-                      ...SUPPORTED_CURRENCIES.filter(c => c.code !== 'USD' && c.code !== 'THB'),
-                    ].map(({ code, label }) => {
-                      const shortLabel = label.replace(/^[^—]+—\s*/, '');
-                      const tThb = Number(fxThbPerUsd.trim().replace(/,/g, ''));
-                      const bridgeOk = Number.isFinite(tThb) && tThb > 0;
-
-                      if (code === 'USD') {
-                        return (
-                          <tr key={code}>
-                            <td>
-                              <span className="profile-fx-code">{code}</span>
-                              <span className="profile-fx-label">{shortLabel}</span>
-                            </td>
-                            <td>
-                              <div className="profile-fx-usd-ref">
-                                <span className="profile-fx-static-eq">1 USD = 1 USD</span>
-                                <span className="profile-fx-ref-note">Reference currency — not editable.</span>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      }
-
-                      if (code === 'THB') {
-                        return (
-                          <tr key={code}>
-                            <td>
-                              <span className="profile-fx-code">{code}</span>
-                              <span className="profile-fx-label">{shortLabel}</span>
-                            </td>
-                            <td>
-                              <span className="profile-fx-inline">
-                                <span className="profile-fx-eq">1 USD =</span>
-                                <input
-                                  type="text"
-                                  inputMode="decimal"
-                                  className="profile-fx-input profile-fx-input--inline"
-                                  value={fxThbPerUsd}
-                                  onChange={e => setFxThbPerUsd(e.target.value)}
-                                  placeholder="e.g. 35"
-                                  aria-label="Thai baht per 1 US dollar"
-                                />
-                                <span className="profile-fx-suffix">THB</span>
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      }
-
-                      return (
-                        <tr key={code}>
-                          <td>
-                            <span className="profile-fx-code">{code}</span>
-                            <span className="profile-fx-label">{shortLabel}</span>
-                          </td>
-                          <td>
-                            <span className="profile-fx-inline">
-                              <span className="profile-fx-eq">1 USD =</span>
-                              <input
-                                type="text"
-                                inputMode="decimal"
-                                className="profile-fx-input profile-fx-input--inline"
-                                value={fxUnitsPerUsd[code] ?? ''}
-                                onChange={e =>
-                                  setFxUnitsPerUsd(prev => ({ ...prev, [code]: e.target.value }))
-                                }
-                                placeholder={bridgeOk ? `e.g. ${code === 'JPY' ? '150' : '0.92'}` : 'Set 1 USD in THB first'}
-                                disabled={!bridgeOk}
-                                aria-label={`${code} per 1 US dollar`}
-                              />
-                              <span className="profile-fx-suffix">{code}</span>
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
+                    {team.map(u => (
+                      <tr key={u.id}>
+                        <td>
+                          <div className="prf2-team-member">
+                            <AvatarTile name={u.username} size="sm" />
+                            <span className="prf2-team-username">{u.username}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <span className={`prf2-role-badge prf2-role-badge--${u.role}`}>
+                            {u.role === 'owner' ? 'Owner' : 'Staff'}
+                          </span>
+                        </td>
+                        <td className="prf2-team-pages">
+                          {u.role === 'owner' ? (
+                            <span className="prf2-all-pages">All pages</span>
+                          ) : (
+                            <div className="prf2-pages-wrap">
+                              {normalizeStaffAllowedPagesFromApi(u.allowed_pages ?? undefined).map((p, i) => (
+                                <span key={p} className={`profile-access-pill profile-access-pill--sm profile-access-pill--tone-${(i % 4) + 1}`}>
+                                  {ASSIGNABLE_STAFF_PAGE_LABELS[p]}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          {u.role === 'staff' ? (
+                            <button type="button" className="prf2-edit-btn" onClick={() => openEdit(u)}>
+                              Edit
+                            </button>
+                          ) : null}
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
-              <div className="profile-fx-actions">
+            )}
+          </SectionCard>
+        ) : null}
+
+        {/* Exchange rates */}
+        <SectionCard
+          id="prf2-fx"
+          icon={<IconRates />}
+          iconColor="#d97706"
+          kicker="Rates"
+          title="Exchange rates"
+          description={
+            <>
+              USD is the primary currency. Enter rates as <strong>1 USD = ?</strong> for each currency.
+              Use <strong>Fetch live rates</strong> to pull ECB spot rates via{' '}
+              <a href="https://www.frankfurter.app/" target="_blank" rel="noopener noreferrer" className="prf2-link">Frankfurter</a>.
+              Changing rates does <strong>not</strong> alter stored prices — only affects conversions.
+              {role === 'staff' ? <> Staff can update these rates; they apply shop-wide.</> : null}
+            </>
+          }
+          className="prf2-card--fx prf2-card--wide"
+        >
+          {fxErr ? <p className="prf2-msg prf2-msg--error">{fxErr}</p> : null}
+          {fxMsg ? <p className="prf2-msg prf2-msg--success">✓ {fxMsg}</p> : null}
+          {fxLoading ? (
+            <p className="prf2-loading">Loading rates…</p>
+          ) : (
+            <form className="prf2-fx-form" onSubmit={submitExchangeRates}>
+              <div className="prf2-fx-grid">
+                {[
+                  SUPPORTED_CURRENCIES.find(c => c.code === 'USD')!,
+                  SUPPORTED_CURRENCIES.find(c => c.code === 'THB')!,
+                  ...SUPPORTED_CURRENCIES.filter(c => c.code !== 'USD' && c.code !== 'THB'),
+                ].map(({ code, label }) => {
+                  const shortLabel = label.replace(/^[^—]+—\s*/, '');
+                  const tThb = Number(fxThbPerUsd.trim().replace(/,/g, ''));
+                  const bridgeOk = Number.isFinite(tThb) && tThb > 0;
+
+                  if (code === 'USD') {
+                    return (
+                      <div key={code} className="prf2-fx-row prf2-fx-row--ref">
+                        <div className="prf2-fx-currency">
+                          <span className="prf2-fx-code">{code}</span>
+                          <span className="prf2-fx-name">{shortLabel}</span>
+                        </div>
+                        <div className="prf2-fx-value-wrap">
+                          <span className="prf2-fx-ref-eq">1 USD = 1 USD</span>
+                          <span className="prf2-fx-ref-note">Reference — not editable</span>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div key={code} className={`prf2-fx-row${code === 'THB' ? ' prf2-fx-row--thb' : ''}`}>
+                      <div className="prf2-fx-currency">
+                        <span className="prf2-fx-code">{code}</span>
+                        <span className="prf2-fx-name">{shortLabel}</span>
+                      </div>
+                      <div className="prf2-fx-input-wrap">
+                        <span className="prf2-fx-eq-label">1 USD =</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          className={`prf2-fx-input${code !== 'THB' && !bridgeOk ? ' prf2-fx-input--disabled' : ''}`}
+                          value={code === 'THB' ? fxThbPerUsd : (fxUnitsPerUsd[code] ?? '')}
+                          onChange={e =>
+                            code === 'THB'
+                              ? setFxThbPerUsd(e.target.value)
+                              : setFxUnitsPerUsd(prev => ({ ...prev, [code]: e.target.value }))
+                          }
+                          placeholder={
+                            code === 'THB' ? 'e.g. 35' :
+                            !bridgeOk ? 'Set THB first' :
+                            code === 'JPY' ? 'e.g. 150' : 'e.g. 0.92'
+                          }
+                          disabled={code !== 'THB' && !bridgeOk}
+                          aria-label={`${code} per 1 US dollar`}
+                        />
+                        <span className="prf2-fx-suffix">{code}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="prf2-fx-actions">
                 <button type="button" className="ghost-button" disabled={fxLoading || fxSaving || fxFrankfurterSyncing} onClick={() => void fetchExchangeRates()}>
-                  Reload
+                  ↺ Reload
                 </button>
-                <button
-                  type="button"
-                  className="ghost-button"
-                  disabled={fxLoading || fxSaving || fxFrankfurterSyncing}
-                  onClick={() => void syncFrankfurterFromApi()}
-                >
-                  {fxFrankfurterSyncing ? 'Fetching…' : 'Fetch live rates'}
+                <button type="button" className="ghost-button" disabled={fxLoading || fxSaving || fxFrankfurterSyncing} onClick={() => void syncFrankfurterFromApi()}>
+                  {fxFrankfurterSyncing ? 'Fetching…' : '⬇ Fetch live rates'}
                 </button>
-                <button type="submit" className="primary-button profile-section-submit" disabled={fxSaving || fxLoading || fxFrankfurterSyncing}>
+                <button type="submit" className="primary-button" disabled={fxSaving || fxLoading || fxFrankfurterSyncing}>
                   {fxSaving ? 'Saving…' : 'Save rates'}
                 </button>
               </div>
             </form>
           )}
-        </section>
+        </SectionCard>
 
-      <section className="profile-section-card profile-section-card--backup" aria-label="Database backup">
-        <div className="profile-section-head">
-          <span className="profile-section-kicker profile-section-kicker--violet">Data</span>
-          <h3 className="profile-section-title">Database backup</h3>
-          <p className="profile-section-desc">
-            Download a full copy of the shop database (SQLite .db). Store it somewhere safe. Restoring replaces{' '}
-            <strong>all</strong> current data—only the shop owner can do that.
-          </p>
-        </div>
-        {backupErr ? <p className="profile-form-error">{backupErr}</p> : null}
-        <div className="profile-backup-actions">
-          <button
-            type="button"
-            className="primary-button"
-            disabled={backupDownloading || restoreUploading}
-            onClick={() => void downloadDatabaseBackup()}
-          >
-            {backupDownloading ? 'Preparing backup…' : 'Download backup'}
-          </button>
-        </div>
-        {role === 'owner' ? (
-          <div className="profile-backup-restore-row">
-            <label className="profile-backup-file-input">
-              <span className="visually-hidden">Backup file</span>
-              <input
-                ref={restoreFileRef}
-                type="file"
-                accept=".db,application/octet-stream"
-                disabled={restoreUploading || backupDownloading}
-                aria-label="Select backup .db file to restore"
-              />
-            </label>
-            <button
-              type="button"
-              className="ghost-button"
-              disabled={restoreUploading || backupDownloading}
-              onClick={() => void restoreDatabaseBackup()}
-            >
-              {restoreUploading ? 'Restoring…' : 'Restore from backup'}
-            </button>
-          </div>
-        ) : null}
-      </section>
-
-      {role === 'owner' ? (
-        <section className="profile-section-card profile-section-card--cloud" aria-label="Cloud dashboard sync">
-          <div className="profile-section-head">
-            <span className="profile-section-kicker profile-section-kicker--violet">Cloud</span>
-            <h3 className="profile-section-title">Cloud dashboard</h3>
-            <p className="profile-section-desc">
-              Push the latest reports and inventory snapshot to Firebase for the online dashboard (Vercel). This PC must
-              have <strong>BLUECUTS_SHOP_ID</strong> and Firebase credentials in <strong>backend/.env</strong> as described in the
-              hybrid setup guide.
-            </p>
-          </div>
-          {cloudSyncErr ? <p className="profile-form-error">{cloudSyncErr}</p> : null}
-          {cloudSyncMsg ? <p className="profile-form-success">{cloudSyncMsg}</p> : null}
-          <button
-            type="button"
-            className="primary-button profile-section-submit"
-            disabled={cloudSyncLoading}
-            onClick={() => void syncCloudDashboard()}
-          >
-            {cloudSyncLoading ? 'Syncing…' : 'Sync to cloud dashboard'}
-          </button>
-        </section>
-      ) : null}
-
-          <section className="profile-section-card profile-section-card--logout" aria-label="Sign out">
-            <h3 className="profile-section-title profile-section-title--small">End session</h3>
-            <p className="profile-section-desc profile-section-desc--tight">
-              Sign out on this device. You’ll need your password to sign in again.
-            </p>
-            <button type="button" className="profile-logout-btn" onClick={onLogout}>
-              Log out
-            </button>
-          </section>
-        </div>
-      </div>
-
-      {addOpen ? (
-        <div className="customers-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="add-staff-title">
-          <div className="customers-modal profile-modal-wide">
-            <div className="customers-modal-header">
-              <h3 id="add-staff-title">Add staff member</h3>
-              <button type="button" className="customers-modal-close" onClick={() => setAddOpen(false)} aria-label="Close">
-                ✕
-              </button>
-            </div>
-            <form onSubmit={submitAddStaff}>
-              <div className="customers-modal-body">
-                <label>
-                  <span>Username</span>
-                  <input value={addUsername} onChange={e => setAddUsername(e.target.value)} autoComplete="off" />
-                </label>
-                <label>
-                  <span>Initial password</span>
-                  <input
-                    type="password"
-                    value={addPassword}
-                    onChange={e => setAddPassword(e.target.value)}
-                    autoComplete="new-password"
-                  />
-                </label>
-                <PageAccessCheckboxes selected={addPages} onChange={setAddPages} />
-                {addErr ? <p className="customers-modal-error">{addErr}</p> : null}
+        {/* Database backup */}
+        <SectionCard
+          id="prf2-backup"
+          icon={<IconBackup />}
+          iconColor="#0d9488"
+          kicker="Data"
+          title="Database backup"
+          description={<>Download a full copy of the shop database (.db file). Store it somewhere safe. Restoring replaces <strong>all</strong> current data—only the shop owner can do that.</>}
+          className="prf2-card--backup"
+        >
+          {backupErr ? <p className="prf2-msg prf2-msg--error">{backupErr}</p> : null}
+          <div className="prf2-backup-zone">
+            <div className="prf2-backup-download">
+              <div className="prf2-backup-info">
+                <div className="prf2-backup-icon-wrap">
+                  <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                </div>
+                <div>
+                  <p className="prf2-backup-action-title">Download backup</p>
+                  <p className="prf2-backup-action-desc">SQLite .db file — save it somewhere safe</p>
+                </div>
               </div>
-              <div className="customers-modal-footer">
-                <button type="button" className="ghost-button" onClick={() => setAddOpen(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="primary-button" disabled={addSaving}>
-                  {addSaving ? 'Creating…' : 'Create staff'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      ) : null}
-
-      {editUser ? (
-        <div className="customers-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="edit-staff-title">
-          <div className="customers-modal profile-modal-wide">
-            <div className="customers-modal-header">
-              <h3 id="edit-staff-title">Edit staff: {editUser.username}</h3>
               <button
                 type="button"
-                className="customers-modal-close"
-                onClick={() => setEditUser(null)}
-                aria-label="Close"
+                className="primary-button"
+                disabled={backupDownloading || restoreUploading}
+                onClick={() => void downloadDatabaseBackup()}
               >
-                ✕
+                {backupDownloading ? 'Preparing…' : 'Download'}
               </button>
             </div>
-            <form onSubmit={submitEditStaff}>
-              <div className="customers-modal-body">
-                <label>
-                  <span>Username</span>
-                  <input value={editUsername} onChange={e => setEditUsername(e.target.value)} autoComplete="off" />
-                </label>
-                <label>
-                  <span>New password (leave blank to keep current)</span>
-                  <input
-                    type="password"
-                    value={editNewPassword}
-                    onChange={e => setEditNewPassword(e.target.value)}
-                    autoComplete="new-password"
-                  />
-                </label>
-                <PageAccessCheckboxes selected={editPages} onChange={setEditPages} />
-                {editErr ? <p className="customers-modal-error">{editErr}</p> : null}
+
+            {role === 'owner' ? (
+              <div className="prf2-backup-restore">
+                <div className="prf2-backup-restore-inner">
+                  <div className="prf2-backup-restore-info">
+                    <div className="prf2-backup-icon-wrap prf2-backup-icon-wrap--danger">
+                      <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    </div>
+                    <div>
+                      <p className="prf2-backup-action-title">Restore from backup</p>
+                      <p className="prf2-backup-action-desc prf2-backup-action-desc--danger">Replaces all current data — irreversible</p>
+                    </div>
+                  </div>
+                  <div className="prf2-backup-restore-controls">
+                    <label className="prf2-file-label">
+                      <span className="visually-hidden">Backup file</span>
+                      <input
+                        ref={restoreFileRef}
+                        type="file"
+                        accept=".db,application/octet-stream"
+                        disabled={restoreUploading || backupDownloading}
+                        aria-label="Select backup .db file to restore"
+                        className="prf2-file-input"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="prf2-restore-btn"
+                      disabled={restoreUploading || backupDownloading}
+                      onClick={() => void restoreDatabaseBackup()}
+                    >
+                      {restoreUploading ? 'Restoring…' : 'Restore'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </SectionCard>
+
+        {/* Cloud sync — owner only */}
+        {role === 'owner' ? (
+          <SectionCard
+            id="prf2-cloud"
+            icon={<IconCloud />}
+            iconColor="#7c3aed"
+            kicker="Cloud"
+            title="Cloud dashboard sync"
+            description={
+              <>
+                Push the latest reports and inventory snapshot to Firebase for the online dashboard (Vercel). This PC must have <strong>BLUECUTS_SHOP_ID</strong> and Firebase credentials in <strong>backend/.env</strong>.
+              </>
+            }
+            className="prf2-card--cloud"
+          >
+            {cloudSyncErr ? <p className="prf2-msg prf2-msg--error">{cloudSyncErr}</p> : null}
+            {cloudSyncMsg ? <p className="prf2-msg prf2-msg--success">✓ {cloudSyncMsg}</p> : null}
+            <div className="prf2-cloud-action">
+              <div className="prf2-cloud-status">
+                <div className="prf2-cloud-dot" />
+                <span>Sync sends a full snapshot to Firestore</span>
+              </div>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={cloudSyncLoading}
+                onClick={() => void syncCloudDashboard()}
+              >
+                {cloudSyncLoading ? (
+                  <><span className="prf2-spinner" /> Syncing…</>
+                ) : (
+                  <><IconCloud /> Sync now</>
+                )}
+              </button>
+            </div>
+          </SectionCard>
+        ) : null}
+
+      </div>{/* /prf2-grid */}
+
+
+      {/* ── Add staff modal ───────────────────────────────────────────────── */}
+      {addOpen ? (
+        <div className="customers-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="prf2-add-staff-title">
+          <div className="customers-modal profile-modal-wide prf2-modal">
+            <div className="customers-modal-header prf2-modal-header">
+              <div className="prf2-modal-title-row">
+                <div className="prf2-modal-icon prf2-modal-icon--pink"><IconTeam /></div>
+                <h3 id="prf2-add-staff-title">Add staff member</h3>
+              </div>
+              <button type="button" className="customers-modal-close" onClick={() => setAddOpen(false)} aria-label="Close">✕</button>
+            </div>
+            <form onSubmit={submitAddStaff}>
+              <div className="customers-modal-body prf2-modal-body">
+                <div className="prf2-modal-field-row">
+                  <div className="prf2-field">
+                    <label className="prf2-field-label" htmlFor="prf2-add-username">Username <span className="prf2-required">*</span></label>
+                    <input id="prf2-add-username" className="prf2-input" value={addUsername} onChange={e => setAddUsername(e.target.value)} autoComplete="off" placeholder="e.g. staff01" />
+                  </div>
+                  <div className="prf2-field">
+                    <label className="prf2-field-label" htmlFor="prf2-add-pwd">Initial password <span className="prf2-required">*</span></label>
+                    <input id="prf2-add-pwd" className="prf2-input" type="password" value={addPassword} onChange={e => setAddPassword(e.target.value)} autoComplete="new-password" placeholder="Min 6 characters" />
+                  </div>
+                </div>
+                <PageAccessCheckboxes selected={addPages} onChange={setAddPages} />
+                {addErr ? <p className="prf2-msg prf2-msg--error">{addErr}</p> : null}
               </div>
               <div className="customers-modal-footer">
-                <button type="button" className="ghost-button" onClick={() => setEditUser(null)}>
-                  Cancel
-                </button>
-                <button type="submit" className="primary-button" disabled={editSaving}>
-                  {editSaving ? 'Saving…' : 'Save changes'}
-                </button>
+                <button type="button" className="ghost-button" onClick={() => setAddOpen(false)}>Cancel</button>
+                <button type="submit" className="primary-button" disabled={addSaving}>{addSaving ? 'Creating…' : 'Create staff'}</button>
               </div>
             </form>
           </div>
         </div>
       ) : null}
+
+      {/* ── Edit staff modal ──────────────────────────────────────────────── */}
+      {editUser ? (
+        <div className="customers-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="prf2-edit-staff-title">
+          <div className="customers-modal profile-modal-wide prf2-modal">
+            <div className="customers-modal-header prf2-modal-header">
+              <div className="prf2-modal-title-row">
+                <AvatarTile name={editUser.username} size="sm" />
+                <h3 id="prf2-edit-staff-title">Edit: {editUser.username}</h3>
+              </div>
+              <button type="button" className="customers-modal-close" onClick={() => setEditUser(null)} aria-label="Close">✕</button>
+            </div>
+            <form onSubmit={submitEditStaff}>
+              <div className="customers-modal-body prf2-modal-body">
+                <div className="prf2-modal-field-row">
+                  <div className="prf2-field">
+                    <label className="prf2-field-label" htmlFor="prf2-edit-username">Username <span className="prf2-required">*</span></label>
+                    <input id="prf2-edit-username" className="prf2-input" value={editUsername} onChange={e => setEditUsername(e.target.value)} autoComplete="off" />
+                  </div>
+                  <div className="prf2-field">
+                    <label className="prf2-field-label" htmlFor="prf2-edit-pwd">New password <span className="prf2-optional">leave blank to keep</span></label>
+                    <input id="prf2-edit-pwd" className="prf2-input" type="password" value={editNewPassword} onChange={e => setEditNewPassword(e.target.value)} autoComplete="new-password" placeholder="Leave blank to keep current" />
+                  </div>
+                </div>
+                <PageAccessCheckboxes selected={editPages} onChange={setEditPages} />
+                {editErr ? <p className="prf2-msg prf2-msg--error">{editErr}</p> : null}
+              </div>
+              <div className="customers-modal-footer">
+                <button type="button" className="ghost-button" onClick={() => setEditUser(null)}>Cancel</button>
+                <button type="submit" className="primary-button" disabled={editSaving}>{editSaving ? 'Saving…' : 'Save changes'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
     </div>
   );
 };

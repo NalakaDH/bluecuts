@@ -127,6 +127,7 @@ interface PaymentInvoiceRow {
   paid: number;
   remaining: number;
   status: InvoiceStatus;
+  returnedQty: number;
   createdAt: string;
   currencyCode: string;
 }
@@ -137,6 +138,7 @@ interface InvoiceItemRow {
   item_code: string | null;
   description: string | null;
   quantity: number;
+  returned_qty?: number;
   unit_price: number;
   line_total: number;
   weight_grams?: number | null;
@@ -290,6 +292,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
         total: number;
         paid: number;
         status: InvoiceStatus;
+        returned_qty?: number;
         created_at: string;
         currency_code?: string | null;
       }[] = await res.json();
@@ -302,6 +305,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
           paid: inv.paid,
           remaining: inv.total - inv.paid,
           status: inv.status,
+          returnedQty: Math.max(0, Math.floor(Number(inv.returned_qty || 0))),
           createdAt: inv.created_at,
           currencyCode: inv.currency_code || DEFAULT_CURRENCY_CODE,
         }))
@@ -426,6 +430,10 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
     selectedInvoice?.currency_code != null && selectedInvoice.currency_code !== ''
       ? selectedInvoice.currency_code
       : DEFAULT_CURRENCY_CODE;
+  const selectedHasReturns =
+    selectedInvoice != null
+      ? (selectedInvoice.items || []).some(it => Math.floor(Number(it.returned_qty || 0)) > 0)
+      : false;
 
   const printInvoiceReceipt = (inv: InvoiceDetail) => {
     openInvoiceReceiptWindow(
@@ -594,6 +602,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
                 invoices.map(inv => {
                   const isSelected = selectedInvoiceId === inv.id;
                   const st = (inv.status || 'Unpaid').toLowerCase() as 'paid' | 'unpaid' | 'partial';
+                  const hasReturns = inv.returnedQty > 0;
                   const createdLabel = dateFromServerUtc(inv.createdAt).toLocaleString(undefined, {
                     month: 'numeric',
                     day: 'numeric',
@@ -628,6 +637,14 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
                             ·
                           </span>
                           <span className={`pay-inv-status pay-inv-status--${st}`}>{inv.status}</span>
+                          {hasReturns ? (
+                            <>
+                              <span className="pay-inv-dot" aria-hidden="true">
+                                ·
+                              </span>
+                              <span className="pay-inv-status pay-inv-status--partial">Return</span>
+                            </>
+                          ) : null}
                         </div>
                         <div className="pay-inv-row-line2">
                           <span className="pay-inv-customer">{inv.customerName}</span>
@@ -848,6 +865,11 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
                         </div>
                       </div>
                     )}
+                    {selectedHasReturns ? (
+                      <div className="pay-inv-pay-hint" style={{ marginTop: 8 }}>
+                        This invoice includes returned item(s).
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="pay-inv-detail-footer">

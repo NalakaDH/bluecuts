@@ -8677,8 +8677,23 @@
   border-radius: 10px;
   border: 1px solid var(--border-card);
   background: var(--input-bg);
+  color: var(--fg);
+  caret-color: var(--fg);
   padding: 0.55rem 0.75rem;
   font-size: 0.95rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.selling2-order-discount-inputrow input::placeholder {
+  color: var(--fg-muted);
+  opacity: 0.85;
+}
+
+.selling2-order-discount-inputrow input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .selling2-muted {
@@ -14614,19 +14629,19 @@
 }
 
 .theme-dark .page-customers {
-  background: linear-gradient(135deg, #0f1523 0%, #1e293b 100%);
-  color: #ececf1;
-  --fg: #ececf1;
-  --fg-muted: #9b9bb0;
-  --border-card: rgba(255, 255, 255, 0.1);
-  --border-subtle: rgba(255, 255, 255, 0.1);
-  --bg-subtle: rgba(255, 255, 255, 0.04);
-  --bg-card: #1e293b;
-  --danger: #fb7185;
-  --success: #34d399;
-  --accent: #818cf8;
-  --accent-soft: rgba(129, 140, 248, 0.12);
-  --accent-hover: #a5b4fc;
+  background: var(--bg);
+  color: var(--fg);
+  --fg: #f0f0f8;
+  --fg-muted: #8b8b9a;
+  --border-card: #2a2a2e;
+  --border-subtle: #2a2a2e;
+  --bg-subtle: #252530;
+  --bg-card: #1c1c1e;
+  --danger: #e85a5a;
+  --success: #3d9e6a;
+  --accent: #4a8cd4;
+  --accent-soft: rgba(74, 140, 212, 0.18);
+  --accent-hover: #6ba3e0;
 }
 
 /* Two-column workspace: same flex pattern as Payments (invoice list + detail) */
@@ -23012,7 +23027,18 @@
 
 .theme-dark .rep2-page {
   color: #f1f5f9;
-  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  background: var(--bg);
+}
+
+/* Customers page dark cards: enforce shared dark card tone. */
+.theme-dark .page-customers .customers-toolbar-card,
+.theme-dark .page-customers .customers-list-card,
+.theme-dark .page-customers .pay-inv-list-card,
+.theme-dark .page-customers .pay-inv-detail-card,
+.theme-dark .page-customers .cust-ui-cust-card,
+.theme-dark .page-customers .customers-detail-stat {
+  background: var(--bg-card) !important;
+  border-color: var(--border-card) !important;
 }
 
 .rep2-shell {
@@ -23247,6 +23273,16 @@
 
 .theme-dark .rep2-metric-sub {
   color: #94a3b8;
+}
+
+/*
+ * KPI / summary tiles — hide the explanatory line under the main value (app-wide).
+ * Copy still exists in TSX for easy restore; delete this block to show subtitles again.
+ */
+.rep2-metric-sub,
+.payments-kpi-sub,
+.dashT-kpi-sum-desc {
+  display: none !important;
 }
 
 .rep2-metric-icon {
@@ -24813,4 +24849,824 @@
 .inv-rpt-badge--active {
   background: color-mix(in srgb, var(--success) 18%, var(--bg-card));
   color: var(--success);
+}
+
+
+/* ============================================================
+   PROFILE PAGE v2  —  prf2-*
+   Add these rules to App.css (they co-exist with the old
+   profile-* classes used by other parts of the codebase).
+   ============================================================ */
+
+/* ── Root ─────────────────────────────────────────────────── */
+.prf2-root {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 0 2.5rem;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+/* ── Hero identity card ────────────────────────────────────── */
+.prf2-hero {
+  position: relative;
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: 18px;
+  overflow: hidden;
+  margin-bottom: 1.5rem;
+  box-shadow: var(--shadow-card);
+}
+
+.prf2-hero-rainbow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #2563eb, #7c3aed, #db2777, #d97706, #0d9488);
+}
+
+.prf2-hero-inner {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 1.5rem 1.75rem 1.4rem;
+}
+
+/* Avatar */
+.prf2-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.prf2-avatar--lg {
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
+  font-size: 1.65rem;
+  box-shadow: 0 4px 16px rgba(0,0,0,.18);
+}
+.prf2-avatar--md {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  font-size: 1.1rem;
+}
+.prf2-avatar--sm {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  font-size: 0.75rem;
+}
+
+.prf2-hero-name {
+  margin: 0 0 0.4rem;
+  font-family: 'Josefin Sans', sans-serif;
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+  line-height: 1.1;
+}
+
+.prf2-hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.prf2-role-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.prf2-role-badge--owner {
+  background: var(--section-pricing-bg);
+  color: var(--section-pricing);
+  border: 1px solid color-mix(in srgb, var(--section-pricing) 22%, transparent);
+}
+.prf2-role-badge--staff {
+  background: var(--section-details-bg);
+  color: var(--section-details);
+  border: 1px solid color-mix(in srgb, var(--section-details) 22%, transparent);
+}
+
+.prf2-hero-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+
+.prf2-hero-access {
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border-subtle);
+}
+.prf2-hero-access-label {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+  margin-bottom: 0.45rem;
+}
+.prf2-hero-access-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+/* ── Section grid ─────────────────────────────────────────── */
+.prf2-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+@media (max-width: 860px) {
+  .prf2-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Section card ─────────────────────────────────────────── */
+.prf2-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: 16px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.prf2-card--wide { grid-column: 1 / -1; }
+
+.prf2-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+  padding: 1.2rem 1.4rem 0.9rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.prf2-card-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--icon-color, var(--accent));
+  background: color-mix(in srgb, var(--icon-color, var(--accent)) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--icon-color, var(--accent)) 22%, transparent);
+}
+
+.prf2-card-head-text { min-width: 0; }
+
+.prf2-kicker {
+  display: inline-block;
+  font-size: 0.67rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 0.2rem;
+}
+
+.prf2-card-title {
+  margin: 0 0 0.3rem;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--fg);
+  line-height: 1.25;
+}
+
+.prf2-card-desc {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.55;
+  color: var(--fg-muted);
+}
+.theme-light .prf2-card-desc { color: #64748b; }
+
+.prf2-link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+
+.prf2-card-body { padding: 1.2rem 1.4rem 1.4rem; }
+
+/* ── Form elements ────────────────────────────────────────── */
+.prf2-form { display: flex; flex-direction: column; gap: 0.9rem; }
+
+.prf2-field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+@media (max-width: 520px) { .prf2-field-row { grid-template-columns: 1fr; } }
+
+.prf2-field { display: flex; flex-direction: column; gap: 0.35rem; }
+
+.prf2-field-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.theme-light .prf2-field-label { color: #475569; }
+
+.prf2-required { color: var(--danger); font-weight: 700; }
+.prf2-optional {
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--fg-muted) 10%, transparent);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+}
+
+.prf2-input {
+  border: 1.5px solid var(--border-card);
+  border-radius: 10px;
+  background: var(--input-bg);
+  padding: 0.6rem 0.85rem;
+  font-size: 0.9rem;
+  color: var(--fg);
+  font-family: inherit;
+  width: 100%;
+  box-sizing: border-box;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+.prf2-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.prf2-input::placeholder { color: var(--fg-muted); opacity: 0.75; }
+
+.prf2-submit-btn { align-self: flex-start; margin-top: 0.25rem; }
+
+/* Messages */
+.prf2-msg {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.6rem 0.85rem;
+  border-radius: 9px;
+}
+.prf2-msg--error {
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-card));
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+}
+.prf2-msg--success {
+  background: color-mix(in srgb, var(--success) 10%, var(--bg-card));
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 28%, transparent);
+}
+
+/* Loading */
+.prf2-loading {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--fg-muted);
+  padding: 0.35rem 0;
+}
+
+/* ── Security card ────────────────────────────────────────── */
+/* (uses shared prf2-form / prf2-input) */
+
+/* ── Logout card ──────────────────────────────────────────── */
+.prf2-card--logout { border-color: color-mix(in srgb, #e11d48 18%, var(--border-card)); }
+
+.prf2-logout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 1.2rem;
+  border-radius: 11px;
+  border: 1.5px solid color-mix(in srgb, #e11d48 40%, var(--border-card));
+  background: color-mix(in srgb, #e11d48 8%, var(--bg-card));
+  color: #e11d48;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+.prf2-logout-btn:hover {
+  background: color-mix(in srgb, #e11d48 14%, var(--bg-card));
+  border-color: #e11d48;
+}
+.prf2-logout-btn:active { transform: scale(0.98); }
+
+/* ── Team card ────────────────────────────────────────────── */
+.prf2-team-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+
+.prf2-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 1.1rem;
+  border-radius: 10px;
+  border: none;
+  background: var(--sidebar-bg, var(--accent));
+  color: #fff;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 3px 10px rgba(0,0,0,.15);
+  transition: transform 0.12s, filter 0.15s;
+}
+.prf2-add-btn:hover { filter: brightness(0.95); transform: translateY(-1px); }
+
+.prf2-team-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 2rem 1rem;
+  color: var(--fg-muted);
+  text-align: center;
+  font-size: 0.9rem;
+}
+.prf2-team-empty-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, #db2777 12%, transparent);
+  color: #db2777;
+}
+
+.prf2-team-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+}
+
+.prf2-team-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+.prf2-team-table th {
+  padding: 0.6rem 0.9rem;
+  text-align: left;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--bg) 80%, var(--bg-card));
+  border-bottom: 1px solid var(--border-subtle);
+}
+.prf2-team-table td {
+  padding: 0.75rem 0.9rem;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--fg);
+  vertical-align: middle;
+}
+.prf2-team-table tbody tr:last-child td { border-bottom: none; }
+.prf2-team-table tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+
+.prf2-team-member {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+.prf2-team-username { font-weight: 600; color: var(--fg); }
+
+.prf2-team-pages { max-width: 340px; }
+.prf2-pages-wrap { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+
+.prf2-all-pages { color: var(--success); font-weight: 600; font-size: 0.85rem; }
+
+.prf2-edit-btn {
+  padding: 0.35rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-card);
+  background: var(--bg-card);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s;
+}
+.prf2-edit-btn:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+/* ── FX rates card ────────────────────────────────────────── */
+.prf2-fx-form { display: flex; flex-direction: column; gap: 1rem; }
+
+.prf2-fx-grid {
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.prf2-fx-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 0.5rem 1rem;
+  align-items: center;
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  transition: background 0.12s;
+}
+.prf2-fx-row:last-child { border-bottom: none; }
+.prf2-fx-row:hover { background: color-mix(in srgb, var(--fg) 2%, var(--bg-card)); }
+.prf2-fx-row--ref { background: color-mix(in srgb, var(--fg) 2%, var(--bg-card)); }
+.prf2-fx-row--thb { background: color-mix(in srgb, #d97706 5%, var(--bg-card)); }
+
+.prf2-fx-currency { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
+
+.prf2-fx-code {
+  font-size: 0.82rem;
+  font-weight: 800;
+  font-family: ui-monospace, monospace;
+  color: var(--fg);
+  min-width: 2.5rem;
+}
+
+.prf2-fx-name {
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prf2-fx-ref-eq {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+.prf2-fx-ref-note {
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+  margin-left: 0.5rem;
+}
+
+.prf2-fx-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: nowrap;
+}
+.prf2-fx-eq-label {
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.prf2-fx-input {
+  flex: 1;
+  min-width: 4.5rem;
+  max-width: 8rem;
+  padding: 0.45rem 0.6rem;
+  border: 1.5px solid var(--border-card);
+  border-radius: 8px;
+  background: var(--input-bg);
+  color: var(--fg);
+  font-size: 0.88rem;
+  font-family: ui-monospace, monospace;
+  font-weight: 600;
+  outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.prf2-fx-input:focus {
+  border-color: #d97706;
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.15);
+}
+.prf2-fx-input--disabled { opacity: 0.5; cursor: not-allowed; }
+.prf2-fx-input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.prf2-fx-suffix {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+
+.prf2-fx-value-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
+
+.prf2-fx-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+.prf2-fx-actions .primary-button { margin-left: auto; }
+
+/* ── Backup card ──────────────────────────────────────────── */
+.prf2-backup-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.prf2-backup-download,
+.prf2-backup-restore-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--fg) 2.5%, var(--bg-card));
+  border: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+
+.prf2-backup-restore {
+  border-radius: 12px;
+  border: 1.5px dashed color-mix(in srgb, var(--danger) 35%, var(--border-card));
+  background: color-mix(in srgb, var(--danger) 4%, var(--bg-card));
+  padding: 0.2rem;
+}
+
+.prf2-backup-info, .prf2-backup-restore-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.prf2-backup-icon-wrap {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, #0d9488 12%, transparent);
+  color: #0d9488;
+  flex-shrink: 0;
+}
+.prf2-backup-icon-wrap--danger {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+
+.prf2-backup-action-title {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--fg);
+}
+.prf2-backup-action-desc {
+  margin: 0.15rem 0 0;
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+}
+.prf2-backup-action-desc--danger { color: var(--danger); }
+
+.prf2-backup-restore-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.prf2-file-input { font-size: 0.82rem; color: var(--fg); max-width: 180px; }
+.prf2-file-label { display: block; }
+
+.prf2-restore-btn {
+  padding: 0.5rem 1rem;
+  border-radius: 9px;
+  border: 1.5px solid color-mix(in srgb, var(--danger) 45%, var(--border-card));
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-card));
+  color: var(--danger);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s;
+}
+.prf2-restore-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-card));
+  border-color: var(--danger);
+}
+.prf2-restore-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Cloud sync card ──────────────────────────────────────── */
+.prf2-cloud-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  background: color-mix(in srgb, #7c3aed 6%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, #7c3aed 18%, var(--border-card));
+}
+
+.prf2-cloud-status {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+
+.prf2-cloud-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #7c3aed;
+  box-shadow: 0 0 6px rgba(124, 58, 237, 0.5);
+  flex-shrink: 0;
+  animation: prf2-pulse 2s ease-in-out infinite;
+}
+@keyframes prf2-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.prf2-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: prf2-spin 0.7s linear infinite;
+  vertical-align: middle;
+  margin-right: 0.25rem;
+}
+@keyframes prf2-spin { to { transform: rotate(360deg); } }
+
+/* ── Page access checkboxes ───────────────────────────────── */
+.prf2-access-grid { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.prf2-access-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--fg-muted);
+  margin: 0;
+}
+.theme-light .prf2-access-label { color: #475569; }
+
+.prf2-access-checks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 0.45rem 0.85rem;
+  padding: 0.75rem;
+  background: color-mix(in srgb, var(--fg) 2.5%, var(--bg-card));
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+}
+
+.prf2-check-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-size: 0.86rem;
+  color: var(--fg);
+  padding: 0.3rem 0;
+  transition: color 0.12s;
+}
+.prf2-check-item--disabled { opacity: 0.55; cursor: not-allowed; }
+.prf2-check-item--on .prf2-check-label { font-weight: 600; }
+
+.prf2-check-input { position: absolute; opacity: 0; width: 0; height: 0; }
+
+.prf2-check-mark {
+  width: 17px;
+  height: 17px;
+  border-radius: 5px;
+  border: 1.5px solid var(--border-card);
+  background: var(--input-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.12s, border-color 0.12s;
+}
+.prf2-check-item--on .prf2-check-mark {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.prf2-check-label { line-height: 1.35; }
+
+.prf2-access-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+.theme-light .prf2-access-hint { color: #64748b; }
+
+/* ── Modal tweaks ─────────────────────────────────────────── */
+.prf2-modal .customers-modal-header { padding-bottom: 0.85rem; }
+.prf2-modal-header { gap: 0.75rem; }
+
+.prf2-modal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  flex: 1;
+}
+.prf2-modal-title-row h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.prf2-modal-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.prf2-modal-icon--pink {
+  background: color-mix(in srgb, #db2777 12%, transparent);
+  color: #db2777;
+}
+
+.prf2-modal-body { gap: 0.95rem; }
+
+.prf2-modal-field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+@media (max-width: 520px) { .prf2-modal-field-row { grid-template-columns: 1fr; } }
+
+.prf2-modal-body .prf2-input {
+  border: 1.5px solid var(--border-card);
+}
+
+/* Dark mode unification: use Dashboard shell + card tones on all pages. */
+.theme-dark .page-selling,
+.theme-dark .page-payments,
+.theme-dark .page-customers,
+.theme-dark .page-memo,
+.theme-dark .page-returns,
+.theme-dark .page-reports,
+.theme-dark .page-inventory-report,
+.theme-dark .page-stock-count,
+.theme-dark .page-check-inventory,
+.theme-dark .page-update-inventory,
+.theme-dark .page-profile {
+  background: var(--bg) !important;
+}
+
+.theme-dark .selling2-card,
+.theme-dark .memo-card,
+.theme-dark .memo-create-card,
+.theme-dark .ret-ui-left-card,
+.theme-dark .ret-ui-right-card,
+.theme-dark .pay-inv-master-card,
+.theme-dark .pay-inv-detail-card,
+.theme-dark .rep2-card,
+.theme-dark .prf2-card,
+.theme-dark .prf2-hero,
+.theme-dark .inv-rpt-table-wrap,
+.theme-dark .ci2-card,
+.theme-dark .upd-inv-filters-card,
+.theme-dark .upd-inv-list-card-v2,
+.theme-dark .upd-inv-grid-card-v2 {
+  background: var(--bg-card) !important;
+  border-color: var(--border-card) !important;
 }

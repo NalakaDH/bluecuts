@@ -484,10 +484,15 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
   }, [search, fetchAvailable]);
 
   const fetchCustomers = useCallback(async () => {
+    const q = customerSearch.trim();
+    if (!q) {
+      setCustomers([]);
+      return;
+    }
     try {
       const params = new URLSearchParams();
       params.set('limit', '250');
-      if (customerSearch.trim()) params.set('search', customerSearch.trim());
+      params.set('search', q);
       const res = await fetch(apiUrl(`/api/customers?${params.toString()}`), {
         headers: { Authorization: `Bearer ${token}` },
       });

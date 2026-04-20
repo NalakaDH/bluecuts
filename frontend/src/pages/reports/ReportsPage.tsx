@@ -3,7 +3,7 @@ import { useAlertDialog } from '../../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../../api';
 import { isCloudFirestoreMode } from '../../cloud/cloudMode';
 import { readPublicDoc } from '../../cloud/firestoreDocs';
-import { DEFAULT_CURRENCY_CODE } from '../../lib/currencies';
+import { DEFAULT_CURRENCY_CODE, formatMoneyAmount } from '../../lib/currencies';
 import {
   formatUsdOnlyFromAny,
   formatUsdOnlyFromThb,
@@ -881,8 +881,8 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
               />
               <MetricCard
                 title="Inventory Value"
-                value={formatUsdOnlyFromThb(inventory?.inventory_value || 0, thbPerUnit)}
-                subtitle={`${inventory?.remaining_pcs || 0} pieces · USD (Profile rates)`}
+                value={formatMoneyAmount(inventory?.inventory_value || 0, 'USD')}
+                subtitle={`${inventory?.remaining_pcs || 0} pieces · USD list value`}
                 variant="amber"
               />
               <MetricCard
@@ -1155,7 +1155,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                                     <td className="rep2-cell-name">{r.status}</td>
                                     <td className="rep2-td-right">{r.pcs_remaining}</td>
                                     <td className="rep2-td-right rep2-td-money">
-                                      <RepUsdCell thb={r.value} thbPerUnit={thbPerUnit} />
+                                      {formatMoneyAmount(r.value, 'USD')}
                                     </td>
                                   </tr>
                                 ))

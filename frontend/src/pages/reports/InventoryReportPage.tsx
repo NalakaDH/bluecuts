@@ -36,21 +36,26 @@ interface ReportItem {
   shrinkage: number;
   restocked: number;
   remaining: number;
+  memo_out_qty?: number;
   unit_price: number | null;
   selling_currency: string;
   revenue_thb: number;
   revenue_usd: number | null;
-  stock_value_thb: number;
+  stock_value?: number;
   stock_value_usd: number | null;
+  stock_value_thb?: number;
   status: string;
 }
 
 interface Summary {
   totalSold: number;
+  /** Units returned on invoices this calendar month (same window as Returned column). */
+  totalReturned?: number;
   totalRevenueThb: number;
   totalRevenueUsd: number | null;
-  stockValueThb: number;
+  stockValue?: number;
   stockValueUsd: number | null;
+  stockValueThb?: number;
   noMovement: number;
   totalShrinkage: number;
   outOfStock: number;
@@ -72,6 +77,7 @@ type SortKey =
   | 'shrinkage'
   | 'restocked'
   | 'remaining'
+  | 'memo_out'
   | 'price'
   | 'revenue'
   | 'stock_value';
@@ -117,6 +123,9 @@ function displayTitle(row: ReportItem): string {
 function statusBadge(item: ReportItem): { label: string; className: string } {
   if (item.shrinkage > 0) return { label: 'Shrinkage', className: 'inv-rpt-badge inv-rpt-badge--shrink' };
   if (item.remaining === 0) return { label: 'Out of stock', className: 'inv-rpt-badge inv-rpt-badge--out' };
+  if (item.sold === 0 && (item.returned ?? 0) > 0) {
+    return { label: 'Returns', className: 'inv-rpt-badge inv-rpt-badge--low' };
+  }
   if (item.sold === 0) return { label: 'No sales', className: 'inv-rpt-badge inv-rpt-badge--idle' };
   if (item.remaining <= 3) return { label: 'Low stock', className: 'inv-rpt-badge inv-rpt-badge--low' };
   return { label: 'Active', className: 'inv-rpt-badge inv-rpt-badge--active' };
@@ -173,6 +182,7 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
   const [sortKey, setSortKey] = useState<SortKey>('sold');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [category, setCategory] = useState('All');
+  const [itemCodeFilter, setItemCodeFilter] = useState<'all' | 'contains_m'>('all');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -232,7 +242,7 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
     () => ({
       all: items.length,
       top: items.filter((i) => i.sold > 0).length,
-      none: items.filter((i) => i.sold === 0).length,
+      none: items.filter((i) => i.sold === 0 && i.returned === 0).length,
       low: items.filter((i) => i.remaining <= 3 && i.remaining > 0).length,
       shrinkage: items.filter((i) => i.shrinkage > 0).length,
     }),
@@ -251,13 +261,16 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
       });
     }
     if (category !== 'All') data = data.filter((i) => i.category === category);
+    if (itemCodeFilter === 'contains_m') {
+      data = data.filter((i) => (i.item_code ?? '').toUpperCase().includes('M'));
+    }
 
     if (activeTab === 'top') {
       data = data
         .filter((i) => i.sold > 0)
         .sort((a, b) => b.sold - a.sold)
         .slice(0, 10);
-    } else if (activeTab === 'none') data = data.filter((i) => i.sold === 0);
+    } else if (activeTab === 'none') data = data.filter((i) => i.sold === 0 && i.returned === 0);
     else if (activeTab === 'low') data = data.filter((i) => i.remaining <= 3 && i.remaining > 0);
     else if (activeTab === 'shrinkage') data = data.filter((i) => i.shrinkage > 0);
 
@@ -279,6 +292,8 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
           return row.restocked;
         case 'remaining':
           return row.remaining;
+        case 'memo_out':
+          return row.memo_out_qty ?? 0;
         case 'price':
           return row.unit_price ?? 0;
         case 'revenue':
@@ -302,7 +317,28 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
     });
 
     return data;
-  }, [items, search, category, activeTab, sortKey, sortDir]);
+  }, [items, search, category, itemCodeFilter, activeTab, sortKey, sortDir]);
+
+  /** KPIs from the API are month-wide for all inventory. The table can be narrowed (tabs, search, category, item-code filter). */
+  const isNarrowedView = useMemo(() => {
+    if (items.length === 0) return false;
+    if (activeTab !== 'all') return true;
+    return filtered.length !== items.length;
+  }, [items.length, activeTab, filtered.length]);
+
+  const filteredKpis = useMemo(() => {
+    const totalSold = filtered.reduce((s, i) => s + i.sold, 0);
+    const thbPerUsd = fx?.thb_per_usd;
+    const revenueUsd =
+      fx?.usd_available && thbPerUsd != null && thbPerUsd > 0
+        ? Math.round(filtered.reduce((s, i) => s + (Number(i.revenue_usd) || 0), 0) * 100) / 100
+        : null;
+    const stockUsd =
+      Math.round(
+        filtered.reduce((s, i) => s + (Number(i.stock_value_usd ?? i.stock_value ?? i.stock_value_thb) || 0), 0) * 100
+      ) / 100;
+    return { totalSold, revenueUsd, stockUsd };
+  }, [filtered, fx]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -327,6 +363,7 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
     const subtitleBits = [
       ym ? `Period: ${ym}` : null,
       category && category !== 'All' ? `Category: ${category}` : null,
+      itemCodeFilter === 'contains_m' ? 'Item code: contains "M"' : null,
       search.trim() ? `Search: "${search.trim()}"` : null,
       `Segment: ${
         tabs.find(t => t.key === activeTab)?.label ?? activeTab
@@ -353,11 +390,12 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
       'Item code',
       'Category',
       'Opening',
-      'Sold',
+      'Net sold',
       'Returned',
       'Shrinkage',
       'Restocked',
       'Remaining',
+      'On memo',
       'Unit price',
       'Revenue (USD)',
       'Stock (USD)',
@@ -367,7 +405,8 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
     const body = rows.map(item => {
       const badge = statusBadge(item);
       const unit = item.unit_price != null ? formatMoneyAmount(item.unit_price, item.selling_currency) : '—';
-      const revUsd = item.revenue_usd != null && item.revenue_usd > 0 ? String(item.revenue_usd) : '—';
+      const revUsd =
+        item.revenue_usd != null && Number.isFinite(item.revenue_usd) ? String(item.revenue_usd) : '—';
       const stockUsd = item.stock_value_usd != null ? String(item.stock_value_usd) : '—';
       return [
         item.item_code?.trim() || '—',
@@ -378,6 +417,7 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
         item.shrinkage > 0 ? `-${item.shrinkage}` : '—',
         item.restocked > 0 ? `+${item.restocked}` : '—',
         String(item.remaining),
+        String(item.memo_out_qty ?? 0),
         unit,
         revUsd,
         stockUsd,
@@ -412,14 +452,15 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
         8: { halign: 'right' },
         9: { halign: 'right' },
         10: { halign: 'right' },
+        11: { halign: 'right' },
       },
       didParseCell: (data) => {
         if (data.section !== 'body') return;
         const raw = data.row.raw as unknown;
         const status =
-          Array.isArray(raw) ? String(raw[11] ?? '') : '';
+          Array.isArray(raw) ? String(raw[12] ?? '') : '';
         // Status badge-like tint (subtle)
-        if (data.column.index === 11) {
+        if (data.column.index === 12) {
           if (status === 'Shrinkage') data.cell.styles.textColor = [183, 28, 28];
           else if (status === 'Out of stock') data.cell.styles.textColor = [220, 38, 38];
           else if (status === 'Low stock') data.cell.styles.textColor = [217, 119, 6];
@@ -436,11 +477,12 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
     { key: 'name', label: 'Item code', w: '22%' },
     { key: 'category', label: 'Category', w: '10%' },
     { key: 'opening', label: 'Opening', w: '8%' },
-    { key: 'sold', label: 'Sold', w: '7%' },
+    { key: 'sold', label: 'Net sold', w: '8%' },
     { key: 'returned', label: 'Returned', w: '8%' },
     { key: 'shrinkage', label: 'Shrinkage', w: '9%' },
     { key: 'restocked', label: 'Restocked', w: '9%' },
     { key: 'remaining', label: 'Remaining', w: '9%' },
+    { key: 'memo_out', label: 'On memo', w: '8%' },
     { key: 'price', label: 'Unit price', w: '8%' },
     { key: 'revenue', label: 'Revenue (USD)', w: '9%' },
     { key: 'stock_value', label: 'Stock (USD)', w: '9%' },
@@ -449,7 +491,7 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
   const tabs: { key: ActiveTab; label: string; count: number }[] = [
     { key: 'all', label: 'All items', count: tabCounts.all },
     { key: 'top', label: 'Top sellers', count: tabCounts.top },
-    { key: 'none', label: 'No movement', count: tabCounts.none },
+    { key: 'none', label: 'No invoice activity', count: tabCounts.none },
     { key: 'low', label: 'Low stock', count: tabCounts.low },
     { key: 'shrinkage', label: 'Shrinkage', count: tabCounts.shrinkage },
   ];
@@ -463,45 +505,74 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
 
   const sum = summary;
 
+  const kpiCards = useMemo(() => {
+    if (!sum) return [];
+    const narrowed = isNarrowedView;
+    const soldVal = narrowed ? String(filteredKpis.totalSold) : String(sum.totalSold);
+    const retAll = sum.totalReturned ?? 0;
+    const soldSub = narrowed
+      ? `Shown in table · Month (all items): ${sum.totalSold} net · returns ${retAll} pcs`
+      : `Net units this month (sales minus returns in the same month) · returns ${retAll} pcs`;
+
+    const revVal = narrowed ? formatUsd(filteredKpis.revenueUsd) : formatUsd(sum.totalRevenueUsd);
+    const revSub = narrowed
+      ? `Shown in table · Month (all items): ${formatUsd(sum.totalRevenueUsd)} · matches column sum`
+      : 'Sum of row revenue (same rounding as column) · this calendar month only, THB→USD per line';
+
+    const stockVal = narrowed ? formatUsd(filteredKpis.stockUsd) : formatUsd(sum.stockValueUsd);
+    const stockSub = narrowed
+      ? `Shown in table · Month (all items): ${formatUsd(sum.stockValueUsd)}`
+      : 'Remaining × USD list price';
+
+    return [
+      { label: 'Net sold', value: soldVal, sub: soldSub, variant: 'blue' as const, icon: <IconTrend /> },
+      {
+        label: 'Revenue',
+        value: revVal,
+        sub: revSub,
+        variant: 'emerald' as const,
+        icon: <IconUpRight />,
+      },
+      {
+        label: 'No invoice activity',
+        value: String(sum.noMovement),
+        sub: 'no gross sales and no returns this month',
+        tone: 'warn' as const,
+        variant: 'amber' as const,
+      },
+      {
+        label: 'Stock value',
+        value: stockVal,
+        sub: stockSub,
+        variant: 'amber' as const,
+      },
+      {
+        label: 'Shrinkage',
+        value: String(sum.totalShrinkage),
+        sub: 'units lost/missing',
+        tone: 'danger' as const,
+        variant: 'red' as const,
+        icon: <IconAlert />,
+      },
+      { label: 'Out of stock', value: String(sum.outOfStock), sub: 'items depleted', variant: 'slate' as const },
+    ] as {
+      label: string;
+      value: string;
+      sub: string;
+      tone?: 'warn' | 'danger';
+      variant: 'blue' | 'emerald' | 'red' | 'amber' | 'slate';
+      icon?: React.ReactNode;
+    }[];
+  }, [sum, isNarrowedView, filteredKpis]);
+
   return (
     <div className="page page-inventory-report inv-rpt-root">
       {sum && (
-        <section className="rep2-kpi-grid" aria-label="Month summary">
-          {(
-            [
-              { label: 'Total sold', value: String(sum.totalSold), sub: 'units this month', variant: 'blue' as const, icon: <IconTrend /> },
-              {
-                label: 'Revenue',
-                value: formatUsd(sum.totalRevenueUsd),
-                sub: 'Month invoice sales → THB (line share × FX) → USD',
-                variant: 'emerald' as const,
-                icon: <IconUpRight />,
-              },
-              { label: 'No movement', value: String(sum.noMovement), sub: 'items unsold', tone: 'warn' as const, variant: 'amber' as const },
-              {
-                label: 'Stock value',
-                value: formatUsd(sum.stockValueUsd),
-                sub: 'Remaining × list price × FX → THB → USD',
-                variant: 'amber' as const,
-              },
-              {
-                label: 'Shrinkage',
-                value: String(sum.totalShrinkage),
-                sub: 'units lost/missing',
-                tone: 'danger' as const,
-                variant: 'red' as const,
-                icon: <IconAlert />,
-              },
-              { label: 'Out of stock', value: String(sum.outOfStock), sub: 'items depleted', variant: 'slate' as const },
-            ] as {
-              label: string;
-              value: string;
-              sub: string;
-              tone?: 'warn' | 'danger';
-              variant: 'blue' | 'emerald' | 'red' | 'amber' | 'slate';
-              icon?: React.ReactNode;
-            }[]
-          ).map((c, i) => (
+        <section
+          className="rep2-kpi-grid"
+          aria-label={isNarrowedView ? 'Month summary (totals match visible table where noted)' : 'Month summary'}
+        >
+          {kpiCards.map((c, i) => (
             <div
               key={i}
               className={`rep2-metric rep2-m--${c.variant}${c.tone === 'danger' ? ' rep2-metric--alert' : ''}`}
@@ -558,6 +629,15 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
                   {c}
                 </option>
               ))}
+            </select>
+            <select
+              className="inv-rpt-select"
+              value={itemCodeFilter}
+              onChange={(e) => setItemCodeFilter(e.target.value as 'all' | 'contains_m')}
+              aria-label="Item code filter"
+            >
+              <option value="all">All item codes</option>
+              <option value="contains_m">Item code contains "M"</option>
             </select>
           </div>
           <div className="inv-rpt-toolbar-actions">
@@ -623,7 +703,7 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className="inv-rpt-empty">
+                  <td colSpan={13} className="inv-rpt-empty">
                     No items match this filter.
                   </td>
                 </tr>
@@ -690,14 +770,25 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
                           {item.remaining}
                         </span>
                       </td>
+                      <td className="inv-rpt-td inv-rpt-td--num">
+                        <span className={item.memo_out_qty && item.memo_out_qty > 0 ? 'inv-rpt-num-warn' : 'inv-rpt-num-dim'}>
+                          {item.memo_out_qty && item.memo_out_qty > 0 ? item.memo_out_qty : '—'}
+                        </span>
+                      </td>
                       <td className="inv-rpt-td inv-rpt-td--num inv-rpt-price">
                         {item.unit_price != null
                           ? formatMoneyAmount(item.unit_price, item.selling_currency)
                           : '—'}
                       </td>
                       <td className="inv-rpt-td inv-rpt-td--num">
-                        <span className={revUsd != null && revUsd > 0 ? 'inv-rpt-revenue' : 'inv-rpt-num-muted'}>
-                          {revUsd == null || revUsd <= 0 ? '—' : formatUsd(revUsd)}
+                        <span
+                          className={
+                            revUsd != null && Number.isFinite(revUsd) && revUsd !== 0
+                              ? 'inv-rpt-revenue'
+                              : 'inv-rpt-num-muted'
+                          }
+                        >
+                          {revUsd == null || !Number.isFinite(revUsd) ? '—' : formatUsd(revUsd)}
                         </span>
                       </td>
                       <td className="inv-rpt-td inv-rpt-td--num">

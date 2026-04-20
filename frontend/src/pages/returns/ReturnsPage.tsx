@@ -15,6 +15,8 @@ interface ReturnInvoiceRow {
   paid: number;
   status: InvoiceStatus;
   currency_code?: string | null;
+  returnable_qty?: number;
+  returned_qty?: number;
 }
 
 interface InvoiceItemRow {
@@ -216,7 +218,13 @@ export const ReturnsPage: React.FC<ReturnsPageProps> = ({ token }) => {
 
   const kpiEligible = returnStats?.return_eligible_count ?? 0;
   const kpiPaid = returnStats?.paid_count ?? 0;
-  const kpiLineItems = detail?.items.length ?? null;
+  const kpiLineItems = detail
+    ? detail.items.filter(it => {
+        const sold = Math.floor(Number(it.quantity) || 0);
+        const already = Math.floor(Number(it.returned_qty) || 0);
+        return Math.max(0, sold - already) > 0;
+      }).length
+    : null;
   const kpiStock =
     selectedItem != null
       ? typeof selectedItem.pieces_remaining === 'number'
@@ -231,9 +239,11 @@ export const ReturnsPage: React.FC<ReturnsPageProps> = ({ token }) => {
       const listParams = new URLSearchParams();
       if (invoiceSearch.trim()) listParams.set('search', invoiceSearch.trim());
       listParams.set('limit', '500');
+      listParams.set('returnable_only', '1');
 
       const statsParams = new URLSearchParams();
       if (invoiceSearch.trim()) statsParams.set('search', invoiceSearch.trim());
+      statsParams.set('returnable_only', '1');
 
       const [res, statsRes] = await Promise.all([
         fetch(apiUrl(`/api/invoices?${listParams.toString()}`), {
@@ -262,6 +272,8 @@ export const ReturnsPage: React.FC<ReturnsPageProps> = ({ token }) => {
           paid: row.paid,
           status: row.status as InvoiceStatus,
           currency_code: row.currency_code,
+          returnable_qty: Number(row.returnable_qty) || 0,
+          returned_qty: Number(row.returned_qty) || 0,
         }))
       );
     } catch (err: unknown) {
@@ -526,7 +538,7 @@ export const ReturnsPage: React.FC<ReturnsPageProps> = ({ token }) => {
                 </span>
                 Select Invoice
               </div>
-              <p className="ret-ui-card-sub">Search and select an invoice to return items from</p>
+              <p className="ret-ui-card-sub">Only invoices with returnable items are listed</p>
               <div className="ret-ui-card-search">
                 <IconSearchSm />
                 <input
@@ -567,7 +579,7 @@ export const ReturnsPage: React.FC<ReturnsPageProps> = ({ token }) => {
                   ) : invoices.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="ret-ui-panel-msg">
-                        No invoices found.
+                        No invoices with returnable items found.
                       </td>
                     </tr>
                   ) : (
@@ -589,6 +601,11 @@ export const ReturnsPage: React.FC<ReturnsPageProps> = ({ token }) => {
                               <span className="ret-ui-status-dot" aria-hidden="true" />
                               {inv.status}
                             </span>
+                            {(inv.returned_qty || 0) > 0 ? (
+                              <div className="ret-ui-col-label" style={{ marginTop: 4 }}>
+                                Returned: {inv.returned_qty}
+                              </div>
+                            ) : null}
                           </td>
                           <td>
                             <button
@@ -627,19 +644,40 @@ export const ReturnsPage: React.FC<ReturnsPageProps> = ({ token }) => {
             {!detailLoading && detailError && !detail && <div className="ret-ui-panel-msg--err">{detailError}</div>}
             {!detailLoading && detail && (
               <div className="ret-ui-summary-stack">
+                {(() => {
+                  const allReturned = detail.items.every(it => {
+                    const sold = Math.floor(Number(it.quantity) || 0);
+                    const already = Math.floor(Number(it.returned_qty) || 0);
+                    return Math.max(0, sold - already) <= 0;
+                  });
+                  return (
                 <div className="ret-ui-inv-meta">
                   <div className="ret-ui-inv-meta-id">{detail.invoice_no}</div>
                   <div className="ret-ui-inv-meta-sub">
                     {detail.customer_name || 'Walk-in'} · {dateFromServerUtc(detail.created_at).toLocaleString()}
                   </div>
+                  {allReturned ? (
+                    <div className="ret-ui-status-badge ret-ui-badge-paid" style={{ marginTop: 8, width: 'fit-content' }}>
+                      <span className="ret-ui-status-dot" aria-hidden="true" />
+                      Fully Returned
+                    </div>
+                  ) : null}
                   <div className="ret-ui-inv-meta-total">
                     {formatMoneyAmount(detail.total, detail.currency_code || DEFAULT_CURRENCY_CODE)}
                   </div>
                 </div>
+                  );
+                })()}
                 {detailError ? <div className="ret-ui-panel-msg--err">{detailError}</div> : null}
                 <div className="ret-ui-return-items-scroll">
                   <div className="ret-ui-section-label">Items to Return</div>
-                  {detail.items.map(it => {
+                  {detail.items
+                    .filter(it => {
+                      const sold = Math.floor(Number(it.quantity) || 0);
+                      const already = Math.floor(Number(it.returned_qty) || 0);
+                      return Math.max(0, sold - already) > 0;
+                    })
+                    .map(it => {
                     const sold = Math.floor(Number(it.quantity) || 0);
                     const already = Math.floor(Number(it.returned_qty) || 0);
                     const canReturn = Math.max(0, sold - already);
@@ -683,6 +721,13 @@ export const ReturnsPage: React.FC<ReturnsPageProps> = ({ token }) => {
                       </div>
                     );
                   })}
+                  {detail.items.every(it => {
+                    const sold = Math.floor(Number(it.quantity) || 0);
+                    const already = Math.floor(Number(it.returned_qty) || 0);
+                    return Math.max(0, sold - already) <= 0;
+                  }) ? (
+                    <div className="ret-ui-panel-msg">All items on this invoice are already fully returned.</div>
+                  ) : null}
                 </div>
                 <div className="ret-ui-right-footer">
                   <button type="button" className="ret-ui-btn-return" onClick={submitReturn} disabled={returnSaving}>
