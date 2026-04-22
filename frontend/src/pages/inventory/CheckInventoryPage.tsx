@@ -76,6 +76,7 @@ type EnrichedItem = InventoryItem & {
 };
 
 const PAGE_SIZE = 60;
+const QUICK_ADD_STORAGE_KEY = 'bluecuts-quick-add-item';
 
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: '', label: 'All statuses' },
@@ -815,11 +816,39 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, r
               )}
 
               <div className="ci2-panel-quick-actions" role="group" aria-label="Quick actions">
-                <button type="button" className="ci2-panel-action" onClick={() => onNavigate?.('memo')}>
+                <button
+                  type="button"
+                  className="ci2-panel-action"
+                  onClick={() => {
+                    try {
+                      sessionStorage.setItem(
+                        QUICK_ADD_STORAGE_KEY,
+                        JSON.stringify({ inventory_item_id: selectedItem.id })
+                      );
+                    } catch {
+                      // Ignore storage errors; navigation still works.
+                    }
+                    onNavigate?.('memo');
+                  }}
+                >
                   <IconMemo />
                   <span>Memo</span>
                 </button>
-                <button type="button" className="ci2-panel-action" onClick={() => onNavigate?.('selling')}>
+                <button
+                  type="button"
+                  className="ci2-panel-action"
+                  onClick={() => {
+                    try {
+                      sessionStorage.setItem(
+                        QUICK_ADD_STORAGE_KEY,
+                        JSON.stringify({ inventory_item_id: selectedItem.id })
+                      );
+                    } catch {
+                      // Ignore storage errors; navigation still works.
+                    }
+                    onNavigate?.('selling');
+                  }}
+                >
                   <IconSell />
                   <span>Sell</span>
                 </button>

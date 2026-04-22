@@ -59,9 +59,26 @@ const defaultTitle: Record<AlertVariant, string> = {
 
 export function AlertDialogProvider({ children }: { children: React.ReactNode }) {
   const [dialog, setDialog] = useState<OpenDialog | null>(null);
+  const [themeClass, setThemeClass] = useState('');
   const okRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const confirmResolveRef = useRef<((value: boolean) => void) | null>(null);
+
+  // Detect theme from .App element and keep in sync
+  useEffect(() => {
+    const detect = () => {
+      const app = document.querySelector('.App');
+      setThemeClass(app?.classList.contains('theme-dark') ? 'theme-dark' : 'theme-light');
+    };
+    detect();
+    const mo = new MutationObserver(detect);
+    mo.observe(document.documentElement, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class'],
+    });
+    return () => mo.disconnect();
+  }, []);
 
   const clearConfirmResolver = useCallback((value: boolean) => {
     const fn = confirmResolveRef.current;
@@ -163,7 +180,7 @@ export function AlertDialogProvider({ children }: { children: React.ReactNode })
       {children}
       {dialog ? (
         <div
-          className="system-alert-overlay"
+          className={`system-alert-overlay ${themeClass}`}
           role="alertdialog"
           aria-modal="true"
           aria-labelledby="system-alert-title"
@@ -192,14 +209,22 @@ export function AlertDialogProvider({ children }: { children: React.ReactNode })
                   {dialog.payload.message}
                 </p>
                 <div className="system-alert-actions">
-                  <button ref={okRef} type="button" className="primary-button system-alert-ok" onClick={() => setDialog(null)}>
+                  <button
+                    ref={okRef}
+                    type="button"
+                    className="primary-button system-alert-ok"
+                    onClick={() => setDialog(null)}
+                  >
                     OK
                   </button>
                 </div>
               </>
             ) : (
               <>
-                <h2 id="system-alert-title" className="system-alert-title system-alert-title--warning">
+                <h2
+                  id="system-alert-title"
+                  className="system-alert-title system-alert-title--warning"
+                >
                   {dialog.payload.title}
                 </h2>
                 <p id="system-alert-desc" className="system-alert-message">

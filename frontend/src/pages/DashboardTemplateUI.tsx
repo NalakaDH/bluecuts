@@ -490,8 +490,6 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
     };
   }, [token, cloud]);
 
-  const lowStockCount = stockAlerts.length;
-
   const openMemosCount = overview?.memos_summary?.open_count ?? memos.filter(m => m.status !== 'Closed').length;
   const memosDueSoon = overview?.memos_summary?.due_within_3_days ?? 0;
   const latestFeed = overview?.latest_stock_movements || [];
@@ -616,12 +614,6 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
           </div>
         </div>
 
-        <div className="dashT-subtop-right">
-          <button type="button" className="dashT-alert-badge" disabled>
-            <span className="dashT-alert-dot">!</span>
-            {lowStockCount} Low Stock Alert{lowStockCount === 1 ? '' : 's'}
-          </button>
-        </div>
       </div>
 
       <div className="dashT-kpi-grid">
@@ -644,6 +636,10 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
           </div>
           {trendPair ? (
             (() => {
+              const prevInvoices = Number(trendPair.prev.invoices_count || 0);
+              if (prevInvoices <= 0) {
+                return <TrendFooter delta="flat">No invoices yesterday</TrendFooter>;
+              }
               const salesTrend = pctVersusPriorDay(
                 thbEquivalentToUsdNumber(trendPair.prev.sales_total, thbPerUnit),
                 thbEquivalentToUsdNumber(trendPair.curr.sales_total, thbPerUnit)

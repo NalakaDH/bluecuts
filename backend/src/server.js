@@ -1806,15 +1806,29 @@ app.delete('/api/inventory/:id', authMiddleware, requireRole(['owner']), async (
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid inventory id' });
     const existing = await dbGet('SELECT id FROM inventory_items WHERE id = ?', [id]);
     if (!existing) return res.status(404).json({ error: 'Inventory item not found' });
-    const invRow = await dbGet(
-      'SELECT COUNT(*) AS c FROM invoice_items WHERE inventory_item_id = ?',
+    // Allow delete only when historical links are fully settled:
+    // - invoices: every linked line is fully returned (returned_qty >= quantity)
+    // - memos: every linked line is fully returned (returned_qty >= quantity)
+    const invOpenRow = await dbGet(
+      `SELECT COUNT(*) AS c
+       FROM invoice_items
+       WHERE inventory_item_id = ?
+         AND IFNULL(quantity, 0) > IFNULL(returned_qty, 0)`,
       [id]
     );
-    const memoRow = await dbGet('SELECT COUNT(*) AS c FROM memo_items WHERE inventory_item_id = ?', [id]);
-    const invC = Number(invRow?.c || 0);
-    const memoC = Number(memoRow?.c || 0);
-    if (invC > 0 || memoC > 0) {
-      return res.status(409).json({ error: 'Cannot delete item that appears on invoices or memos' });
+    const memoOpenRow = await dbGet(
+      `SELECT COUNT(*) AS c
+       FROM memo_items
+       WHERE inventory_item_id = ?
+         AND IFNULL(quantity, 0) > IFNULL(returned_qty, 0)`,
+      [id]
+    );
+    const invOpen = Number(invOpenRow?.c || 0);
+    const memoOpen = Number(memoOpenRow?.c || 0);
+    if (invOpen > 0 || memoOpen > 0) {
+      return res
+        .status(409)
+        .json({ error: 'Cannot delete item while linked invoice/memo quantities are not fully returned' });
     }
     await dbRun('DELETE FROM stock_movements WHERE inventory_item_id = ?', [id]);
     await dbRun('DELETE FROM inventory_items WHERE id = ?', [id]);
@@ -2305,7 +2319,7 @@ app.get('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), (req,
       inv.weight_carats,
       inv.description AS inventory_description
     FROM memo_items mi
-    JOIN inventory_items inv ON inv.id = mi.inventory_item_id
+    LEFT JOIN inventory_items inv ON inv.id = mi.inventory_item_id
     WHERE mi.memo_id = ?
     ORDER BY mi.id ASC
   `;

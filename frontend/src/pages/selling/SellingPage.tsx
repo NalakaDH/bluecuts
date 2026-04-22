@@ -19,6 +19,7 @@ import { formatUsdOnlyFromAny } from '../../lib/moneyUsdDisplay';
 
 /** Default invoice / checkout display currency for new sales on this page. */
 const SELLING_DEFAULT_CURRENCY = 'USD';
+const QUICK_ADD_STORAGE_KEY = 'bluecuts-quick-add-item';
 
 /**
  * Unit price prefill from inventory list: no FX conversion. Staff enters amounts in invoice currency
@@ -581,6 +582,39 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     }));
     setItemUnitPrices(prev => ({ ...prev, [item.id]: roundMoney2(initialUnit) }));
   };
+
+  useEffect(() => {
+    const hydrateQuickAdd = async () => {
+      let inventoryItemId: number | null = null;
+      try {
+        const raw = sessionStorage.getItem(QUICK_ADD_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as { inventory_item_id?: number };
+        const n = Number(parsed?.inventory_item_id);
+        if (Number.isFinite(n) && n > 0) inventoryItemId = n;
+      } catch {
+        // Ignore malformed payload.
+      } finally {
+        try {
+          sessionStorage.removeItem(QUICK_ADD_STORAGE_KEY);
+        } catch {
+          // Ignore.
+        }
+      }
+      if (!inventoryItemId) return;
+      try {
+        const res = await fetch(apiUrl(`/api/inventory/${inventoryItemId}`), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const item = (await res.json()) as InventoryItem;
+        addToCart(item);
+      } catch {
+        // Silent fallback: page remains usable without quick-add prefill.
+      }
+    };
+    void hydrateQuickAdd();
+  }, [token]);
 
   const removeFromCart = (id: number) => {
     setCart((prev) => prev.filter((c) => c.id !== id));

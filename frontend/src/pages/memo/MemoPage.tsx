@@ -17,6 +17,7 @@ import { formatUsdOnlyFromAny, formatUsdOnlyFromThb } from '../../lib/moneyUsdDi
 
 /** Default memo currency for new memos (matches Selling). */
 const MEMO_DEFAULT_CURRENCY = 'USD';
+const QUICK_ADD_STORAGE_KEY = 'bluecuts-quick-add-item';
 
 function memoItemImageSrc(imagePath?: string | null): string {
   if (!imagePath) return '';
@@ -810,6 +811,39 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
     setItemSuggestions([]);
   };
 
+  useEffect(() => {
+    const hydrateQuickAdd = async () => {
+      let inventoryItemId: number | null = null;
+      try {
+        const raw = sessionStorage.getItem(QUICK_ADD_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as { inventory_item_id?: number };
+        const n = Number(parsed?.inventory_item_id);
+        if (Number.isFinite(n) && n > 0) inventoryItemId = n;
+      } catch {
+        // Ignore malformed payload.
+      } finally {
+        try {
+          sessionStorage.removeItem(QUICK_ADD_STORAGE_KEY);
+        } catch {
+          // Ignore.
+        }
+      }
+      if (!inventoryItemId) return;
+      try {
+        const res = await fetch(apiUrl(`/api/inventory/${inventoryItemId}`), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const item = (await res.json()) as InventoryItem;
+        addItemToCart(item);
+      } catch {
+        // Silent fallback: page remains usable without quick-add prefill.
+      }
+    };
+    void hydrateQuickAdd();
+  }, [token]);
+
   const removeCartItem = (inventory_item_id: number) => {
     if (memoLinesReadOnly) return;
     setCart(prev => prev.filter(p => p.inventory_item_id !== inventory_item_id));
@@ -1403,6 +1437,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({ token, onNavigate }) => {
       notes: d.notes,
       status: d.status,
       currency_code: d.currency_code,
+      order_discount: d.order_discount,
       items: d.items.map(it => ({
         item_code: it.item_code,
         description: memoLineDescription(it),

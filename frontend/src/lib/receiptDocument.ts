@@ -213,10 +213,10 @@ export function resolveReceiptLogoUrl(): string {
   if (typeof window === 'undefined') return '';
   try {
     const rawPub = process.env.PUBLIC_URL || '';
-    const pub = rawPub === '.' ? '' : rawPub.replace(/\/+$/, '');
-    const path = `${pub}/receipt-logo.png`.replace(/\/+/g, '/');
-    const absolutePath = path.startsWith('/') ? path : `/${path}`;
-    return `${window.location.origin}${absolutePath}`;
+    const pub = rawPub === '.' ? '' : rawPub.replace(/^\/+|\/+$/g, '');
+    const rel = pub ? `${pub}/receipt-logo.png` : 'receipt-logo.png';
+    // Works for both http(s) dev and file:// Electron packaged builds.
+    return new URL(rel, window.location.href).toString();
   } catch {
     return '';
   }
@@ -227,10 +227,10 @@ export function resolveReceiptWatermarkUrl(): string {
   if (typeof window === 'undefined') return '';
   try {
     const rawPub = process.env.PUBLIC_URL || '';
-    const pub = rawPub === '.' ? '' : rawPub.replace(/\/+$/, '');
-    const path = `${pub}/receipt-watermark.png`.replace(/\/+/g, '/');
-    const absolutePath = path.startsWith('/') ? path : `/${path}`;
-    return `${window.location.origin}${absolutePath}`;
+    const pub = rawPub === '.' ? '' : rawPub.replace(/^\/+|\/+$/g, '');
+    const rel = pub ? `${pub}/receipt-watermark.png` : 'receipt-watermark.png';
+    // Works for both http(s) dev and file:// Electron packaged builds.
+    return new URL(rel, window.location.href).toString();
   } catch {
     return '';
   }
@@ -333,6 +333,8 @@ export interface ReceiptMemoPayload {
   customer_country?: string | null;
   notes?: string | null;
   status?: string;
+  /** Header-level memo discount (applies on top of line discounts). */
+  order_discount?: number;
   items: ReceiptMemoLine[];
   currency_code?: string | null;
 }
@@ -845,6 +847,11 @@ function buildInvoiceDoc(
   const invBalance = Math.max(0, invTotal - invPaid);
   const sub = inv ? Number(inv.subtotal) : 0;
   const disc = inv ? Number(inv.discount) : 0;
+  const lineDiscount = roundMoney2(
+    inv?.items?.reduce((s, row) => s + invoiceLineDiscount(row), 0) || 0
+  );
+  const orderDiscount = Math.max(0, roundMoney2(disc - lineDiscount));
+  const hasBothDiscountKinds = lineDiscount > 0.0001 && orderDiscount > 0.0001;
 
   const addrLine = [co.addressLine1, co.addressLine2, co.city].filter(x => x?.trim()).join(' ');
   const custName = inv?.customer_name?.trim() || '';
@@ -872,9 +879,14 @@ function buildInvoiceDoc(
     metaRows.push(`<tr><td>Balance</td><td>${escapeHtml(formatMoney(invBalance, currencyCode))}</td></tr>`);
   }
 
-  const discountRow =
+  const discountRows =
+    hasBothDiscountKinds ?
+      [
+        `<div class="totals-row"><span class="tkey">Unit discount</span><span class="tval memo-totals-disc">− ${escapeHtml(formatMoney(lineDiscount, currencyCode))}</span></div>`,
+        `<div class="totals-row"><span class="tkey">Order discount</span><span class="tval memo-totals-disc">− ${escapeHtml(formatMoney(orderDiscount, currencyCode))}</span></div>`,
+      ].join('') :
     disc > 0 ?
-      `<div class="totals-row"><span class="tkey">Discount</span><span class="tval">− ${escapeHtml(formatMoney(disc, currencyCode))}</span></div>` :
+      `<div class="totals-row"><span class="tkey">Discount</span><span class="tval memo-totals-disc">− ${escapeHtml(formatMoney(disc, currencyCode))}</span></div>` :
       '';
 
   const grandVal = inv ?
@@ -931,7 +943,7 @@ function buildInvoiceDoc(
     <div class="totals-section">
       <div class="totals-box">
         <div class="totals-row"><span class="tkey">Subtotal</span><span class="tval">${inv ? escapeHtml(formatMoney(sub, currencyCode)) : '—'}</span></div>
-        ${discountRow}
+        ${discountRows}
         <div class="grand-total-row">
           <div class="grand-total-key">Grand Total</div>
           <div class="grand-total-val">${grandVal}</div>
@@ -982,21 +994,38 @@ export function memoReceiptLineRemainingAmounts(row: ReceiptMemoLine): {
 
 function memoReceiptRollupTotals(me: ReceiptMemoPayload | null): {
   subtotalGross: number;
+  lineDiscount: number;
+  orderDiscount: number;
   discount: number;
   net: number;
 } {
-  if (!me?.items?.length) return { subtotalGross: 0, discount: 0, net: 0 };
+  if (!me?.items?.length) return { subtotalGross: 0, lineDiscount: 0, orderDiscount: 0, discount: 0, net: 0 };
   let subtotalGross = 0;
-  let discount = 0;
+  let lineDiscount = 0;
+  let remainingNetBeforeOrder = 0;
   for (const row of me.items) {
     const a = memoReceiptLineRemainingAmounts(row);
     subtotalGross += a.lineGrossRem;
-    discount += a.lineDiscRem;
+    lineDiscount += a.lineDiscRem;
+    remainingNetBeforeOrder += a.lineNetRem;
   }
+  const fullNetBeforeOrder = roundMoney2(
+    (me.items || []).reduce((s, row) => s + (Number(row.line_total) || 0), 0)
+  );
+  const rawOrderDiscount = Math.max(0, roundMoney2(Number(me.order_discount || 0)));
+  const proportionalOrderDiscount =
+    fullNetBeforeOrder > 0.0001 ?
+      roundMoney2((rawOrderDiscount * remainingNetBeforeOrder) / fullNetBeforeOrder) :
+      0;
+  const orderDiscount = Math.min(roundMoney2(remainingNetBeforeOrder), proportionalOrderDiscount);
+  const discount = roundMoney2(lineDiscount + orderDiscount);
+  const net = roundMoney2(Math.max(0, subtotalGross - discount));
   return {
     subtotalGross: roundMoney2(subtotalGross),
-    discount: roundMoney2(discount),
-    net: roundMoney2(subtotalGross - discount),
+    lineDiscount: roundMoney2(lineDiscount),
+    orderDiscount,
+    discount,
+    net,
   };
 }
 
@@ -1010,12 +1039,9 @@ function buildMemoTableRows(me: ReceiptMemoPayload | null, currencyCode: string)
       const descFull = row.description || `${row.item_code || ''}`.trim() || '—';
       const parts = splitDescriptionForTable(descFull);
       const ct = row.weight_carats;
-      const wt =
-        ct != null && Number.isFinite(Number(ct)) ?
-          escapeHtml(String(Number(ct))) :
-          row.weight_grams != null && Number.isFinite(Number(row.weight_grams)) ?
-            escapeHtml(`${Number(row.weight_grams)} g`) :
-            '—';
+      const ppc = pricePerCarat(lineNetRem, remaining, ct);
+      const priceCol =
+        ppc != null ? formatMoney(ppc, currencyCode) : formatMoney(lineGrossRem, currencyCode);
       const idx = String(i + 1).padStart(2, '0');
       const codeMono = (row.item_code || '').trim();
       const subExtra = codeMono ? `${parts.sub ? `${parts.sub} · ` : ''}Code: ${codeMono}` : parts.sub;
@@ -1024,17 +1050,12 @@ function buildMemoTableRows(me: ReceiptMemoPayload | null, currencyCode: string)
       return `<tr>
         <td class="center td-mono">${escapeHtml(idx)}</td>
         <td>
-          <div class="td-gem-wrap">
-            <span class="td-gem-dot" aria-hidden="true"></span>
-            <div>
-              <div class="td-gem-name">${escapeHtml(parts.title)}</div>
-              ${subExtra ? `<div class="td-gem-sub">${escapeHtml(subExtra)}</div>` : ''}
-            </div>
-          </div>
+          <div class="td-gem-name">${escapeHtml(parts.title)}</div>
+          ${subExtra ? `<div class="td-gem-sub">${escapeHtml(subExtra)}</div>` : ''}
         </td>
         <td class="center">${escapeHtml(String(remaining))}</td>
-        <td class="center">${wt}</td>
-        <td class="td-price">${escapeHtml(formatMoney(lineGrossRem, currencyCode))}</td>
+        <td class="center">${formatWtCtShort(ct, row.weight_grams)}</td>
+        <td class="td-price">${escapeHtml(priceCol)}</td>
         <td class="td-discount">${escapeHtml(discCol)}</td>
         <td class="td-total">${escapeHtml(formatMoney(lineNetRem, currencyCode))}</td>
       </tr>`;
@@ -1124,10 +1145,16 @@ function buildMemoDoc(
   const rollup = memoReceiptRollupTotals(me);
   const declaredTotal = rollup.net;
   const subtotalDisplay = `${escapeHtml(currencyCode)} ${escapeHtml(formatMoneyAmountOnly(rollup.subtotalGross, currencyCode))}`;
-  const discountDisplay =
+  const hasBothDiscountKinds = rollup.lineDiscount > 0.0001 && rollup.orderDiscount > 0.0001;
+  const discountRows =
+    hasBothDiscountKinds ?
+      [
+        `<div class="totals-row"><span class="tkey">Unit discount</span><span class="tval memo-totals-disc">− ${escapeHtml(currencyCode)} ${escapeHtml(formatMoneyAmountOnly(rollup.lineDiscount, currencyCode))}</span></div>`,
+        `<div class="totals-row"><span class="tkey">Order discount</span><span class="tval memo-totals-disc">− ${escapeHtml(currencyCode)} ${escapeHtml(formatMoneyAmountOnly(rollup.orderDiscount, currencyCode))}</span></div>`,
+      ].join('') :
     rollup.discount > 0.0001 ?
-      `− ${escapeHtml(currencyCode)} ${escapeHtml(formatMoneyAmountOnly(rollup.discount, currencyCode))}` :
-      `—`;
+      `<div class="totals-row"><span class="tkey">Discounts</span><span class="tval memo-totals-disc">− ${escapeHtml(currencyCode)} ${escapeHtml(formatMoneyAmountOnly(rollup.discount, currencyCode))}</span></div>` :
+      `<div class="totals-row"><span class="tkey">Discounts</span><span class="tval memo-totals-disc">—</span></div>`;
   const declaredValueDisplay = `${escapeHtml(currencyCode)} ${escapeHtml(formatMoneyAmountOnly(declaredTotal, currencyCode))}`;
 
   const notesExtra =
@@ -1176,12 +1203,12 @@ function buildMemoDoc(
             <thead>
               <tr>
           <th class="center">#</th>
-          <th>Gemstone description</th>
+          <th>Description</th>
           <th class="center">Pcs</th>
           <th class="center">Weight (cts)</th>
-          <th class="right">Subtotal</th>
-          <th class="right">Discount</th>
-          <th class="right">Declared value</th>
+          <th class="right">Price / CT</th>
+          <th class="right">Line disc.</th>
+          <th class="right">Total</th>
               </tr>
             </thead>
       <tbody>${buildMemoTableRows(me, currencyCode)}</tbody>
@@ -1191,7 +1218,7 @@ function buildMemoDoc(
         <div class="totals-row"><span class="tkey">Total pieces</span><span class="tval">${escapeHtml(piecesLabel)}</span></div>
         <div class="totals-row"><span class="tkey">Total weight</span><span class="tval">${escapeHtml(wtLabel)}</span></div>
         <div class="totals-row"><span class="tkey">Subtotal</span><span class="tval">${subtotalDisplay}</span></div>
-        <div class="totals-row"><span class="tkey">Discounts</span><span class="tval memo-totals-disc">${discountDisplay}</span></div>
+        ${discountRows}
         <div class="grand-total-row memo-declared-grand-row">
           <div class="grand-total-key">Total declared value</div>
           <div class="grand-total-val">${declaredValueDisplay}</div>

@@ -9164,6 +9164,7 @@
   height: 3px;
   background: linear-gradient(90deg, var(--gem-accent), var(--gem-indigo-mix), var(--gem-teal));
   pointer-events: none;
+  display: none;
 }
 
 .page-selling .selling2-panel-inner {
@@ -18821,6 +18822,7 @@
   height: 3px;
   background: linear-gradient(90deg, var(--memo-u-teal), var(--memo-u-teal-glow), var(--memo-u-accent));
   pointer-events: none;
+  display: none;
 }
 
 .page-memo .memo-create-panel-inner {
@@ -24050,6 +24052,50 @@
   min-width: 6.5rem;
 }
 
+/* --- Dark mode readability fixes --- */
+.theme-dark .system-alert-overlay {
+  background: rgba(2, 6, 23, 0.80) !important;
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+.theme-dark .system-alert-card {
+  background: #2c3e55 !important;
+  border-color: rgba(148, 163, 184, 0.80) !important;
+  box-shadow:
+    0 0 0 1px rgba(148, 163, 184, 0.35),
+    0 32px 80px rgba(0, 0, 0, 0.75),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+}
+.theme-dark .system-alert-title {
+  color: #ffffff !important;
+}
+.theme-dark .system-alert-title--warning {
+  color: #fb923c !important;
+}
+.theme-dark .system-alert-title--error {
+  color: #fca5a5 !important;
+}
+.theme-dark .system-alert-title--success {
+  color: #6ee7b7 !important;
+}
+.theme-dark .system-alert-message {
+  color: #ffffff !important;
+}
+.theme-dark .system-alert-ok,
+.theme-dark .system-alert-confirm {
+  border-color: rgba(59, 130, 246, 0.90) !important;
+  background: #2563eb !important;
+  color: #ffffff !important;
+}
+.theme-dark .system-alert-cancel {
+  border-color: rgba(148, 163, 184, 0.70) !important;
+  background: rgba(71, 85, 105, 0.95) !important;
+  color: #ffffff !important;
+}
+.theme-dark .system-alert-confirm-danger {
+  color: #ffffff !important;
+}
+
 /* ========== Monthly Inventory Report (owner) — aligned with Check Inventory ========== */
 .page.page-inventory-report {
   width: 100%;
@@ -24886,6 +24932,7 @@
   right: 0;
   height: 3px;
   background: linear-gradient(90deg, #2563eb, #7c3aed, #db2777, #d97706, #0d9488);
+  display: none;
 }
 
 .prf2-hero-inner {
