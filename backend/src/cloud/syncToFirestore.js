@@ -39,7 +39,7 @@ async function syncToFirestore(deps, opts) {
     shopId,
     reportsTop = 5,
     reportsRangeDays = 30,
-    dashboardDays = 30,
+    dashboardDays = 366,
     monthlyYear,
     monthlyMonth,
   } = opts || {};

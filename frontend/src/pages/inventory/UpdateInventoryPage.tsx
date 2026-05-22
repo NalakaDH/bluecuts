@@ -1332,7 +1332,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
                   onChange={handleChange}
                   placeholder="e.g. BCG-001"
                 />
-                <span className="form-field-hint">Code used on the Selling page</span>
+                <span className="form-field-hint">Code used on the Invoice page</span>
               </div>
             </div>
           </div>

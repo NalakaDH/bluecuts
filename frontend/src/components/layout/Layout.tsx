@@ -1,18 +1,21 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { staffCanAccessPage, type StaffNavAccessOptions } from '../../lib/pagePermissions';
 
-const IconMenu: React.FC<{ className?: string }> = ({ className }) => (
-  <svg className={className} width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <line x1="4" y1="6" x2="20" y2="6" />
-    <line x1="4" y1="12" x2="20" y2="12" />
-    <line x1="4" y1="18" x2="20" y2="18" />
+/** Sidebar expanded: panel + divider line */
+const IconSidebarCollapse: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} width={17} height={17} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <line x1="9" y1="3" x2="9" y2="21" />
   </svg>
 );
 
-const IconClose: React.FC<{ className?: string }> = ({ className }) => (
-  <svg className={className} width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <line x1="18" y1="6" x2="6" y2="18" />
-    <line x1="6" y1="6" x2="18" y2="18" />
+/** Sidebar collapsed: show expand chevron */
+const IconSidebarExpand: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} width={17} height={17} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <line x1="9" y1="3" x2="9" y2="21" />
+    <polyline points="13 8 16 12 13 16" />
+    <line x1="9" y1="12" x2="16" y2="12" />
   </svg>
 );
 
@@ -33,6 +36,14 @@ const IconSun: React.FC<{ className?: string }> = ({ className }) => (
 const IconMoon: React.FC<{ className?: string }> = ({ className }) => (
   <svg className={className} width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z" />
+  </svg>
+);
+
+const IconSync: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="23 4 23 10 17 10" />
+    <polyline points="1 20 1 14 7 14" />
+    <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10M1 14l5.36 4.36A9 9 0 0 0 20.49 15" />
   </svg>
 );
 
@@ -136,7 +147,7 @@ const TOPBAR_NAV_ORDER: { id: PageId; label: string }[] = [
   { id: 'updateInventory', label: 'Update Inventory' },
   { id: 'checkInventory', label: 'Check Inventory' },
   { id: 'stockCount', label: 'Stock count' },
-  { id: 'selling', label: 'Selling' },
+  { id: 'selling', label: 'Invoice' },
   { id: 'payments', label: 'Payments' },
   { id: 'customers', label: 'Customers' },
   { id: 'memo', label: 'Memos' },
@@ -165,21 +176,50 @@ export function getTopbarNavItems(
 
 export type { StaffNavAccessOptions };
 
-const IconSidebarShow: React.FC<{ className?: string }> = ({ className }) => (
-  <svg className={className} width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <rect x="3" y="3" width="18" height="18" rx="2" />
-    <line x1="9" y1="3" x2="9" y2="21" />
-  </svg>
-);
-
 const IconSidebarHide: React.FC<{ className?: string }> = ({ className }) => (
-  <svg className={className} width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+  <svg className={className} width={17} height={17} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <rect x="3" y="3" width="18" height="18" rx="2" />
     <line x1="15" y1="3" x2="15" y2="21" />
     <polyline points="8 8 5 12 8 16" />
     <line x1="5" y1="12" x2="15" y2="12" />
   </svg>
 );
+
+const IconBrandGem: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5" />
+    <line x1="12" y1="22" x2="12" y2="15.5" />
+    <polyline points="22 8.5 12 15.5 2 8.5" />
+  </svg>
+);
+
+function usernameInitials(username: string): string {
+  const t = username.trim();
+  if (!t) return '?';
+  const parts = t.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    const a = parts[0][0];
+    const b = parts[parts.length - 1][0];
+    return `${a}${b}`.toUpperCase();
+  }
+  return t.slice(0, 2).toUpperCase();
+}
+
+function useIsMobile(breakpoint = 768) {
+  const [mobile, setMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < breakpoint : false
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
+    const handler = (e: MediaQueryListEvent) => setMobile(e.matches);
+    setMobile(mq.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, [breakpoint]);
+  return mobile;
+}
+
+export { useIsMobile };
 
 /* ----- Sidebar ----- */
 interface SidebarProps {
@@ -192,6 +232,8 @@ interface SidebarProps {
   staffNavAccessOptions?: StaffNavAccessOptions | null;
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -203,6 +245,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   staffNavAccessOptions,
   collapsed,
   onToggleCollapsed,
+  mobileOpen = false,
+  onMobileClose,
 }) => {
   const canSee = (page: PageId) => canAccessPage(role, page, allowedPages, staffNavAccessOptions);
 
@@ -219,7 +263,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     {
       title: 'Sales',
       items: [
-        { id: 'selling', label: 'Selling' },
+        { id: 'selling', label: 'Invoice' },
         { id: 'payments', label: 'Payments' },
         { id: 'customers', label: 'Customers' },
         { id: 'memo', label: 'Memos' },
@@ -235,46 +279,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
   ];
 
-  return (
-    <aside
-      className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}`}
-      onDoubleClick={onToggleCollapsed}
-      title={collapsed ? 'Double-click to expand' : 'Double-click to collapse'}
-    >
-      <div className="sidebar-header">
-        <div className="logo-circle logo-circle--brand" aria-hidden="true">
-          <img
-            className="sidebar-brand-logo"
-            src={`${process.env.PUBLIC_URL}/app-icon.png`}
-            alt=""
-          />
+  const initials = usernameInitials(username);
+
+  const handleNavClick = (page: PageId) => {
+    onChangePage(page);
+    onMobileClose?.();
+  };
+
+  const sidebarEl = (
+    <aside className={`sidebar ${collapsed && !mobileOpen ? 'sidebar--collapsed' : ''}${mobileOpen ? ' sidebar--mobile-open' : ''}`} aria-label="Main navigation">
+      <button type="button" className="sidebar-brand" onClick={() => handleNavClick('dashboard')} title="Blue Cuts POS">
+        <div className="brand-gem" aria-hidden="true">
+          <IconBrandGem />
         </div>
-        <div className="brand">
-          <span className="brand-title">Blue Cuts</span>
-        </div>
-      </div>
-      <nav className="nav" aria-label="Main navigation">
+        <span className="brand-name">Blue Cuts</span>
+      </button>
+
+      <nav className="sidebar-nav" aria-label="Sections">
         {navSections.map(section => {
           const visible = section.items.filter(item => canSee(item.id));
           if (visible.length === 0) return null;
           return (
             <div key={section.title} className="nav-section">
-              <div className="nav-section-title">
-                <span className="nav-section-title-text">{section.title}</span>
-              </div>
+              <div className="nav-section-label">{section.title}</div>
               {visible.map(item => {
                 const Icon = navIcons[item.id];
                 return (
                   <button
                     key={item.id}
                     type="button"
-                    className={`nav-item ${activePage === item.id ? 'active' : ''}`}
-                    onClick={() => onChangePage(item.id)}
+                    className={`nav-btn ${activePage === item.id ? 'active' : ''}`}
+                    onClick={() => handleNavClick(item.id)}
                     aria-current={activePage === item.id ? 'page' : undefined}
                     title={item.label}
                   >
-                    <span className="nav-item-icon">{Icon && <Icon />}</span>
-                    <span className="nav-item-label">{item.label}</span>
+                    <span className="nav-icon">{Icon && <Icon />}</span>
+                    <span className="nav-label">{item.label}</span>
                   </button>
                 );
               })}
@@ -282,26 +322,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
           );
         })}
       </nav>
-      <div className="sidebar-footer">
-        <div className="user-info">
-          <span className="user-name">{username}</span>
-          <span className="user-role">{role === 'owner' ? 'Shop Owner' : 'Staff'}</span>
+
+      <div className="sidebar-foot">
+        <div className="user-chip">
+          <div className="user-avatar" aria-hidden="true">
+            {initials}
+          </div>
+          <div className="user-chip-info">
+            <div className="user-chip-name">{username}</div>
+            <div className="user-chip-role">{role === 'owner' ? 'Shop Owner' : 'Staff'}</div>
+          </div>
         </div>
       </div>
     </aside>
   );
-};
 
-const IconUser: React.FC<{ className?: string }> = ({ className }) => (
-  <svg className={className} width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-    <circle cx="12" cy="7" r="4" />
-  </svg>
-);
+  if (mobileOpen) {
+    return (
+      <>
+        <div className="sidebar-mobile-backdrop" onClick={onMobileClose} aria-hidden="true" />
+        {sidebarEl}
+      </>
+    );
+  }
+
+  return sidebarEl;
+};
 
 /* ----- Topbar ----- */
 interface TopbarProps {
   page: PageId;
+  username: string;
   role: UserRole;
   /** Staff page access from server; omit or null for owner (full nav). */
   allowedPages?: string[] | null;
@@ -313,12 +364,21 @@ interface TopbarProps {
   onChangePage: (page: PageId) => void;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
+  onSync?: () => void;
+  syncLoading?: boolean;
   onOpenProfile: () => void;
+  sellingView?: 'compose' | 'invoices';
+  onOpenSellingInvoices?: () => void;
+  onOpenSellingComposer?: () => void;
+  memoView?: 'create' | 'open';
+  onOpenMemoList?: () => void;
+  onOpenMemoCreate?: () => void;
 }
 
 export function Topbar(props: TopbarProps) {
   const {
     page,
+    username,
     role,
     allowedPages = null,
     staffNavAccessOptions,
@@ -329,7 +389,15 @@ export function Topbar(props: TopbarProps) {
     onChangePage,
     theme,
     onToggleTheme,
+    onSync,
+    syncLoading = false,
     onOpenProfile,
+    sellingView = 'compose',
+    onOpenSellingInvoices,
+    onOpenSellingComposer,
+    memoView = 'create',
+    onOpenMemoList,
+    onOpenMemoCreate,
   } = props;
 
   const pageTitleMap: Record<PageId, string> = {
@@ -337,7 +405,7 @@ export function Topbar(props: TopbarProps) {
     updateInventory: 'Update Inventory',
     checkInventory: 'Check Inventory',
     stockCount: 'Stock count',
-    selling: 'Selling',
+    selling: 'Invoice',
     payments: 'Payments & Loans',
     invoiceCheckout: 'Invoice Checkout',
     customers: 'Customers',
@@ -350,100 +418,173 @@ export function Topbar(props: TopbarProps) {
 
   const quickNavItems = getTopbarNavItems(role, allowedPages, staffNavAccessOptions);
   const CurrentIcon = navIcons[page];
+  const profileInitials = usernameInitials(username);
+  const sellingSubnav =
+    page === 'selling' && onOpenSellingInvoices && onOpenSellingComposer ? (
+      <div className="tb-subnav" role="tablist" aria-label="Invoice views">
+        <button
+          type="button"
+          role="tab"
+          className={`tb-subnav-btn${sellingView === 'compose' ? ' active' : ''}`}
+          onClick={onOpenSellingComposer}
+          aria-selected={sellingView === 'compose'}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          Create invoice
+        </button>
+        <button
+          type="button"
+          role="tab"
+          className={`tb-subnav-btn${sellingView === 'invoices' ? ' active' : ''}`}
+          onClick={onOpenSellingInvoices}
+          aria-selected={sellingView === 'invoices'}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+            <rect x="9" y="3" width="6" height="4" rx="1" />
+            <path d="M9 12h6M9 16h4" />
+          </svg>
+          Invoice list
+        </button>
+      </div>
+    ) : null;
+
+  const memoSubnav =
+    page === 'memo' && onOpenMemoList && onOpenMemoCreate ? (
+      <div className="tb-subnav" role="tablist" aria-label="Memo views">
+        <button
+          type="button"
+          role="tab"
+          className={`tb-subnav-btn${memoView === 'create' ? ' active' : ''}`}
+          onClick={onOpenMemoCreate}
+          aria-selected={memoView === 'create'}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          Create memo
+        </button>
+        <button
+          type="button"
+          role="tab"
+          className={`tb-subnav-btn${memoView === 'open' ? ' active' : ''}`}
+          onClick={onOpenMemoList}
+          aria-selected={memoView === 'open'}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+            <rect x="9" y="3" width="6" height="4" rx="1" />
+            <path d="M9 12h6M9 16h4" />
+          </svg>
+          Open memos
+        </button>
+      </div>
+    ) : null;
+
+  const activeSubnav = sellingSubnav ?? memoSubnav ?? null;
 
   return (
     <header className={`topbar${sidebarHidden ? ' topbar--sidebar-hidden' : ''}`}>
-      <div className="topbar-inner">
-        <div className="topbar-left-cluster">
-          <div className="topbar-left">
-            <button
-              type="button"
-              className="topbar-menu-btn"
-              onClick={() => {
-                if (sidebarHidden) onSidebarHiddenChange(false);
-                else onToggleCollapsed();
-              }}
-              aria-label={
-                sidebarHidden ? 'Show sidebar' : collapsed ? 'Expand sidebar' : 'Collapse sidebar'
-              }
-              title={sidebarHidden ? 'Show sidebar' : collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            >
-              {sidebarHidden ? (
-                <IconSidebarShow className="topbar-menu-icon" />
-              ) : collapsed ? (
-                <IconClose className="topbar-menu-icon" />
-              ) : (
-                <IconMenu className="topbar-menu-icon" />
-              )}
-            </button>
-            {!sidebarHidden && (
-              <button
-                type="button"
-                className="topbar-menu-btn topbar-hide-sidebar-btn"
-                onClick={() => onSidebarHiddenChange(true)}
-                aria-label="Hide sidebar"
-                title="Hide sidebar"
-              >
-                <IconSidebarHide className="topbar-menu-icon" />
-              </button>
-            )}
-          </div>
-
-          <div className={`topbar-title-group topbar-title-group--${page}`}>
-            <span className={`topbar-page-icon topbar-page-icon--${page}`} aria-hidden="true">
-              {CurrentIcon && <CurrentIcon />}
-            </span>
-            <h1 className="page-title" title={pageTitleMap[page]}>
-              {pageTitleMap[page]}
-            </h1>
-          </div>
-
-          {sidebarHidden && (
-            <nav className="topbar-page-nav topbar-page-nav--inline" aria-label="Quick navigation">
-              {quickNavItems.map(item => {
-                const Icon = navIcons[item.id];
-                const active = page === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    data-page={item.id}
-                    className={`topbar-page-nav__btn topbar-page-nav__btn--${item.id}${active ? ' is-active' : ''}`}
-                    onClick={() => onChangePage(item.id)}
-                    aria-current={active ? 'page' : undefined}
-                    title={item.label}
-                  >
-                    <span className="topbar-page-nav__icon" aria-hidden="true">
-                      {Icon && <Icon />}
-                    </span>
-                  </button>
-                );
-              })}
-            </nav>
+      <div className="tb-left">
+        <button
+          type="button"
+          className="tb-icon-btn"
+          onClick={() => {
+            if (sidebarHidden) onSidebarHiddenChange(false);
+            else onToggleCollapsed();
+          }}
+          aria-label={sidebarHidden ? 'Show sidebar' : collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={sidebarHidden ? 'Show sidebar' : collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {sidebarHidden || !collapsed ? (
+            <IconSidebarCollapse className="tb-icon-btn-svg" />
+          ) : (
+            <IconSidebarExpand className="tb-icon-btn-svg" />
           )}
-        </div>
+        </button>
+        {!sidebarHidden ? (
+          <button
+            type="button"
+            className="tb-icon-btn"
+            onClick={() => onSidebarHiddenChange(true)}
+            aria-label="Hide sidebar"
+            title="Hide sidebar"
+          >
+            <IconSidebarHide className="tb-icon-btn-svg" />
+          </button>
+        ) : null}
+      </div>
 
-        <div className="topbar-right">
-          <button
-            type="button"
-            className={`topbar-icon-btn topbar-theme-btn topbar-theme-btn--${theme}`}
-            onClick={onToggleTheme}
-            aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
-            title={theme === 'light' ? 'Dark mode' : 'Light mode'}
-          >
-            <span className="topbar-theme-btn__glow" aria-hidden="true" />
-            {theme === 'light' ? <IconMoon className="topbar-theme-icon" /> : <IconSun className="topbar-theme-icon" />}
-          </button>
-          <button
-            type="button"
-            className={`topbar-icon-btn topbar-profile-btn${page === 'profile' ? ' is-active' : ''}`}
-            onClick={onOpenProfile}
-            aria-label="Open profile"
-            title="Profile"
-          >
-            <IconUser className="topbar-profile-icon" />
-          </button>
+      <div className="tb-sep" aria-hidden="true" />
+
+      <div className={`tb-page-id tb-page-id--${page}`}>
+        <div className={`tb-page-icon tb-page-icon--${page}`} aria-hidden="true">
+          {CurrentIcon ? <CurrentIcon /> : null}
         </div>
+        <h1 className="tb-page-title">{pageTitleMap[page]}</h1>
+      </div>
+
+      <div className="tb-center" aria-hidden={sidebarHidden ? undefined : true}>
+        {sidebarHidden ? (
+          <nav className="tb-quicknav tb-quicknav--center" aria-label="Quick navigation">
+            {quickNavItems.map(item => {
+              const Icon = navIcons[item.id];
+              const active = page === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  data-page={item.id}
+                  className={`tb-qnav-btn tb-qnav-btn--${item.id}${active ? ' active' : ''}`}
+                  onClick={() => onChangePage(item.id)}
+                  aria-current={active ? 'page' : undefined}
+                  title={item.label}
+                >
+                  {Icon ? <Icon /> : null}
+                </button>
+              );
+            })}
+          </nav>
+        ) : null}
+      </div>
+
+      <div className="tb-right">
+        {activeSubnav ? <div className="tb-right-subnav">{activeSubnav}</div> : null}
+        {onSync ? (
+          <button
+            type="button"
+            className="tb-sync-btn tb-icon-btn"
+            onClick={onSync}
+            aria-label="Sync now"
+            title={syncLoading ? 'Syncing…' : 'Sync now'}
+            disabled={syncLoading}
+          >
+            <IconSync className={`tb-sync-svg${syncLoading ? ' is-spinning' : ''}`} />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="tb-theme-btn tb-icon-btn"
+          onClick={onToggleTheme}
+          aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+          title={theme === 'light' ? 'Dark mode' : 'Light mode'}
+        >
+          {theme === 'light' ? <IconMoon className="tb-theme-svg" /> : <IconSun className="tb-theme-svg" />}
+        </button>
+        <button
+          type="button"
+          className={`tb-profile-btn${page === 'profile' ? ' active' : ''}`}
+          onClick={onOpenProfile}
+          aria-label="Open profile"
+          title="Profile"
+        >
+          <div className="tb-profile-avatar" aria-hidden="true">
+            {profileInitials}
+          </div>
+          <span className="tb-profile-name">{username}</span>
+        </button>
       </div>
     </header>
   );

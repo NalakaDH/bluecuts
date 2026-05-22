@@ -239,6 +239,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     }
     return d;
   });
+  const [fxManual, setFxManual] = useState<Set<string>>(() => new Set());
 
   const [backupDownloading, setBackupDownloading] = useState(false);
   const [restoreUploading, setRestoreUploading] = useState(false);
@@ -314,6 +315,8 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       }
       const data = await res.json();
       const map = (data.thb_per_unit || {}) as Record<string, number>;
+      const manualList = Array.isArray(data.manual_currencies) ? (data.manual_currencies as string[]) : [];
+      setFxManual(new Set(manualList.map(c => String(c).toUpperCase())));
       const thbPerUsd = Number(map.USD);
       const hasBridge = Number.isFinite(thbPerUsd) && thbPerUsd > 0;
       setFxThbPerUsd(hasBridge ? String(roundRate6(thbPerUsd)) : '');
@@ -374,18 +377,29 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       const res = await fetch(apiUrl('/api/exchange-rates/sync-frankfurter'), {
         method: 'POST',
         headers: authHeaders(token),
+        body: JSON.stringify({ force: false }),
       });
       if (!res.ok) {
         const msg = await parseErrorResponse(res, 'Could not sync exchange rates');
         throw new Error(msg);
       }
-      const data = (await res.json()) as { rate_date?: string | null };
+      const data = (await res.json()) as {
+        rate_date?: string | null;
+        skipped_manual?: string[];
+      };
+      const skipped = Array.isArray(data.skipped_manual) ? data.skipped_manual : [];
+      if (skipped.length) {
+        setFxManual(prev => new Set([...Array.from(prev), ...skipped.map(c => String(c).toUpperCase())]));
+      }
       const d = data.rate_date ? ` (ECB date ${data.rate_date})` : '';
-      setFxMsg(`Live rates applied from Frankfurter${d}.`);
+      const skipNote = skipped.length ? ` Manual rates kept for: ${skipped.join(', ')}.` : '';
+      setFxMsg(`Live rates applied from Frankfurter${d}.${skipNote}`);
       await fetchExchangeRates();
       showAlert({
         title: 'Exchange rates updated',
-        message: data.rate_date ? `Frankfurter rates saved. ECB reference date: ${data.rate_date}.` : 'Frankfurter rates saved.',
+        message: data.rate_date
+          ? `Frankfurter rates saved (ECB ${data.rate_date}).${skipNote}`
+          : `Frankfurter rates saved.${skipNote}`,
         variant: 'success',
       });
     } catch (e: unknown) {
@@ -457,6 +471,34 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     }
   };
 
+  const clearManualRate = useCallback(
+    async (code: string) => {
+      setFxErr(null);
+      try {
+        const res = await fetch(apiUrl('/api/exchange-rates/clear-manual'), {
+          method: 'POST',
+          headers: authHeaders(token),
+          body: JSON.stringify({ currencies: [code] }),
+        });
+        if (!res.ok) {
+          const msg = await parseErrorResponse(res, 'Could not unlock rate');
+          throw new Error(msg);
+        }
+        setFxManual(prev => {
+          const next = new Set(prev);
+          next.delete(code);
+          return next;
+        });
+        setFxMsg(`${code} unlocked — click Fetch live rates to pull ECB rate, or enter your own and Save.`);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'Could not unlock rate';
+        setFxErr(msg);
+        showAlert({ title: 'Exchange rates', message: msg, variant: 'error' });
+      }
+    },
+    [token, showAlert]
+  );
+
   const submitExchangeRates = async (e: React.FormEvent) => {
     e.preventDefault();
     setFxErr(null);
@@ -511,7 +553,12 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       await res.json();
       setFxMsg('Exchange rates saved.');
       await fetchExchangeRates();
-      showAlert({ title: 'Exchange rates saved', message: 'Rates saved (stored internally as THB per unit for conversions).', variant: 'success' });
+      showAlert({
+        title: 'Exchange rates saved',
+        message:
+          'Rates saved and marked as manual — Frankfurter will not overwrite them until you use “Use live rate”.',
+        variant: 'success',
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Could not save exchange rates';
       setFxErr(msg);
@@ -868,8 +915,10 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
           description={
             <>
               USD is the primary currency. Enter rates as <strong>1 USD = ?</strong> for each currency.
-              Use <strong>Fetch live rates</strong> to pull ECB spot rates via{' '}
-              <a href="https://www.frankfurter.app/" target="_blank" rel="noopener noreferrer" className="prf2-link">Frankfurter</a>.
+              Use <strong>Fetch live rates</strong> for ECB reference rates via{' '}
+              <a href="https://www.frankfurter.app/" target="_blank" rel="noopener noreferrer" className="prf2-link">Frankfurter</a>
+              {' '}(major pairs only — <strong>LKR, INR</strong>, and others can be wrong vs your bank).
+              <strong> Save rates</strong> locks that currency so live sync will not replace it.
               Changing rates does <strong>not</strong> alter stored prices — only affects conversions.
               {role === 'staff' ? <> Staff can update these rates; they apply shop-wide.</> : null}
             </>
@@ -912,6 +961,11 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                       <div className="prf2-fx-currency">
                         <span className="prf2-fx-code">{code}</span>
                         <span className="prf2-fx-name">{shortLabel}</span>
+                        {fxManual.has(code) ? (
+                          <span className="prf2-fx-manual-badge" title="Saved manually — not updated by Fetch live rates">
+                            Manual
+                          </span>
+                        ) : null}
                       </div>
                       <div className="prf2-fx-input-wrap">
                         <span className="prf2-fx-eq-label">1 USD =</span>
@@ -934,6 +988,16 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                           aria-label={`${code} per 1 US dollar`}
                         />
                         <span className="prf2-fx-suffix">{code}</span>
+                        {fxManual.has(code) ? (
+                          <button
+                            type="button"
+                            className="prf2-fx-unlock-btn"
+                            onClick={() => void clearManualRate(code)}
+                            title="Allow Fetch live rates to update this currency"
+                          >
+                            Use live rate
+                          </button>
+                        ) : null}
                       </div>
                     </div>
                   );

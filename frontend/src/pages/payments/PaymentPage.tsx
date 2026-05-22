@@ -490,6 +490,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
           <div className="pay-checkout-modal" onMouseDown={e => e.stopPropagation()}>
             <InvoiceCheckoutPage
               token={token}
+              embedded
               onNavigate={() => {
                 closeCheckout();
               }}

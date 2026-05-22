@@ -21,7 +21,7 @@ export const ASSIGNABLE_STAFF_PAGE_LABELS: Record<StaffAssignablePageId, string>
   dashboard: 'Dashboard',
   updateInventory: 'Update Inventory',
   checkInventory: 'Check Inventory',
-  selling: 'Selling',
+  selling: 'Invoice',
   payments: 'Payments & Loans',
   invoiceCheckout: 'Invoice Checkout',
   customers: 'Customers',

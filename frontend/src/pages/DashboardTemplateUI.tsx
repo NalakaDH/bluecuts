@@ -512,7 +512,7 @@ export function DashboardTemplateUI({ token, username, onNavigate }: DashboardTe
   }, [overview]);
 
   const navBtns = [
-    { label: 'New Sale', page: 'selling' as PageId },
+    { label: 'Invoice', page: 'selling' as PageId },
     { label: 'Add Customer', page: 'customers' as PageId },
     { label: 'Create Memo', page: 'memo' as PageId },
     { label: 'Check Inventory', page: 'checkInventory' as PageId },

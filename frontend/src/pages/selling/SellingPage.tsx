@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { useAlertDialog } from '../../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../../api';
 import { INVOICE_CHECKOUT_INVOICE_ID_KEY, SELLING_FROM_MEMO_CONVERT_INVOICE_KEY } from '../../constants/invoiceCheckout';
@@ -20,6 +20,36 @@ import { formatUsdOnlyFromAny } from '../../lib/moneyUsdDisplay';
 /** Default invoice / checkout display currency for new sales on this page. */
 const SELLING_DEFAULT_CURRENCY = 'USD';
 const QUICK_ADD_STORAGE_KEY = 'bluecuts-quick-add-item';
+
+function currencySymbolFor(code: string): string {
+  try {
+    const parts = new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: normalizeCurrencyCode(code),
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).formatToParts(0);
+    return parts.find(p => p.type === 'currency')?.value ?? '';
+  } catch {
+    return '';
+  }
+}
+
+const IconGemModal = () => (
+  <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5" />
+    <line x1="12" y1="22" x2="12" y2="15.5" />
+    <polyline points="22 8.5 12 15.5 2 8.5" />
+  </svg>
+);
+
+const IconCartModal = () => (
+  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="9" cy="21" r="1" />
+    <circle cx="20" cy="21" r="1" />
+    <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" />
+  </svg>
+);
 
 /**
  * Unit price prefill from inventory list: no FX conversion. Staff enters amounts in invoice currency
@@ -61,6 +91,30 @@ interface InventoryItem {
   image_path: string | null;
   item_code: string | null;
   status: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+/** Server: GET /api/inventory/activity-summary — keyed by inventory id string */
+type InventoryActivitySummaryMap = Record<
+  string,
+  { sold_units?: number; last_sale_at?: string | null }
+>;
+
+const CATALOG_TAB_PREVIEW_LIMIT = 18;
+/** Same limit — alias kept so scroll-height math and any older bundles stay valid */
+const CATALOG_VISIBLE_SLOTS = CATALOG_TAB_PREVIEW_LIMIT;
+
+function inventoryTimestampMs(raw: string | null | undefined): number {
+  if (!raw) return 0;
+  const t = Date.parse(raw);
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** Latest invoice sale time for this SKU (stock_movements.type = 'SALE'); 0 if never sold. */
+function lastSaleAtMsFromSummary(item: InventoryItem, summary: InventoryActivitySummaryMap): number {
+  const raw = summary[String(item.id)]?.last_sale_at;
+  return inventoryTimestampMs(raw ?? undefined);
 }
 
 interface Customer {
@@ -149,11 +203,6 @@ const IconPlus = () => (
     <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
   </svg>
 );
-const IconPlusSm = () => (
-  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-  </svg>
-);
 const IconTrash = () => (
   <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
@@ -210,12 +259,68 @@ const IconInvoiceDoc = () => (
   </svg>
 );
 
+const IconCcUser = () => (
+  <svg className="selling-pos-cc-btn-icon" width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="8" r="4" />
+    <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
+  </svg>
+);
+
+const IconCcCurrency = () => (
+  <svg className="selling-pos-cc-btn-icon" width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="10" />
+    <path d="M12 6v12M8 9c0-1.7 1.8-3 4-3s4 1.3 4 3-1.8 3-4 3-4 1.3-4 3 1.8 3 4 3 4-1.3 4-3" />
+  </svg>
+);
+
 interface SellingPageProps {
   token: string;
   onNavigate?: (page: PageId) => void;
+  view?: 'compose' | 'invoices';
+  onChangeView?: (view: 'compose' | 'invoices') => void;
 }
 
-export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) => {
+const IconNewCustomerUser = () => (
+  <svg
+    width={16}
+    height={16}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+    <circle cx="12" cy="7" r="4" />
+  </svg>
+);
+
+const IconSaveCustomer = () => (
+  <svg
+    width={14}
+    height={14}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+    <polyline points="17 21 17 13 7 13 7 21" />
+    <polyline points="7 3 7 8 15 8" />
+  </svg>
+);
+
+export const SellingPage: React.FC<SellingPageProps> = ({
+  token,
+  onNavigate,
+  view = 'compose',
+  onChangeView,
+}) => {
   const { showAlert, showConfirm } = useAlertDialog();
   const [availableItems, setAvailableItems] = useState<InventoryItem[]>([]);
   const [, setLoading] = useState(true);
@@ -240,6 +345,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
   });
 
   const [discountAmount, setDiscountAmount] = useState<number>(0);
+  const [discountType, setDiscountType] = useState<'pct' | 'flat'>('pct');
   const [creatingInvoice, setCreatingInvoice] = useState(false);
   const [, setInvoiceMessage] = useState<string | null>(null);
 
@@ -253,6 +359,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
   const [itemQuantities, setItemQuantities] = useState<Record<number, number>>({});
   /** Per-line unit price in the selected invoice currency (manual; not recomputed when currency changes). */
   const [itemUnitPrices, setItemUnitPrices] = useState<Record<number, number>>({});
+  const [itemNotes, setItemNotes] = useState<Record<number, string>>({});
   /** ISO 4217 for this sale / receipt. */
   const [saleCurrency, setSaleCurrency] = useState<string>(SELLING_DEFAULT_CURRENCY);
   const [thbPerUnit, setThbPerUnit] = useState<ThbPerUnitMap>({ THB: 1 });
@@ -260,11 +367,21 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
   const [createdInvoice, setCreatedInvoice] = useState<InvoiceSummary | null>(null);
   const [invoiceCreatedLineOverride, setInvoiceCreatedLineOverride] = useState<InvoiceCreatedLineView[] | null>(null);
   const [newCustomerModalOpen, setNewCustomerModalOpen] = useState(false);
+  /** Picker for customer (search + list + new) or currency list. */
+  const [ccModal, setCcModal] = useState<null | 'customer' | 'currency'>(null);
   /** Inventory ids whose thumbnail URL failed to load */
   const [cartImageLoadFailed, setCartImageLoadFailed] = useState<Set<number>>(() => new Set());
   const [savingDraft, setSavingDraft] = useState(false);
   const [loadingDraft, setLoadingDraft] = useState(false);
   const [draftMessage, setDraftMessage] = useState<string | null>(null);
+  const [catalogFilter, setCatalogFilter] = useState<'all' | 'top' | 'recent'>('all');
+  const [inventoryActivitySummary, setInventoryActivitySummary] = useState<InventoryActivitySummaryMap>({});
+  const [itemModalOpen, setItemModalOpen] = useState(false);
+  /** Cart edit opens modal with existing qty/unit; catalog suggestion opens as new line. */
+  const [itemModalFromCartEdit, setItemModalFromCartEdit] = useState(false);
+  const [itemModalTarget, setItemModalTarget] = useState<InventoryItem | null>(null);
+  const [itemModalQty, setItemModalQty] = useState(1);
+  const [itemModalUnitPrice, setItemModalUnitPrice] = useState(0);
 
   /** Inline edit: load invoice into the composer (same UI as new sale). */
   const [editingInvoiceId, setEditingInvoiceId] = useState<number | null>(null);
@@ -273,6 +390,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
   const [reservedPiecesOnEdit, setReservedPiecesOnEdit] = useState<Record<number, number>>({});
   const [invoiceHydrateLoading, setInvoiceHydrateLoading] = useState(false);
   const sellingComposerRef = useRef<HTMLDivElement>(null);
+  const itemModalUnitPriceInputRef = useRef<HTMLInputElement>(null);
 
   const getImageSrc = (imagePath: string | null): string => {
     if (!imagePath) return '';
@@ -281,16 +399,33 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     return apiUrl(path);
   };
 
-  const fetchAvailable = useCallback(async (searchTerm?: string) => {
+  const fetchInventoryActivitySummary = useCallback(async () => {
+    try {
+      const res = await fetch(apiUrl('/api/inventory/activity-summary'), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setInventoryActivitySummary(data && typeof data === 'object' ? (data as InventoryActivitySummaryMap) : {});
+    } catch {
+      setInventoryActivitySummary({});
+    }
+  }, [token]);
+
+  const fetchAvailable = useCallback(async (searchTerm?: string, opts?: { force?: boolean }) => {
     setLoading(true);
     setError(null);
     try {
       const params = new URLSearchParams();
       params.set('status', 'Available');
+      /** Include SKUs that sold out so Top Sold / Recent tabs still show just-sold lines */
+      params.set('for_selling_catalog', '1');
       params.set('limit', '200');
       if (searchTerm?.trim()) params.set('search', searchTerm.trim());
+      if (opts?.force) params.set('_ts', String(Date.now()));
       const res = await fetch(apiUrl(`/api/inventory?${params.toString()}`), {
         headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
       });
       if (!res.ok) {
         const msg = await parseErrorResponse(res, 'Failed to load inventory');
@@ -298,13 +433,8 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       }
       const data = await res.json();
       setAvailableItems(data);
-      if (searchTerm && searchTerm.trim() && data.length === 1) {
-        const code = searchTerm.trim().toLowerCase();
-        const item = data[0] as InventoryItem;
-        if (item.item_code && item.item_code.toLowerCase() === code && !cart.some(c => c.id === item.id)) {
-          setCart(prev => [...prev, item]);
-        }
-      }
+      /** Wait for sold / last_sale stats so Top Sold & Recent sort correctly after Refresh */
+      await fetchInventoryActivitySummary();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to load';
       setError(msg);
@@ -313,7 +443,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     } finally {
       setLoading(false);
     }
-  }, [token, showAlert, cart]);
+  }, [token, showAlert, fetchInventoryActivitySummary]);
 
   useEffect(() => {
     void fetchAvailable();
@@ -517,6 +647,21 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     void fetchInvoices();
   }, [fetchInvoices]);
 
+  /** Block wheel/trackpad from changing unit price while scrolling over the modal number field (spinners removed via CSS). */
+  useEffect(() => {
+    const el = itemModalUnitPriceInputRef.current;
+    if (!el || !itemModalOpen) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [itemModalOpen, itemModalTarget?.id]);
+
+  /** Pieces remaining on hand (for badges / modal tags). Does not include invoice-edit bonus stock. */
+  const rawPiecesAvailForItem = (item: InventoryItem) =>
+    Math.max(0, Math.floor(Number(item.pieces_remaining ?? item.pieces ?? 0)));
+
   const maxPcsForItem = (item: InventoryItem) => {
     const base = Math.floor(Number(item.pieces_remaining ?? item.pieces ?? 0));
     const inCart = cart.some(c => c.id === item.id);
@@ -572,16 +717,21 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     return Math.min(gross, Math.max(0, roundMoney2(raw)));
   };
 
-  const addToCart = (item: InventoryItem) => {
-    if (cart.some((c) => c.id === item.id)) return;
+  const addToCart = useCallback((item: InventoryItem) => {
     const initialUnit = sellingUnitPrefillFromList(item, saleCurrency);
-    setCart((prev) => [...prev, item]);
+    let inserted = false;
+    setCart(prev => {
+      if (prev.some(c => c.id === item.id)) return prev;
+      inserted = true;
+      return [...prev, item];
+    });
+    if (!inserted) return;
     setItemQuantities(prev => ({
       ...prev,
       [item.id]: 1,
     }));
     setItemUnitPrices(prev => ({ ...prev, [item.id]: roundMoney2(initialUnit) }));
-  };
+  }, [saleCurrency]);
 
   useEffect(() => {
     const hydrateQuickAdd = async () => {
@@ -614,7 +764,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       }
     };
     void hydrateQuickAdd();
-  }, [token]);
+  }, [token, addToCart]);
 
   const removeFromCart = (id: number) => {
     setCart((prev) => prev.filter((c) => c.id !== id));
@@ -624,6 +774,11 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       return next;
     });
     setItemUnitPrices(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setItemNotes(prev => {
       const next = { ...prev };
       delete next[id];
       return next;
@@ -638,11 +793,52 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     setItemQuantities(prev => ({ ...prev, [item.id]: q }));
   };
 
+  const bumpQtyForItem = (item: InventoryItem, delta: number) => {
+    const current = itemQuantities[item.id] ?? 1;
+    setQtyForItem(item, current + delta);
+  };
+
+  const confirmItemModalAdd = () => {
+    if (!itemModalTarget) return;
+    const item = itemModalTarget;
+    const maxPcs = maxPcsForItem(item);
+    const safeQty = Math.max(1, Math.min(maxPcs, Math.floor(Number(itemModalQty) || 1)));
+    const safeUnit = Math.max(0, roundMoney2(Number(itemModalUnitPrice) || 0));
+    if (!itemModalFromCartEdit) {
+      addToCart(item);
+    }
+    setItemQuantities(prev => ({ ...prev, [item.id]: safeQty }));
+    setItemUnitPrices(prev => ({ ...prev, [item.id]: safeUnit }));
+    setItemModalOpen(false);
+    setItemModalTarget(null);
+    setItemModalFromCartEdit(false);
+    setSearch('');
+  };
+
   const cartTotal = cart.reduce((sum, i) => sum + lineSubtotalGrossForItem(i), 0);
   const itemsDiscountTotal = cart.reduce((sum, item) => sum + lineDerivedItemDiscount(item), 0);
   const parsedDiscount = Number.isFinite(discountAmount) ? discountAmount : 0;
-  const finalTotalRaw = cartTotal - itemsDiscountTotal - parsedDiscount;
+  const afterLineDiscount = Math.max(0, cartTotal - itemsDiscountTotal);
+  const orderDiscountValue =
+    discountType === 'pct'
+      ? roundMoney2((afterLineDiscount * Math.max(0, parsedDiscount)) / 100)
+      : Math.max(0, parsedDiscount);
+  const finalTotalRaw = afterLineDiscount - orderDiscountValue;
   const finalTotal = finalTotalRaw > 0 ? finalTotalRaw : 0;
+  const itemModalListUnit =
+    itemModalTarget != null ? sellingUnitPrefillFromList(itemModalTarget, saleCurrency) : 0;
+  const itemModalPiecesAvail =
+    itemModalTarget != null ? rawPiecesAvailForItem(itemModalTarget) : 0;
+  const itemModalDiscount = Math.max(0, roundMoney2(itemModalListUnit - itemModalUnitPrice));
+  const itemModalDiscountPct =
+    itemModalListUnit > 0 ? roundMoney2((itemModalDiscount / itemModalListUnit) * 100) : 0;
+  const itemModalSubtotal = roundMoney2(Math.max(0, itemModalUnitPrice) * Math.max(1, itemModalQty));
+  const itemModalPremium = Math.max(0, roundMoney2(itemModalUnitPrice - itemModalListUnit));
+  const itemModalPremiumPct =
+    itemModalListUnit > 0 ? roundMoney2((itemModalPremium / itemModalListUnit) * 100) : 0;
+  const modalPriceDiff = roundMoney2(itemModalListUnit - itemModalUnitPrice);
+  const modalShowSavingBanner = modalPriceDiff > 0.005;
+  const modalShowAboveBanner = modalPriceDiff < -0.005;
 
   const handleNewCustomerChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -781,6 +977,30 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     }
   };
 
+  const applySaleCurrency = useCallback(
+    (code: string) => {
+      const next = normalizeCurrencyCode(code);
+      setSaleCurrency(next);
+      setItemUnitPrices(prev => {
+        const nextPrices: Record<number, number> = {};
+        for (const it of cart) {
+          nextPrices[it.id] = sellingUnitPrefillFromList(it, next);
+        }
+        return nextPrices;
+      });
+    },
+    [cart]
+  );
+
+  useEffect(() => {
+    if (!ccModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCcModal(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [ccModal]);
+
   const createInvoice = async () => {
     if (cart.length === 0) {
       showAlert({
@@ -795,7 +1015,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     try {
       const body = {
         customer_id: selectedCustomer ? selectedCustomer.id : null,
-        discount: parsedDiscount,
+        discount: orderDiscountValue,
         currency_code: saleCurrency,
         items: cart.map(item => ({
           inventory_item_id: item.id,
@@ -861,9 +1081,10 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         message: `${summary.invoiceNo} is ready. You can record payment below or from Payments.`,
         variant: 'success',
       });
-      setInvoiceCreatedLineOverride(null);
+      resetInvoice();
       setCreatedInvoice(summary);
       setInvoiceCreatedOpen(true);
+      await Promise.all([fetchAvailable(), fetchInvoices()]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to save invoice';
       showAlert({ title: 'Could not save invoice', message: msg, variant: 'error' });
@@ -892,7 +1113,9 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
     setCart([]);
     setItemQuantities({});
     setItemUnitPrices({});
+    setItemNotes({});
     setDiscountAmount(0);
+    setDiscountType('pct');
     setSaleCurrency(SELLING_DEFAULT_CURRENCY);
     setSelectedCustomer(null);
     setCustomerSearch('');
@@ -926,8 +1149,10 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       const payload = {
         selectedCustomer,
         discountAmount,
+        discountType,
         itemQuantities,
         itemUnitPrices,
+        itemNotes,
         cart,
         saleCurrency,
       };
@@ -977,8 +1202,10 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         payload: {
           selectedCustomer: Customer | null;
           discountAmount: number;
+          discountType?: 'pct' | 'flat';
           itemQuantities?: Record<number, number>;
           itemUnitPrices?: Record<number, number>;
+          itemNotes?: Record<number, string>;
           cart: InventoryItem[];
           saleCurrency?: string;
         };
@@ -986,6 +1213,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       const payload = data.payload || ({} as any);
       setSelectedCustomer(payload.selectedCustomer || null);
       setDiscountAmount(roundMoney2(Number(payload.discountAmount || 0)));
+      setDiscountType(payload.discountType === 'flat' ? 'flat' : 'pct');
       const invoiceCur =
         payload.saleCurrency && typeof payload.saleCurrency === 'string'
           ? normalizeCurrencyCode(payload.saleCurrency)
@@ -999,6 +1227,10 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
       const savedUnitPrices =
         payload.itemUnitPrices && typeof payload.itemUnitPrices === 'object'
           ? (payload.itemUnitPrices as Record<number, number>)
+          : {};
+      const savedNotes =
+        payload.itemNotes && typeof payload.itemNotes === 'object'
+          ? (payload.itemNotes as Record<number, string>)
           : {};
       const nextQ: Record<number, number> = {};
       rawCart.forEach(it => {
@@ -1017,6 +1249,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         }
       });
       setItemUnitPrices(nextUnitPrices);
+      setItemNotes(savedNotes);
       setCart(rawCart);
       setEditingInvoiceId(null);
       setEditingInvoiceNo(null);
@@ -1097,7 +1330,14 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
           headers: { Authorization: `Bearer ${token}` },
         });
         if (cRes.ok) {
-          setSelectedCustomer((await cRes.json()) as Customer);
+          const customerPayload = (await cRes.json()) as
+            | Customer
+            | { customer?: Customer | null };
+          setSelectedCustomer(
+            customerPayload && 'customer' in customerPayload
+              ? customerPayload.customer || null
+              : (customerPayload as Customer)
+          );
         } else {
           setSelectedCustomer({
             id: data.customer_id,
@@ -1174,9 +1414,127 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
           .slice(0, 8);
 
   const addSuggestedItem = (item: InventoryItem) => {
-    addToCart(item);
-    setSearch('');
+    const defaultUnit = lineSellUnitForItem(item);
+    setItemModalFromCartEdit(false);
+    setItemModalTarget(item);
+    setItemModalQty(1);
+    setItemModalUnitPrice(defaultUnit);
+    setItemModalOpen(true);
   };
+
+  const openItemModal = (item: InventoryItem) => {
+    const defaultUnit = lineSellUnitForItem(item);
+    setItemModalFromCartEdit(false);
+    setItemModalTarget(item);
+    setItemModalQty(1);
+    setItemModalUnitPrice(defaultUnit);
+    setItemModalOpen(true);
+  };
+
+  const openItemModalEditFromCart = (item: InventoryItem) => {
+    const unit = lineSellUnitForItem(item);
+    const q = itemQuantities[item.id] ?? 1;
+    setItemModalFromCartEdit(true);
+    setItemModalTarget(item);
+    setItemModalQty(Math.max(1, Math.floor(Number(q) || 1)));
+    setItemModalUnitPrice(unit);
+    setItemModalOpen(true);
+  };
+
+  const catalogItems = useMemo(() => {
+    const items = [...availableItems];
+
+    if (catalogFilter === 'all') {
+      items.sort((a, b) => {
+        const tb = inventoryTimestampMs(b.created_at ?? b.updated_at);
+        const ta = inventoryTimestampMs(a.created_at ?? a.updated_at);
+        return tb - ta;
+      });
+      return items;
+    }
+
+    /**
+     * Top Sold & Recent: show items that sold most recently on an invoice first (last SALE movement).
+     * Never-sold lines tie-break by inventory updated_at so the grid still feels ordered.
+     */
+    if (catalogFilter === 'top' || catalogFilter === 'recent') {
+      items.sort((a, b) => {
+        const tb = lastSaleAtMsFromSummary(b, inventoryActivitySummary);
+        const ta = lastSaleAtMsFromSummary(a, inventoryActivitySummary);
+        if (tb !== ta) return tb - ta;
+        return (
+          inventoryTimestampMs(b.updated_at ?? b.created_at) -
+          inventoryTimestampMs(a.updated_at ?? a.created_at)
+        );
+      });
+      return items.slice(0, CATALOG_TAB_PREVIEW_LIMIT);
+    }
+
+    return items;
+  }, [availableItems, catalogFilter, inventoryActivitySummary]);
+
+  /** Catalog column: viewport shows a taller card area before scrolling. */
+  const sellingCatalogSectionRef = useRef<HTMLElement | null>(null);
+  const sellingCatalogScrollRef = useRef<HTMLDivElement>(null);
+  const sellingCatalogCardsRef = useRef<HTMLDivElement>(null);
+  const [catalogScrollMaxPx, setCatalogScrollMaxPx] = useState<number | null>(null);
+
+  const updateCatalogScrollMaxHeight = useCallback(() => {
+    const section = sellingCatalogSectionRef.current;
+    const scrollEl = sellingCatalogScrollRef.current;
+    const grid = sellingCatalogCardsRef.current;
+    if (!section || !scrollEl || !grid) {
+      setCatalogScrollMaxPx(null);
+      return;
+    }
+    const firstCard = grid.querySelector<HTMLElement>('.selling-pos-card');
+    if (!firstCard) {
+      setCatalogScrollMaxPx(null);
+      return;
+    }
+    const gStyle = getComputedStyle(grid);
+    const gapRaw = gStyle.rowGap && gStyle.rowGap !== 'normal' ? gStyle.rowGap : gStyle.gap;
+    const gap = Math.max(0, parseFloat(String(gapRaw).replace('px', '')) || 12);
+    const colStr = gStyle.gridTemplateColumns;
+    const nCols = Math.max(1, colStr.split(/\s+/).filter(Boolean).length);
+    const rows = Math.ceil(CATALOG_VISIBLE_SLOTS / nCols);
+    const cardH = firstCard.getBoundingClientRect().height;
+    const slotBlock = rows * cardH + (rows - 1) * gap;
+    const sectionRect = section.getBoundingClientRect();
+    const scrollRect = scrollEl.getBoundingClientRect();
+    const available = Math.max(0, sectionRect.bottom - scrollRect.top);
+    const h = available > 8 ? Math.min(slotBlock, available) : slotBlock;
+    setCatalogScrollMaxPx(Math.max(120, Math.ceil(h)));
+  }, []);
+
+  useLayoutEffect(() => {
+    updateCatalogScrollMaxHeight();
+  }, [updateCatalogScrollMaxHeight, catalogItems, search, catalogFilter]);
+
+  useEffect(() => {
+    const section = sellingCatalogSectionRef.current;
+    if (!section) return;
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(() => requestAnimationFrame(() => updateCatalogScrollMaxHeight()));
+    });
+    ro.observe(section);
+    return () => ro.disconnect();
+  }, [updateCatalogScrollMaxHeight]);
+
+  useEffect(() => {
+    const grid = sellingCatalogCardsRef.current;
+    if (!grid) return;
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(() => updateCatalogScrollMaxHeight());
+    });
+    ro.observe(grid);
+    return () => ro.disconnect();
+  }, [updateCatalogScrollMaxHeight, catalogItems.length]);
+
+  const cartQtyById = cart.reduce<Record<number, number>>((acc, item) => {
+    acc[item.id] = itemQuantities[item.id] ?? 1;
+    return acc;
+  }, {});
 
   const invoiceCreatedModalLineViews: InvoiceCreatedLineView[] =
     invoiceCreatedLineOverride ??
@@ -1213,18 +1571,11 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
         </div>
       )}
 
-      <div className="selling2-grid" ref={sellingComposerRef}>
-        <div className="selling2-left">
-          <section className="selling2-card selling2-gem-main-card">
-            <div className="selling2-gem-card-header">
-              <div className="selling2-gem-card-title">
-                <div className="selling2-gem-title-icon" aria-hidden="true">
-                  <IconPlusSm />
-                </div>
-                Search &amp; Add Items
-              </div>
-            </div>
-            <div className="selling2-gem-search-bar">
+      {view === 'compose' && (
+        <div className="selling2-grid selling-pos-grid selling-pos-composer" ref={sellingComposerRef}>
+          <section className="selling-pos-catalog" ref={sellingCatalogSectionRef}>
+          <div className="selling-pos-topbar">
+            <div className="selling-pos-search-inline">
               <div className="selling2-search selling2-search--gem">
                 <span className="selling2-search-icon" aria-hidden="true">
                   <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1237,352 +1588,355 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   className="selling2-search-input"
-                  placeholder="Search by Gem ID, stone type, description…"
+                  placeholder="Search by name, code, or category..."
                 />
               </div>
             </div>
-
-            {search.trim() && itemSuggestions.length > 0 && (
-              <div className="selling2-suggest selling2-suggest--embedded">
-                {itemSuggestions.map(it => (
+            <div className="selling-pos-tabs" role="tablist" aria-label="Catalog filters">
+              {([
+                ['all', 'All'],
+                ['top', 'Top Sold'],
+                ['recent', 'Recent'],
+              ] as const).map(([id, label]) => {
+                const active = catalogFilter === id;
+                return (
                   <button
-                    key={it.id}
+                    key={id}
                     type="button"
-                    className="selling2-suggest-row"
-                    onClick={() => addSuggestedItem(it)}
+                    className={`selling-pos-tab${active ? ' is-active' : ''}`}
+                    onClick={() => setCatalogFilter(id)}
+                    role="tab"
+                    aria-selected={active}
                   >
-                    <span className="selling2-suggest-code">{it.item_code || `#${it.id}`}</span>
-                    <span className="selling2-suggest-name">{it.category}</span>
-                    <span className="selling2-suggest-meta">
-                      {it.weight_carats != null ? `${it.weight_carats} ct` : '—'} · list{' '}
-                      {formatUsdOnlyFromAny(
-                        Number(it.selling_total_price ?? 0),
-                        it.selling_currency ?? DEFAULT_CURRENCY_CODE,
-                        thbPerUnit
-                      )}
-                    </span>
+                    {label}
                   </button>
-                ))}
-              </div>
-            )}
+                );
+              })}
+            </div>
+          </div>
+          {search.trim() && itemSuggestions.length > 0 && (
+            <div className="selling-pos-suggest-inline">
+              {itemSuggestions.map(it => (
+                <button key={it.id} type="button" className="selling-pos-suggest-chip" onClick={() => addSuggestedItem(it)}>
+                  {it.item_code || `#${it.id}`}
+                </button>
+              ))}
+            </div>
+          )}
 
-            <div className="selling2-gem-added-head">
-              <span className="selling2-gem-added-label">Added Items</span>
-              <span className="selling2-gem-count-chip">
-                {cart.length === 1 ? '1 item' : `${cart.length} items`}
+          {catalogItems.length === 0 ? (
+            <div className="selling-pos-catalog-body selling-pos-catalog-body--empty">
+              <div className="selling2-empty selling2-empty--gem">
+                <div className="selling2-empty-title">No available items</div>
+                <div className="selling2-empty-sub">Try another search or category filter.</div>
+              </div>
+            </div>
+          ) : (
+            <div
+              className="selling-pos-catalog-body"
+              ref={sellingCatalogScrollRef}
+              style={catalogScrollMaxPx != null ? { maxHeight: catalogScrollMaxPx } : undefined}
+            >
+              <div className="selling-pos-cards" ref={sellingCatalogCardsRef}>
+              {catalogItems.map(it => {
+                const codeLabel = it.item_code || `#${it.id}`;
+                const itemLabel = it.category || codeLabel;
+                const inCart = cart.some(c => c.id === it.id);
+                const addedQty = cartQtyById[it.id] || 0;
+                const avail = rawPiecesAvailForItem(it);
+                const imgSrc = getImageSrc(it.image_path);
+                const showPlaceholder = !imgSrc || cartImageLoadFailed.has(it.id);
+                return (
+                  <article key={it.id} className={`selling-pos-card${inCart ? ' is-in-cart' : ''}`}>
+                    <div className="selling-pos-card-media">
+                      {imgSrc && !cartImageLoadFailed.has(it.id) ? (
+                        <img
+                          className="selling-pos-card-image"
+                          src={imgSrc}
+                          alt={codeLabel}
+                          loading="lazy"
+                          onError={() => setCartImageLoadFailed(prev => new Set(prev).add(it.id))}
+                        />
+                      ) : null}
+                      {showPlaceholder ? <span className="selling2-item-thumb-placeholder">No img</span> : null}
+                      <span className={`selling-pos-stock-badge${avail > 0 ? ' is-available' : ''}`}>
+                        {avail > 0 ? `Available · ${avail} pcs` : 'Out of stock'}
+                      </span>
+                    </div>
+                    <div className="selling-pos-card-body">
+                      <div className="selling-pos-card-code">{codeLabel}</div>
+                      <strong className="selling-pos-card-title">{itemLabel}</strong>
+                      <div className="selling-pos-card-sub">
+                        {(it.item_type || 'Item').replace(/_/g, ' ')}
+                        {it.weight_carats != null ? ` · ${it.weight_carats} ct` : ''}
+                      </div>
+                      <div className="selling-pos-card-price-row">
+                        <span className="selling-pos-card-price">
+                          {formatUsdOnlyFromAny(
+                            Number(it.selling_total_price ?? 0),
+                            it.selling_currency ?? DEFAULT_CURRENCY_CODE,
+                            thbPerUnit
+                          )}
+                        </span>
+                        <span className="selling-pos-card-currency">USD</span>
+                      </div>
+                      <button
+                        type="button"
+                        className={`selling-pos-card-add${inCart ? ' is-in-cart' : ''}`}
+                        onClick={() => openItemModal(it)}
+                        disabled={avail <= 0}
+                      >
+                        {!inCart ? 'Add to Cart' : `Add More (${addedQty})`}
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+              </div>
+            </div>
+          )}
+          </section>
+
+          <section className="selling-pos-summary" aria-label="Current order">
+            <div className="selling-pos-summary-head">
+              <h3>Current Order</h3>
+              <span className="selling-pos-order-count-pill" aria-label={`${cart.reduce((sum, item) => sum + (itemQuantities[item.id] ?? 1), 0)} items`}>
+                {cart.length === 0
+                  ? '0 items'
+                  : `${cart.reduce((sum, item) => sum + (itemQuantities[item.id] ?? 1), 0)} ${
+                      cart.reduce((s, i) => s + (itemQuantities[i.id] ?? 1), 0) === 1 ? 'item' : 'items'
+                    }`}
               </span>
             </div>
 
-            {cart.length === 0 ? (
-              <div className="selling2-empty selling2-empty--gem">
-                <div className="selling2-empty-title">No items added yet</div>
-                <div className="selling2-empty-sub">
-                  Search and add items above. List prices in search results are shown in USD (Profile rates). Line totals
-                  use the invoice currency you choose in the summary.
-                </div>
-              </div>
-            ) : (
-              <div className="selling2-table-wrap selling2-table-wrap--gem">
-                <table className="selling2-table" aria-label="Added items">
-                  <thead>
-                    <tr>
-                      <th className="selling2-item-thumb-cell" scope="col">Image</th>
-                      <th>Code</th>
-                      <th>Description</th>
-                      <th>Pcs</th>
-                      <th>Unit price ({normalizeCurrencyCode(saleCurrency)})</th>
-                      <th>Subtotal</th>
-                      <th>Discount</th>
-                      <th>Net</th>
-                      <th>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {cart.map(it => {
-                      const rowDiscount = lineDerivedItemDiscount(it);
-                      const maxPcs = maxPcsForItem(it);
-                      const qty = itemQuantities[it.id] ?? 1;
-                      const lineGross = lineSubtotalGrossForItem(it);
-                      const lineNet = lineSellTotalForItem(it);
-                      const avail = it.pieces_remaining ?? it.pieces;
-                      const imgSrc = getImageSrc(it.image_path);
-                      const showPlaceholder = !imgSrc || cartImageLoadFailed.has(it.id);
-                      return (
-                        <tr key={it.id}>
-                          <td className="selling2-item-thumb-cell">
-                            {imgSrc && !cartImageLoadFailed.has(it.id) ? (
-                              <img
-                                className="selling2-item-thumb"
-                                src={imgSrc}
-                                alt=""
-                                loading="lazy"
-                                onError={() =>
-                                  setCartImageLoadFailed(prev => new Set(prev).add(it.id))
-                                }
-                              />
-                            ) : null}
-                            {showPlaceholder ? (
-                              <span className="selling2-item-thumb-placeholder">No img</span>
-                            ) : null}
-                          </td>
-                          <td><span className="selling2-code-badge">{it.item_code || `#${it.id}`}</span></td>
-                          <td>
-                            <div className="selling2-desc-title">{it.category}</div>
-                            <div className="selling2-desc-sub">
-                              {it.item_type}
-                              {it.weight_carats != null ? ` · ${it.weight_carats} ct` : ''}
-                              {avail != null ? ` · ${avail} in stock` : ''}
-                            </div>
-                          </td>
-                          <td>
-                            <input
-                              type="number"
-                              className="selling2-qty-input"
-                              value={qty}
-                              min={1}
-                              max={maxPcs}
-                              step={1}
-                              title={`Pieces to sell (1–${maxPcs})`}
-                              onChange={e => setQtyForItem(it, Number(e.target.value))}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              type="number"
-                              className="selling2-unit-price-input"
-                              value={lineSellUnitForItem(it)}
-                              min={0}
-                              step={0.01}
-                              title={`Unit price (${saleCurrency})`}
-                              onChange={e =>
-                                setItemUnitPrices(prev => ({
-                                  ...prev,
-                                  [it.id]: Math.max(0, roundMoney2(parseMoneyInput(e.target.value))),
-                                }))
-                              }
-                            />
-                          </td>
-                          <td className="selling2-price">{formatMoneyAmount(lineGross, saleCurrency)}</td>
-                          <td className="selling2-price selling2-discount-cell">
-                            {rowDiscount > 0 ? formatMoneyAmount(rowDiscount, saleCurrency) : '—'}
-                          </td>
-                          <td className="selling2-net">{formatMoneyAmount(lineNet, saleCurrency)}</td>
-                          <td>
-                            <button type="button" className="selling2-trash" onClick={() => removeFromCart(it.id)} aria-label="Remove">
-                              <IconTrash />
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-        </div>
-
-        <div className="selling2-right">
-          <section className="selling2-panel-card">
-            <div className="selling2-panel-inner">
-              <div className="selling2-panel-section">
-                <div className="selling2-panel-label">Customer</div>
-
-                {selectedCustomer ? (
-                  <div className="selling2-customer-selected selling2-customer-selected--gem">
-                    <span className="selling2-customer-selected-icon" aria-hidden="true">
-                      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                        <circle cx="12" cy="7" r="4" />
-                      </svg>
+            <div className="selling-pos-cc selling-pos-cc--bar">
+              <div className="selling-pos-cc-row">
+                <div className="selling-pos-cc-pair">
+                  <button
+                    type="button"
+                    className="selling-pos-cc-btn"
+                    onClick={() => setCcModal('customer')}
+                  >
+                    <IconCcUser />
+                    <span
+                      className={`selling-pos-cc-btn-text${selectedCustomer ? '' : ' is-placeholder'}`}
+                      title={selectedCustomer ? selectedCustomer.name : undefined}
+                    >
+                      {selectedCustomer ? selectedCustomer.name : 'Add customer'}
                     </span>
-                    <div className="selling2-customer-selected-main">
-                      <div className="selling2-customer-selected-name">{selectedCustomer.name}</div>
-                      <div className="selling2-customer-selected-phone">{selectedCustomer.phone || ''}</div>
-                    </div>
+                  </button>
+                  {selectedCustomer && (
                     <button
                       type="button"
-                      className="selling2-customer-selected-close"
-                      onClick={() => setSelectedCustomer(null)}
+                      className="selling-pos-cc-inline-clear"
+                      onClick={e => {
+                        e.stopPropagation();
+                        setSelectedCustomer(null);
+                      }}
                       aria-label="Remove customer"
+                      title="Remove customer"
                     >
-                      <IconX size={16} />
+                      <IconX size={14} />
                     </button>
-                  </div>
-                ) : (
-                  <>
-                    <div className="selling2-customer-search selling2-customer-search--gem">
-                      <span className="selling2-search-icon" aria-hidden="true">
-                        <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                          <circle cx="12" cy="7" r="4" />
-                        </svg>
-                      </span>
-                      <input
-                        type="search"
-                        value={customerSearch}
-                        onChange={(e) => setCustomerSearch(e.target.value)}
-                        className="selling2-search-input"
-                        placeholder="Search by name, phone…"
-                      />
+                  )}
+                </div>
+                <div className="selling-pos-cc-pair">
+                  <button type="button" className="selling-pos-cc-btn" onClick={() => setCcModal('currency')}>
+                    <IconCcCurrency />
+                    <span
+                      className="selling-pos-cc-btn-text"
+                      title={
+                        SUPPORTED_CURRENCIES.find(c => c.code === normalizeCurrencyCode(saleCurrency))?.label ?? saleCurrency
+                      }
+                    >
+                      {SUPPORTED_CURRENCIES.find(c => c.code === normalizeCurrencyCode(saleCurrency))?.label ?? saleCurrency}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="selling-pos-cart-scroll">
+              <div className="selling-pos-cart-lines">
+              {cart.length === 0 ? (
+                <div className="selling-pos-cart-empty">No items in the bill yet.</div>
+              ) : (
+                cart.map(it => {
+                const qty = itemQuantities[it.id] ?? 1;
+                const maxPcs = maxPcsForItem(it);
+                const lineNet = lineSellTotalForItem(it);
+                const lineDiscount = lineDerivedItemDiscount(it);
+                const imgSrc = getImageSrc(it.image_path);
+                const showPlaceholder = !imgSrc || cartImageLoadFailed.has(it.id);
+                const codeLabel = it.item_code || `#${it.id}`;
+                const displayName = (it.category || codeLabel).replace(/_/g, ' ');
+                const typeCtLabel = `${(it.item_type || 'item').replace(/_/g, ' ').toLowerCase()}${
+                  it.weight_carats != null ? ` · ${it.weight_carats} ct` : ''
+                }`;
+                return (
+                  <div key={it.id} className="selling-pos-line">
+                    <div className="selling-pos-line-thumb">
+                      {imgSrc && !cartImageLoadFailed.has(it.id) ? (
+                        <img
+                          className="selling2-item-thumb"
+                          src={imgSrc}
+                          alt=""
+                          loading="lazy"
+                          onError={() => setCartImageLoadFailed(prev => new Set(prev).add(it.id))}
+                        />
+                      ) : null}
+                      {showPlaceholder ? <span className="selling2-item-thumb-placeholder">No img</span> : null}
                     </div>
-                    {customers.length > 0 && (
-                      <div className="selling2-customer-list selling2-customer-list--gem">
-                        {customers.map(c => (
-                          <button
-                            key={c.id}
-                            type="button"
-                            className="selling2-customer-row"
-                            onClick={() => {
-                              setSelectedCustomer(c);
-                              setCustomerSearch('');
-                              setCustomers([]);
-                            }}
-                          >
-                            <div className="selling2-customer-row-name">{c.name}</div>
-                            <div className="selling2-customer-row-phone">{c.phone || ''}</div>
-                          </button>
-                        ))}
+                    <div className="selling-pos-line-main">
+                      <div className="selling-pos-line-head">
+                        <div className="selling-pos-line-name">{displayName}</div>
+                        <div className="selling-pos-line-meta">
+                          <span className="selling-pos-line-name-prefix">{typeCtLabel}</span>
+                        </div>
                       </div>
-                    )}
-                  </>
-                )}
-
-                <button type="button" className="selling2-new-customer selling2-new-customer--gem" onClick={() => setNewCustomerModalOpen(true)}>
-                  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <line x1="12" y1="5" x2="12" y2="19" />
-                    <line x1="5" y1="12" x2="19" y2="12" />
-                  </svg>
-                  New customer
-                </button>
-              </div>
-
-              <div className="selling2-panel-divider" />
-
-              <div className="selling2-panel-section">
-                <label htmlFor="sale-currency" className="selling2-panel-label">
-                  Invoice Currency
-                </label>
-                <div className="selling2-currency-select-wrap">
-                  <select
-                    id="sale-currency"
-                    className="selling2-currency-select"
-                    value={saleCurrency}
-                    onChange={e => {
-                      const next = normalizeCurrencyCode(e.target.value);
-                      setSaleCurrency(next);
-                      setItemUnitPrices(() => {
-                        const nextPrices: Record<number, number> = {};
-                        for (const it of cart) {
-                          nextPrices[it.id] = sellingUnitPrefillFromList(it, next);
+                      <div className="selling-pos-line-code-wrap">
+                        <span className="selling-pos-line-meta-badge">{codeLabel}</span>
+                      </div>
+                      <div className="selling-pos-line-price-row">
+                        <span className="selling-pos-line-unit">{formatMoneyAmount(lineSellUnitForItem(it), saleCurrency)}</span>
+                        {lineDiscount > 0 ? (
+                          <span className="selling-pos-line-discount">-{formatMoneyAmount(lineDiscount, saleCurrency)} off</span>
+                        ) : null}
+                      </div>
+                      {itemNotes[it.id] ? <div className="selling-pos-line-note">Note added</div> : null}
+                      <div className="selling-pos-line-controls">
+                        <button type="button" onClick={() => bumpQtyForItem(it, -1)} disabled={qty <= 1}>−</button>
+                        <input
+                          type="number"
+                          value={qty}
+                          min={1}
+                          max={maxPcs}
+                          step={1}
+                          onChange={e => setQtyForItem(it, Number(e.target.value))}
+                        />
+                        <button type="button" onClick={() => bumpQtyForItem(it, 1)} disabled={qty >= maxPcs}>+</button>
+                        <span className="selling-pos-line-equals">= {formatMoneyAmount(lineNet, saleCurrency)}</span>
+                      </div>
+                    </div>
+                    <div className="selling-pos-line-side">
+                      <input
+                        id={`sell-line-unit-${it.id}`}
+                        type="number"
+                        className="selling2-unit-price-input"
+                        value={lineSellUnitForItem(it)}
+                        min={0}
+                        step={0.01}
+                        title={`Unit price (${saleCurrency})`}
+                        onChange={e =>
+                          setItemUnitPrices(prev => ({
+                            ...prev,
+                            [it.id]: Math.max(0, roundMoney2(parseMoneyInput(e.target.value))),
+                          }))
                         }
-                        return nextPrices;
-                      });
-                    }}
-                  >
-                    {SUPPORTED_CURRENCIES.map(c => (
-                      <option key={c.code} value={c.code}>
-                        {c.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <p className="selling2-currency-hint selling2-currency-hint--gem">
-                  Unit prices are in the invoice currency only. Changing currency refills from inventory when the list
-                  currency matches; otherwise enter prices manually (no automatic conversion).
-                </p>
-              </div>
-
-              <div className="selling2-panel-divider" />
-
-              <div className="selling2-gem-summary-lines">
-                <div className="selling2-summary-row selling2-summary-row--gem">
-                  <span className="selling2-summary-key">Subtotal</span>
-                  <strong className="selling2-summary-val">{formatMoneyAmount(cartTotal, saleCurrency)}</strong>
-                </div>
-                <div className="selling2-summary-row selling2-summary-row--gem">
-                  <span className="selling2-summary-key">Item discounts</span>
-                  <span className="selling2-summary-val selling2-neg">
-                    −{formatMoneyAmount(itemsDiscountTotal, saleCurrency)}
-                  </span>
-                </div>
-              </div>
-
-              <div className="selling2-order-discount-box">
-                <div className="selling2-order-discount-head">
-                  <div className="selling2-order-discount-badge" aria-hidden="true">
-                    %
+                      />
+                      <button
+                        type="button"
+                        className="selling-pos-line-action"
+                        onClick={() => openItemModalEditFromCart(it)}
+                        aria-label="Edit line details"
+                        title="Edit line details"
+                      >
+                        <IconEdit />
+                      </button>
+                      <button type="button" className="selling2-trash" onClick={() => removeFromCart(it.id)} aria-label="Remove">
+                        <IconTrash />
+                      </button>
+                    </div>
                   </div>
-                  <span className="selling2-order-discount-title">Order Discount</span>
-                </div>
-                <div className="selling2-order-discount-inputrow selling2-order-discount-inputrow--gem">
+                );
+                })
+              )}
+            </div>
+            </div>
+
+            <div className="selling-pos-summary-foot">
+            <div className="selling-pos-summary-math">
+              <div className="selling2-summary-row"><span>Subtotal</span><strong>{formatMoneyAmount(cartTotal, saleCurrency)}</strong></div>
+              <div className="selling2-summary-row"><span>Line discount</span><span className="selling2-neg">−{formatMoneyAmount(itemsDiscountTotal, saleCurrency)}</span></div>
+              <div className="selling2-summary-row">
+                <span>Order discount</span>
+                <div className="selling-pos-order-discount-input">
                   <input
                     type="number"
                     value={discountAmount}
                     onChange={e => setDiscountAmount(parseMoneyInput(e.target.value))}
                     min={0}
                   />
-                  <span className="selling2-od-preview">({formatMoneyAmount(discountAmount, saleCurrency)})</span>
+                  <div className="selling-pos-discount-type">
+                    <button
+                      type="button"
+                      className={discountType === 'pct' ? 'is-active' : ''}
+                      onClick={() => setDiscountType('pct')}
+                    >
+                      %
+                    </button>
+                    <button
+                      type="button"
+                      className={discountType === 'flat' ? 'is-active' : ''}
+                      onClick={() => setDiscountType('flat')}
+                    >
+                      {saleCurrency}
+                    </button>
+                  </div>
                 </div>
               </div>
-
-              <div className="selling2-totals-banner">
-                <span className="selling2-totals-banner-label">Total Discounts</span>
-                <span className="selling2-totals-banner-val">
-                  −{formatMoneyAmount(itemsDiscountTotal + parsedDiscount, saleCurrency)}
-                </span>
-              </div>
-
-              <div className="selling2-final-total-row">
-                <span className="selling2-ft-label">Final Total</span>
-                <span className="selling2-ft-value">{formatMoneyAmount(finalTotal, saleCurrency)}</span>
-              </div>
-
-              {draftMessage && <div className="selling-state selling2-draft-message">{draftMessage}</div>}
-
-              <button
-                type="button"
-                className="selling2-btn-primary"
-                onClick={createInvoice}
-                disabled={creatingInvoice || cart.length === 0 || invoiceHydrateLoading}
-              >
-                {creatingInvoice
-                  ? editingInvoiceId
-                    ? 'Updating…'
-                    : 'Creating…'
-                  : editingInvoiceId
-                    ? 'Update invoice'
-                    : 'Create Invoice'}
-              </button>
-
-              <div className="selling2-draft-actions selling2-gem-btn-row">
-                <button type="button" className="selling2-draft-btn selling2-draft-btn--new" onClick={resetInvoice}>
-                  New Bill
-                </button>
-                <button
-                  type="button"
-                  className="selling2-draft-btn selling2-draft-btn--save"
-                  onClick={saveDraft}
-                  disabled={savingDraft || cart.length === 0 || editingInvoiceId != null}
-                  title={editingInvoiceId != null ? 'Save draft is disabled while editing an invoice' : undefined}
-                >
-                  {savingDraft ? 'Saving…' : 'Save Draft'}
-                </button>
-                <button
-                  type="button"
-                  className="selling2-draft-btn selling2-draft-btn--load"
-                  onClick={loadLatestDraft}
-                  disabled={loadingDraft}
-                >
-                  {loadingDraft ? 'Loading…' : 'Load Draft'}
-                </button>
+              <div className="selling-pos-total-row">
+                <span>Net total</span>
+                <strong>{formatMoneyAmount(finalTotal, saleCurrency)}</strong>
               </div>
             </div>
-          </section>
-        </div>
-      </div>
 
-      <section className="selling-invoices-card selling-invoices-gem">
+            {draftMessage && <div className="selling-state selling2-draft-message">{draftMessage}</div>}
+
+            <button
+              type="button"
+              className="selling2-btn-primary"
+              onClick={createInvoice}
+              disabled={creatingInvoice || cart.length === 0 || invoiceHydrateLoading}
+            >
+              {creatingInvoice
+                ? editingInvoiceId
+                  ? 'Updating…'
+                  : 'Creating…'
+                : editingInvoiceId
+                  ? 'Update invoice'
+                  : 'Create Invoice'}
+            </button>
+
+            <div className="selling2-draft-actions selling2-gem-btn-row">
+              <button type="button" className="selling2-draft-btn selling2-draft-btn--new" onClick={resetInvoice}>
+                New Bill
+              </button>
+              <button
+                type="button"
+                className="selling2-draft-btn selling2-draft-btn--save"
+                onClick={saveDraft}
+                disabled={savingDraft || cart.length === 0 || editingInvoiceId != null}
+                title={editingInvoiceId != null ? 'Save draft is disabled while editing an invoice' : undefined}
+              >
+                {savingDraft ? 'Saving…' : 'Save Draft'}
+              </button>
+              <button
+                type="button"
+                className="selling2-draft-btn selling2-draft-btn--load"
+                onClick={loadLatestDraft}
+                disabled={loadingDraft}
+              >
+                {loadingDraft ? 'Loading…' : 'Load Draft'}
+              </button>
+            </div>
+            </div>
+          </section>
+          </div>
+      )}
+
+      {view === 'invoices' && (
+      <section className="selling-invoices-card selling-invoices-gem" id="selling-invoice-section">
         <header className="selling-invoices-gem-head">
           <div className="selling-invoices-gem-head-top">
             <div className="selling-invoices-gem-title-group">
@@ -1609,6 +1963,9 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
                 onChange={e => setInvoiceSearch(e.target.value)}
               />
             </div>
+            <button type="button" className="selling2-btn-primary selling-invoices-create-btn" onClick={() => onChangeView?.('compose')}>
+              Create Invoice
+            </button>
           </div>
           <div className="selling-invoices-gem-tabs" role="tablist" aria-label="Invoice status filters">
             {(
@@ -1722,7 +2079,10 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
                                 : `Edit ${inv.invoiceNo}`
                             }
                             disabled={inv.paid > 0 || invoiceHydrateLoading}
-                            onClick={() => beginInlineInvoiceEdit(inv)}
+                            onClick={() => {
+                              onChangeView?.('compose');
+                              beginInlineInvoiceEdit(inv);
+                            }}
                           >
                             <IconEdit />
                           </button>
@@ -1757,6 +2117,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
           </table>
         </div>
       </section>
+      )}
 
       {checkoutOpen && (
         <div
@@ -1769,75 +2130,557 @@ export const SellingPage: React.FC<SellingPageProps> = ({ token, onNavigate }) =
           }}
         >
           <div className="pay-checkout-modal" onMouseDown={e => e.stopPropagation()}>
-            <InvoiceCheckoutPage token={token} onNavigate={() => closeCheckout()} />
+            <InvoiceCheckoutPage token={token} embedded onNavigate={() => closeCheckout()} />
+          </div>
+        </div>
+      )}
+
+      {itemModalOpen && itemModalTarget && (
+        <div className="selling2-modal-overlay" role="dialog" aria-modal="true">
+          <div className="selling2-modal selling-pos-item-modal">
+            <header className="selling-pos-item-modal-header">
+              <div className="selling-pos-item-modal-header-left">
+                <div className="selling-pos-item-modal-header-icon" aria-hidden="true">
+                  <IconGemModal />
+                </div>
+                <div>
+                  <div className="selling-pos-item-modal-header-title">Item Details</div>
+                  <div className="selling-pos-item-modal-header-sub">Point of Sale</div>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="selling-pos-item-modal-close-btn"
+                onClick={() => {
+                  setItemModalOpen(false);
+                  setItemModalTarget(null);
+                  setItemModalFromCartEdit(false);
+                }}
+                aria-label="Close"
+              >
+                <IconX size={14} />
+              </button>
+            </header>
+            <div className="selling2-modal-body selling-pos-item-modal-body">
+              <section className="selling-pos-item-modal-gem">
+                <div className="selling-pos-item-modal-thumb">
+                  {getImageSrc(itemModalTarget.image_path) ? (
+                    <img src={getImageSrc(itemModalTarget.image_path)} alt="" />
+                  ) : (
+                    <span className="selling-pos-item-modal-thumb-ph" aria-hidden="true">
+                      💎
+                    </span>
+                  )}
+                </div>
+                <div className="selling-pos-item-modal-gem-main">
+                  <h4 className="selling-pos-item-modal-name">
+                    {(itemModalTarget.category || 'Item').replace(/_/g, ' ')}
+                  </h4>
+                  <div className="selling-pos-item-modal-tags">
+                    <span className="selling-pos-item-modal-tag">
+                      Type <b>{(itemModalTarget.item_type || '—').replace(/_/g, ' ')}</b>
+                    </span>
+                    <span className="selling-pos-item-modal-tag selling-pos-item-modal-tag--hi">
+                      Carat{' '}
+                      <b>{itemModalTarget.weight_carats != null ? `${itemModalTarget.weight_carats} ct` : '—'}</b>
+                    </span>
+                    <span
+                      className={`selling-pos-item-modal-tag selling-pos-item-modal-tag--stock${
+                        itemModalPiecesAvail > 0 ? ' is-in-stock' : ' is-out-of-stock'
+                      }`}
+                    >
+                      {itemModalPiecesAvail > 0 ? (
+                        <>
+                          Available · <b>{itemModalPiecesAvail} pcs</b>
+                        </>
+                      ) : (
+                        <b>Out of stock</b>
+                      )}
+                    </span>
+                  </div>
+                </div>
+                <div className="selling-pos-item-modal-code-aside" aria-label="Item code">
+                  <span className="selling-pos-item-modal-code-badge">
+                    {itemModalTarget.item_code ? itemModalTarget.item_code : `#${itemModalTarget.id}`}
+                  </span>
+                </div>
+              </section>
+
+              <section className="selling-pos-item-modal-pricing">
+                <div className="selling-pos-item-modal-eyebrow">Pricing</div>
+                <div className="selling-pos-item-modal-price-grid selling-pos-item-modal-price-grid--single">
+                  <div className="selling-pos-item-modal-price-cell">
+                    <div className="selling-pos-item-modal-price-cell-label">Selling Price</div>
+                    <div className="selling-pos-item-modal-price-cell-value selling-pos-item-modal-price-cell-value--sell">
+                      {formatMoneyAmount(itemModalListUnit, saleCurrency)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="selling-pos-item-modal-unit-row">
+                  <div className="selling-pos-item-modal-unit-label">
+                    <IconEdit />
+                    <span>Unit Price</span>
+                  </div>
+                  <div className="selling-pos-item-modal-unit-input-wrap">
+                    <span className="selling-pos-item-modal-unit-currency">{currencySymbolFor(saleCurrency)}</span>
+                    <input
+                      ref={itemModalUnitPriceInputRef}
+                      type="number"
+                      className="selling-pos-item-modal-unit-input"
+                      value={itemModalUnitPrice}
+                      min={0}
+                      step={0.01}
+                      onChange={e => setItemModalUnitPrice(Math.max(0, parseMoneyInput(e.target.value)))}
+                      aria-label={`Unit price (${saleCurrency})`}
+                    />
+                  </div>
+                </div>
+
+                {modalShowSavingBanner ? (
+                  <div className="selling-pos-item-modal-savings selling-pos-item-modal-savings--save">
+                    <div className="selling-pos-item-modal-savings-left">
+                      <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                        <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+                        <line x1="7" y1="7" x2="7.01" y2="7" />
+                      </svg>
+                      <span>Saving {formatMoneyAmount(itemModalDiscount, saleCurrency)}</span>
+                    </div>
+                    <span className="selling-pos-item-modal-savings-pct">{itemModalDiscountPct}% off</span>
+                  </div>
+                ) : null}
+                {modalShowAboveBanner ? (
+                  <div className="selling-pos-item-modal-savings selling-pos-item-modal-savings--above">
+                    <div className="selling-pos-item-modal-savings-left">
+                      <span>
+                        {formatMoneyAmount(itemModalPremium, saleCurrency)} above list
+                      </span>
+                    </div>
+                    <span className="selling-pos-item-modal-savings-pct">+{itemModalPremiumPct}%</span>
+                  </div>
+                ) : null}
+              </section>
+
+              <section className="selling-pos-item-modal-bottom">
+                <div className="selling-pos-item-modal-qty-row">
+                  <span className="selling-pos-item-modal-qty-label">Quantity</span>
+                  <div className="selling-pos-item-modal-stepper">
+                    <button
+                      type="button"
+                      className="selling-pos-item-modal-step-btn"
+                      onClick={() => setItemModalQty(prev => Math.max(1, prev - 1))}
+                      aria-label="Decrease quantity"
+                    >
+                      −
+                    </button>
+                    <span className="selling-pos-item-modal-step-sep" aria-hidden="true" />
+                    <span className="selling-pos-item-modal-step-val">{itemModalQty}</span>
+                    <span className="selling-pos-item-modal-step-sep" aria-hidden="true" />
+                    <button
+                      type="button"
+                      className="selling-pos-item-modal-step-btn"
+                      onClick={() =>
+                        setItemModalQty(prev =>
+                          Math.min(maxPcsForItem(itemModalTarget), prev + 1)
+                        )
+                      }
+                      disabled={itemModalQty >= maxPcsForItem(itemModalTarget)}
+                      aria-label="Increase quantity"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                <div className="selling-pos-item-modal-subtotal-bar">
+                  <span className="selling-pos-item-modal-subtotal-label">Subtotal</span>
+                  <span className="selling-pos-item-modal-subtotal-value">
+                    {formatMoneyAmount(itemModalSubtotal, saleCurrency)}
+                  </span>
+                </div>
+              </section>
+            </div>
+            <footer className="selling2-modal-footer selling-pos-item-modal-footer">
+              <button
+                type="button"
+                className="selling-pos-item-modal-btn selling-pos-item-modal-btn--cancel"
+                onClick={() => {
+                  setItemModalOpen(false);
+                  setItemModalTarget(null);
+                  setItemModalFromCartEdit(false);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="selling-pos-item-modal-btn selling-pos-item-modal-btn--add"
+                onClick={confirmItemModalAdd}
+                aria-label={itemModalFromCartEdit ? 'Save changes' : 'Add to cart'}
+              >
+                {itemModalFromCartEdit ? <IconCheck /> : <IconCartModal />}
+                {itemModalFromCartEdit ? 'Save changes' : 'Add to Cart'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {ccModal === 'customer' && (
+        <div
+          className="selling2-modal-overlay selling-pos-cc-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="selling-cc-customer-title"
+          onClick={() => setCcModal(null)}
+        >
+          <div
+            className="selling2-modal selling-pos-cc-modal selling-pos-cc-modal--pickers"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="selling2-modal-header selling-pos-cc-modal-head">
+              <h3 id="selling-cc-customer-title">Select customer</h3>
+              <button
+                type="button"
+                className="selling2-modal-close selling-pos-cc-modal-close"
+                onClick={() => setCcModal(null)}
+                aria-label="Close"
+              >
+                <IconX />
+              </button>
+            </div>
+            <div className="selling2-modal-body selling-pos-cc-modal-body">
+              <div className="selling2-customer-search selling2-customer-search--gem selling-pos-cc-modal-search">
+                <span className="selling2-search-icon" aria-hidden="true">
+                  <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8" />
+                    <path d="m21 21-4.35-4.35" />
+                  </svg>
+                </span>
+                <input
+                  type="search"
+                  value={customerSearch}
+                  onChange={e => setCustomerSearch(e.target.value)}
+                  className="selling2-search-input"
+                  placeholder="Search by name or phone..."
+                  autoFocus
+                />
+              </div>
+              <div className="selling-pos-cc-modal-list selling-pos-cc-modal-list--customers">
+                {customers.length === 0 ? (
+                  <p className="selling-pos-cc-modal-empty">
+                    <span className="selling-pos-cc-modal-empty-icon" aria-hidden="true">
+                      <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="11" cy="11" r="8" />
+                        <path d="m21 21-4.35-4.35" />
+                      </svg>
+                    </span>
+                    Type to search customers, or add a new one below.
+                  </p>
+                ) : (
+                  customers.map(c => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className="selling-pos-cc-customer-option"
+                      onClick={() => {
+                        setSelectedCustomer(c);
+                        setCustomerSearch('');
+                        setCustomers([]);
+                        setCcModal(null);
+                      }}
+                    >
+                      <span className="selling-pos-cc-customer-option-name">{c.name}</span>
+                      <span className="selling-pos-cc-customer-option-sub">
+                        {c.phone ? (
+                          <span className="selling-pos-cc-customer-option-phone">{c.phone}</span>
+                        ) : null}
+                        {c.phone && c.email ? <span className="selling-pos-cc-customer-option-dot"> · </span> : null}
+                        {c.email ? (
+                          <span className="selling-pos-cc-customer-option-email">{c.email}</span>
+                        ) : null}
+                        {!c.phone && !c.email ? (
+                          <span className="selling-pos-cc-customer-option-muted">No phone or email on file</span>
+                        ) : null}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+              <button
+                type="button"
+                className="selling-pos-cc-modal-new"
+                onClick={() => {
+                  setCcModal(null);
+                  setNewCustomerModalOpen(true);
+                }}
+              >
+                <span className="selling-pos-cc-modal-new-icon" aria-hidden="true">
+                  <IconPlus />
+                </span>
+                Add new customer
+              </button>
+            </div>
+            <div className="selling2-modal-footer selling-pos-cc-modal-foot">
+              <button type="button" className="ghost-button selling-pos-cc-modal-foot-close" onClick={() => setCcModal(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {ccModal === 'currency' && (
+        <div
+          className="selling2-modal-overlay selling-pos-cc-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="selling-cc-currency-title"
+          onClick={() => setCcModal(null)}
+        >
+          <div
+            className="selling2-modal selling-pos-cc-modal selling-pos-cc-modal--pickers selling-pos-cc-modal--currency"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="selling2-modal-header selling-pos-cc-modal-head">
+              <h3 id="selling-cc-currency-title">Select currency</h3>
+              <button
+                type="button"
+                className="selling2-modal-close selling-pos-cc-modal-close"
+                onClick={() => setCcModal(null)}
+                aria-label="Close"
+              >
+                <IconX />
+              </button>
+            </div>
+            <div className="selling2-modal-body selling-pos-cc-modal-body">
+              <div className="selling-pos-cc-modal-list selling-pos-cc-modal-list--currency">
+                {SUPPORTED_CURRENCIES.map(c => {
+                  const active = normalizeCurrencyCode(saleCurrency) === c.code;
+                  return (
+                    <button
+                      key={c.code}
+                      type="button"
+                      className={`selling-pos-cc-cur-option${active ? ' is-selected' : ''}`}
+                      onClick={() => {
+                        applySaleCurrency(c.code);
+                        setCcModal(null);
+                      }}
+                    >
+                      <span className="selling-pos-cc-cur-code">{c.code}</span>
+                      <span className="selling-pos-cc-cur-label">{c.label}</span>
+                      {active ? (
+                        <span className="selling-pos-cc-cur-check" aria-hidden="true">
+                          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M20 6L9 17l-5-5" />
+                          </svg>
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="selling2-modal-footer selling-pos-cc-modal-foot">
+              <button type="button" className="ghost-button selling-pos-cc-modal-foot-close" onClick={() => setCcModal(null)}>
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
 
       {newCustomerModalOpen && (
-        <div className="selling2-modal-overlay" role="dialog" aria-modal="true">
-          <div className="selling2-modal">
-            <div className="selling2-modal-header">
-              <h3><span className="btn-icon" aria-hidden="true"><IconPlus /></span> Add New Customer</h3>
-              <button type="button" className="selling2-modal-close" onClick={() => setNewCustomerModalOpen(false)} aria-label="Close">
-                <IconX />
-              </button>
-            </div>
-            <div className="selling2-modal-body">
-              <label>
-                <span>Name *</span>
-                <input name="name" value={newCustomer.name} onChange={handleNewCustomerChange} placeholder="Customer name" />
-              </label>
-              <label>
-                <span>Phone (optional)</span>
-                <input name="phone" value={newCustomer.phone} onChange={handleNewCustomerChange} placeholder="0771234567" />
-              </label>
-              <label>
-                <span>Email (optional)</span>
-                <input name="email" value={newCustomer.email} onChange={handleNewCustomerChange} placeholder="customer@example.com" />
-              </label>
-              <p className="selling2-modal-section-label">Billing address (optional, shown on receipts)</p>
-              <label>
-                <span>Address line 1</span>
-                <input name="address_line1" value={newCustomer.address_line1} onChange={handleNewCustomerChange} placeholder="Street, building" />
-              </label>
-              <label>
-                <span>Address line 2</span>
-                <input name="address_line2" value={newCustomer.address_line2} onChange={handleNewCustomerChange} placeholder="Unit, district…" />
-              </label>
-              <div className="selling2-modal-row2">
-                <label>
-                  <span>City</span>
-                  <input name="city" value={newCustomer.city} onChange={handleNewCustomerChange} placeholder="City" />
-                </label>
-                <label>
-                  <span>Postal code</span>
-                  <input name="postal_code" value={newCustomer.postal_code} onChange={handleNewCustomerChange} placeholder="Postal code" />
-                </label>
+        <div
+          className="selling-new-customer-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="selling-new-customer-title"
+          onMouseDown={e => {
+            if (e.target === e.currentTarget) setNewCustomerModalOpen(false);
+          }}
+        >
+          <div className="selling-new-customer-modal" onMouseDown={e => e.stopPropagation()}>
+            <header className="selling-new-customer-head">
+              <div className="selling-new-customer-head-left">
+                <div className="selling-new-customer-avatar" aria-hidden="true">
+                  <IconNewCustomerUser />
+                </div>
+                <span id="selling-new-customer-title" className="selling-new-customer-title">
+                  Add New Customer
+                </span>
               </div>
-              <label>
-                <span>Country</span>
-                <input name="country" value={newCustomer.country} onChange={handleNewCustomerChange} placeholder="Country" />
-              </label>
-              <label>
-                <span>Notes (optional)</span>
-                <textarea name="notes" value={newCustomer.notes} onChange={handleNewCustomerChange} rows={3} placeholder="Any special instructions..." />
-              </label>
+              <div className="selling-new-customer-head-right">
+                <button
+                  type="button"
+                  className="selling-new-customer-icon-btn selling-new-customer-icon-btn--close"
+                  onClick={() => setNewCustomerModalOpen(false)}
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
+              </div>
+            </header>
+
+            <div className="selling-new-customer-body">
+              <div className="selling-new-customer-group">
+                <div className="selling-new-customer-group-heading">Contact info</div>
+
+                <div className="selling-new-customer-field">
+                  <div className="selling-new-customer-label">
+                    Full name <span className="selling-new-customer-req">*</span>
+                  </div>
+                  <input
+                    className="selling-new-customer-input"
+                    name="name"
+                    type="text"
+                    autoComplete="name"
+                    placeholder="e.g. Amal Perera"
+                    value={newCustomer.name}
+                    onChange={handleNewCustomerChange}
+                  />
+                </div>
+
+                <div className="selling-new-customer-field">
+                  <div className="selling-new-customer-label">
+                    Phone <span className="selling-new-customer-opt">— optional</span>
+                  </div>
+                  <input
+                    className="selling-new-customer-input"
+                    name="phone"
+                    type="tel"
+                    autoComplete="tel"
+                    placeholder="0771234567"
+                    value={newCustomer.phone}
+                    onChange={handleNewCustomerChange}
+                  />
+                </div>
+
+                <div className="selling-new-customer-field">
+                  <div className="selling-new-customer-label">
+                    Email <span className="selling-new-customer-opt">— optional</span>
+                  </div>
+                  <input
+                    className="selling-new-customer-input"
+                    name="email"
+                    type="email"
+                    autoComplete="email"
+                    placeholder="customer@example.com"
+                    value={newCustomer.email}
+                    onChange={handleNewCustomerChange}
+                  />
+                </div>
+              </div>
+
+              <div className="selling-new-customer-group">
+                <div className="selling-new-customer-group-heading selling-new-customer-group-heading--colored">
+                  Billing address{' '}
+                  <span className="selling-new-customer-heading-note">· optional, shown on receipts</span>
+                </div>
+
+                <div className="selling-new-customer-field">
+                  <div className="selling-new-customer-label">Address line 1</div>
+                  <input
+                    className="selling-new-customer-input"
+                    name="address_line1"
+                    type="text"
+                    autoComplete="address-line1"
+                    placeholder="Street, building"
+                    value={newCustomer.address_line1}
+                    onChange={handleNewCustomerChange}
+                  />
+                </div>
+
+                <div className="selling-new-customer-field">
+                  <div className="selling-new-customer-label">Address line 2</div>
+                  <input
+                    className="selling-new-customer-input"
+                    name="address_line2"
+                    type="text"
+                    autoComplete="address-line2"
+                    placeholder="Unit, district…"
+                    value={newCustomer.address_line2}
+                    onChange={handleNewCustomerChange}
+                  />
+                </div>
+
+                <div className="selling-new-customer-row2">
+                  <div className="selling-new-customer-field">
+                    <div className="selling-new-customer-label">City</div>
+                    <input
+                      className="selling-new-customer-input"
+                      name="city"
+                      type="text"
+                      autoComplete="address-level2"
+                      placeholder="City"
+                      value={newCustomer.city}
+                      onChange={handleNewCustomerChange}
+                    />
+                  </div>
+                  <div className="selling-new-customer-field">
+                    <div className="selling-new-customer-label">Postal code</div>
+                    <input
+                      className="selling-new-customer-input"
+                      name="postal_code"
+                      type="text"
+                      autoComplete="postal-code"
+                      placeholder="00100"
+                      value={newCustomer.postal_code}
+                      onChange={handleNewCustomerChange}
+                    />
+                  </div>
+                </div>
+
+                <div className="selling-new-customer-field">
+                  <div className="selling-new-customer-label">Country</div>
+                  <input
+                    className="selling-new-customer-input"
+                    name="country"
+                    type="text"
+                    autoComplete="country-name"
+                    placeholder="e.g. Sri Lanka"
+                    value={newCustomer.country}
+                    onChange={handleNewCustomerChange}
+                  />
+                </div>
+              </div>
+
+              <div className="selling-new-customer-group">
+                <div className="selling-new-customer-group-heading">
+                  Notes <span className="selling-new-customer-heading-note">· optional</span>
+                </div>
+                <div className="selling-new-customer-field">
+                  <textarea
+                    className="selling-new-customer-textarea"
+                    name="notes"
+                    placeholder="Any special instructions or details about this customer…"
+                    rows={4}
+                    value={newCustomer.notes}
+                    onChange={handleNewCustomerChange}
+                  />
+                </div>
+              </div>
             </div>
-            <div className="selling2-modal-footer">
-              <button type="button" className="ghost-button" onClick={() => setNewCustomerModalOpen(false)}>Cancel</button>
+
+            <footer className="selling-new-customer-foot">
+              <button type="button" className="selling-new-customer-btn selling-new-customer-btn--cancel" onClick={() => setNewCustomerModalOpen(false)}>
+                Cancel
+              </button>
               <button
                 type="button"
-                className="primary-button"
+                className="selling-new-customer-btn selling-new-customer-btn--save"
                 onClick={async () => {
                   const ok = await saveCustomer();
-                  if (ok) setNewCustomerModalOpen(false);
+                  if (ok) {
+                    setNewCustomerModalOpen(false);
+                    setCcModal(null);
+                  }
                 }}
                 disabled={customerSaving}
               >
+                <IconSaveCustomer />
                 {customerSaving ? 'Saving…' : 'Save Customer'}
               </button>
-            </div>
+            </footer>
           </div>
         </div>
       )}

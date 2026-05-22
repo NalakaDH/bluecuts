@@ -11,6 +11,8 @@ export const SUPPORTED_CURRENCIES = [
   { code: 'SGD', label: 'SGD — Singapore Dollar' },
   { code: 'AUD', label: 'AUD — Australian Dollar' },
   { code: 'MYR', label: 'MYR — Malaysian Ringgit' },
+  { code: 'INR', label: 'INR — Indian Rupee' },
+  { code: 'LKR', label: 'LKR — Sri Lankan Rupee' },
 ] as const;
 
 export const DEFAULT_CURRENCY_CODE = 'THB';

@@ -112,6 +112,9 @@ interface ReportsPageProps {
 
 const money = (n: number) => Number(n || 0).toFixed(2);
 
+const TOP_ITEMS_CARD_DESC =
+  "Best sellers in the selected date range. Purchase cost uses each item's purchase price from inventory × invoiced quantity (after returns).";
+
 interface InvoiceListRow {
   id: number;
   invoice_no: string;
@@ -168,6 +171,18 @@ function IconRotateCcw() {
     <svg viewBox="0 0 24 24" aria-hidden>
       <polyline points="1 4 1 10 7 10" />
       <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+    </svg>
+  );
+}
+
+/** Purchase / cost cue — stacked coins */
+function IconCoins() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden>
+      <ellipse cx="9" cy="8" rx="6" ry="3.5" fill="none" stroke="currentColor" strokeWidth="2" />
+      <path d="M3 8v4c0 2 2.7 3.5 6 3.5s6-1.5 6-3.5V8" fill="none" stroke="currentColor" strokeWidth="2" />
+      <ellipse cx="15" cy="14" rx="6" ry="3.5" fill="none" stroke="currentColor" strokeWidth="2" />
+      <path d="M9 14v4c0 2 2.7 3.5 6 3.5s6-1.5 6-3.5v-4" fill="none" stroke="currentColor" strokeWidth="2" />
     </svg>
   );
 }
@@ -841,7 +856,6 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
 
   const sales = summary?.sales;
   const profit = summary?.profit;
-  const inventory = summary?.inventory;
 
   const groupLabel = group === 'daily' ? 'Daily' : 'Monthly';
 
@@ -874,16 +888,17 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                 alert={(sales?.outstanding_total || 0) > 0}
               />
               <MetricCard
+                title="Purchase cost (sold)"
+                value={formatUsdOnlyFromThb(profit?.cost_total || 0, thbPerUnit)}
+                subtitle="Inventory purchase price × qty sold (after returns) · USD (Profile rates)"
+                icon={<IconCoins />}
+                variant="slate"
+              />
+              <MetricCard
                 title="Gross Profit"
                 value={formatUsdOnlyFromThb(profit?.profit_total || 0, thbPerUnit)}
                 subtitle={`${money(profit?.profit_margin_pct || 0)}% margin · USD (Profile rates)`}
                 variant="emerald"
-              />
-              <MetricCard
-                title="Inventory Value"
-                value={formatMoneyAmount(inventory?.inventory_value || 0, 'USD')}
-                subtitle={`${inventory?.remaining_pcs || 0} pieces · USD list value`}
-                variant="amber"
               />
               <MetricCard
                 title="Open Memo Value"
@@ -1060,7 +1075,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                     <div className="rep2-card rep2-table-card">
                       <div className="rep2-card-head">
                         <h2 className="rep2-card-title">Top Items</h2>
-                        <p className="rep2-card-desc">Best sellers in the selected date range</p>
+                        <p className="rep2-card-desc">{TOP_ITEMS_CARD_DESC}</p>
                       </div>
                       <div className="rep2-card-body">
                         <div className="rep2-table-scroll">
@@ -1071,6 +1086,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                                 <th>Description</th>
                                 <th className="rep2-th-right">Qty Sold</th>
                                 <th className="rep2-th-right">Sales (USD)</th>
+                                <th className="rep2-th-right">Purchase cost (USD)</th>
                                 <th className="rep2-th-right">Profit (USD)</th>
                                 <th className="rep2-th-center">Action</th>
                               </tr>
@@ -1078,7 +1094,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                             <tbody>
                               {summary.top_items.length === 0 ? (
                                 <tr>
-                                  <td colSpan={6} style={{ textAlign: 'center', color: '#64748b' }}>
+                                  <td colSpan={7} style={{ textAlign: 'center', color: '#64748b' }}>
                                     No data
                                   </td>
                                 </tr>
@@ -1096,6 +1112,9 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                                     <td className="rep2-td-right">{it.qty_sold}</td>
                                     <td className="rep2-td-right rep2-td-money">
                                       <RepUsdCell thb={it.sales_value} thbPerUnit={thbPerUnit} />
+                                    </td>
+                                    <td className="rep2-td-right rep2-td-money">
+                                      <RepUsdCell thb={it.cost_total} thbPerUnit={thbPerUnit} />
                                     </td>
                                     <td className="rep2-td-right rep2-td-money rep2-profit-cell">
                                       <RepUsdCell thb={it.profit_value} thbPerUnit={thbPerUnit} />

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useAlertDialog } from './components/AlertDialog';
 import './App.css';
 import { apiUrl, parseErrorResponse } from './api';
-import { Sidebar, Topbar, type PageId } from './components/layout/Layout';
+import { Sidebar, Topbar, useIsMobile, type PageId } from './components/layout/Layout';
 import { CloudApp } from './cloud/CloudApp';
 import { isCloudFirestoreMode } from './cloud/cloudMode';
 import { firstAllowedStaffPage, normalizeStaffAllowedPagesFromApi, staffCanAccessPage } from './lib/pagePermissions';
@@ -33,6 +33,8 @@ interface AuthState {
 }
 
 type ThemeMode = 'light' | 'dark';
+type SellingView = 'compose' | 'invoices';
+type MemoView = 'create' | 'open';
 
 const LocalApp: React.FC = () => {
   const { showAlert } = useAlertDialog();
@@ -45,6 +47,8 @@ const LocalApp: React.FC = () => {
       return 'light';
     }
   });
+  const isMobile = useIsMobile();
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarHidden, setSidebarHidden] = useState(() => {
     try {
@@ -62,6 +66,9 @@ const LocalApp: React.FC = () => {
     }
   }, [sidebarHidden]);
   const [activePage, setActivePage] = useState<PageId>('dashboard');
+  const [sellingView, setSellingView] = useState<SellingView>('compose');
+  const [memoView, setMemoView] = useState<MemoView>('create');
+  const [headerSyncLoading, setHeaderSyncLoading] = useState(false);
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -128,7 +135,11 @@ const LocalApp: React.FC = () => {
     setAuth(null);
   };
 
-  const goToPage = useCallback((page: PageId) => setActivePage(page), []);
+  const goToPage = useCallback((page: PageId) => {
+    setActivePage(page);
+    if (page === 'selling') setSellingView('compose');
+    if (page === 'memo') setMemoView('create');
+  }, []);
 
   const handleAccountUpdated = useCallback(
     (patch: { username?: string; allowedPages?: string[] | null }) => {
@@ -150,6 +161,36 @@ const LocalApp: React.FC = () => {
     },
     []
   );
+
+  const syncCloudFromHeader = useCallback(async () => {
+    if (!auth || auth.role !== 'owner' || headerSyncLoading) return;
+    setHeaderSyncLoading(true);
+    try {
+      const res = await fetch(apiUrl('/api/cloud/sync-from-app'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${auth.token}`,
+        },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const msg = await parseErrorResponse(res, 'Could not sync to cloud dashboard');
+        throw new Error(msg);
+      }
+      await res.json();
+      showAlert({
+        title: 'Cloud dashboard',
+        message: 'Snapshot was sent to the cloud dashboard.',
+        variant: 'success',
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Cloud sync failed';
+      showAlert({ title: 'Cloud sync failed', message: msg, variant: 'error' });
+    } finally {
+      setHeaderSyncLoading(false);
+    }
+  }, [auth, headerSyncLoading, showAlert]);
 
   const renderMain = () => {
     if (!auth) {
@@ -207,7 +248,8 @@ const LocalApp: React.FC = () => {
       effectivePage === 'updateInventory' ||
       effectivePage === 'checkInventory' ||
       effectivePage === 'stockCount' ||
-      effectivePage === 'inventoryReport';
+      effectivePage === 'inventoryReport' ||
+      effectivePage === 'selling';
 
     const renderPage = () => {
       switch (effectivePage) {
@@ -220,7 +262,14 @@ const LocalApp: React.FC = () => {
         case 'stockCount':
           return <StockCountPage token={auth.token} />;
         case 'selling':
-          return <SellingPage token={auth.token} onNavigate={goToPage} />;
+          return (
+            <SellingPage
+              token={auth.token}
+              onNavigate={goToPage}
+              view={sellingView}
+              onChangeView={setSellingView}
+            />
+          );
         case 'payments':
           return <PaymentPage token={auth.token} onNavigate={goToPage} />;
         case 'invoiceCheckout':
@@ -228,7 +277,7 @@ const LocalApp: React.FC = () => {
         case 'customers':
           return <CustomersPage token={auth.token} />;
         case 'memo':
-          return <MemoPage token={auth.token} onNavigate={goToPage} />;
+          return <MemoPage token={auth.token} onNavigate={goToPage} view={memoView} onChangeView={setMemoView} />;
         case 'returns':
           return <ReturnsPage token={auth.token} />;
         case 'reports':
@@ -251,32 +300,51 @@ const LocalApp: React.FC = () => {
       }
     };
 
+    const showSidebar = isMobile ? mobileSidebarOpen : !sidebarHidden;
+
     return (
-      <div className={`layout${sidebarHidden ? ' layout--sidebar-hidden' : ''}`}>
-        {!sidebarHidden && (
+      <div className={`layout${sidebarHidden && !isMobile ? ' layout--sidebar-hidden' : ''}${isMobile ? ' layout--mobile' : ''}`}>
+        {showSidebar && (
           <Sidebar
             activePage={effectivePage}
             onChangePage={goToPage}
             username={auth.username}
             role={auth.role}
             allowedPages={staffAllowedForUi}
-            collapsed={sidebarCollapsed}
+            collapsed={isMobile ? false : sidebarCollapsed}
             onToggleCollapsed={() => setSidebarCollapsed(v => !v)}
+            mobileOpen={isMobile && mobileSidebarOpen}
+            onMobileClose={() => setMobileSidebarOpen(false)}
           />
         )}
         <main className="main">
           <Topbar
             page={effectivePage}
+            username={auth.username}
             role={auth.role}
             allowedPages={staffAllowedForUi}
             collapsed={sidebarCollapsed}
-            onToggleCollapsed={() => setSidebarCollapsed(v => !v)}
-            sidebarHidden={sidebarHidden}
-            onSidebarHiddenChange={setSidebarHidden}
+            onToggleCollapsed={() => {
+              if (isMobile) setMobileSidebarOpen(v => !v);
+              else setSidebarCollapsed(v => !v);
+            }}
+            sidebarHidden={isMobile || sidebarHidden}
+            onSidebarHiddenChange={h => {
+              if (isMobile) setMobileSidebarOpen(!h);
+              else setSidebarHidden(h);
+            }}
             onChangePage={goToPage}
             theme={theme}
             onToggleTheme={toggleTheme}
+            onSync={auth.role === 'owner' ? () => void syncCloudFromHeader() : undefined}
+            syncLoading={headerSyncLoading}
             onOpenProfile={() => goToPage('profile')}
+            sellingView={sellingView}
+            onOpenSellingInvoices={() => setSellingView('invoices')}
+            onOpenSellingComposer={() => setSellingView('compose')}
+            memoView={memoView}
+            onOpenMemoList={() => setMemoView('open')}
+            onOpenMemoCreate={() => setMemoView('create')}
           />
           <section className={`content${contentStretch ? ' content--page-stretch' : ''}`}>
             {renderPage()}

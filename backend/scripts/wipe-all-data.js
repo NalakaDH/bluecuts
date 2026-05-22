@@ -49,6 +49,8 @@ const DEFAULT_FX = [
   ['SGD', 25],
   ['AUD', 22],
   ['MYR', 7.4],
+  ['INR', 0.41],
+  ['LKR', 0.11],
 ];
 
 function run(db, sql, params = []) {

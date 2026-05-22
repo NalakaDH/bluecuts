@@ -186,6 +186,8 @@ const ALLOWED_CURRENCIES = new Set([
   'SGD',
   'AUD',
   'MYR',
+  'INR',
+  'LKR',
 ]);
 const SINGLE_INVENTORY_ITEM_TYPES = new Set(['cut single', 'rough single']);
 
@@ -307,6 +309,7 @@ db.serialize(() => {
       thb_per_unit REAL NOT NULL
     )
   `);
+  ensureColumn('exchange_rates', 'manual_override', 'INTEGER NOT NULL DEFAULT 0');
 
   // Customers
   db.run(`
@@ -438,6 +441,8 @@ db.serialize(() => {
     ['SGD', 25],
     ['AUD', 22],
     ['MYR', 7.4],
+    ['INR', 0.41],
+    ['LKR', 0.11],
   ];
   defaultFx.forEach(([code, v]) => {
     db.run('INSERT OR IGNORE INTO exchange_rates (currency_code, thb_per_unit) VALUES (?, ?)', [code, v]);
@@ -1344,36 +1349,71 @@ app.patch('/api/users/:id', authMiddleware, requireRole(['owner']), async (req, 
   }
 });
 
-async function loadExchangeRatesThbPerUnit() {
-  const rows = await dbAll('SELECT currency_code, thb_per_unit FROM exchange_rates');
-  const m = {};
+async function loadExchangeRatesState() {
+  const rows = await dbAll(
+    'SELECT currency_code, thb_per_unit, manual_override FROM exchange_rates'
+  );
+  /** @type {Record<string, number>} */
+  const thb_per_unit = {};
+  /** @type {Record<string, boolean>} */
+  const manual_override = {};
   for (const r of rows) {
     const c = normalizeCurrencyCode(r.currency_code);
     const v = Number(r.thb_per_unit);
-    if (Number.isFinite(v) && v > 0) m[c] = v;
+    if (Number.isFinite(v) && v > 0) thb_per_unit[c] = v;
+    manual_override[c] = Number(r.manual_override) === 1;
   }
-  m.THB = 1;
-  return m;
+  thb_per_unit.THB = 1;
+  manual_override.THB = false;
+  return { thb_per_unit, manual_override };
+}
+
+async function loadExchangeRatesThbPerUnit() {
+  const { thb_per_unit } = await loadExchangeRatesState();
+  return thb_per_unit;
+}
+
+/**
+ * @param {string} code
+ * @param {number} thbPerUnit THB per 1 unit of currency
+ * @param {boolean} manualOverride when true, Frankfurter sync will not overwrite this currency
+ */
+async function upsertExchangeRate(code, thbPerUnit, manualOverride = false) {
+  const c = normalizeCurrencyCode(code);
+  if (c === 'THB') {
+    await dbRun(
+      `INSERT INTO exchange_rates (currency_code, thb_per_unit, manual_override) VALUES ('THB', 1, 0)
+       ON CONFLICT(currency_code) DO UPDATE SET thb_per_unit = 1, manual_override = 0`
+    );
+    return;
+  }
+  if (!ALLOWED_CURRENCIES.has(c)) return;
+  const rounded = roundRate6(thbPerUnit);
+  if (rounded == null || rounded <= 0) return;
+  const mo = manualOverride ? 1 : 0;
+  await dbRun(
+    `INSERT INTO exchange_rates (currency_code, thb_per_unit, manual_override) VALUES (?, ?, ?)
+     ON CONFLICT(currency_code) DO UPDATE SET
+       thb_per_unit = excluded.thb_per_unit,
+       manual_override = excluded.manual_override`,
+    [c, rounded, mo]
+  );
 }
 
 /**
  * Persist THB-per-unit factors (internal bridge for aggregates). Primary shop reference is USD in the UI.
  * @param {Record<string, unknown>} raw
+ * @param {{ markManual?: boolean }} [opts]
  */
-async function persistExchangeRatesFromObject(raw) {
-  await dbRun('INSERT OR REPLACE INTO exchange_rates (currency_code, thb_per_unit) VALUES (?, ?)', [
-    'THB',
-    1,
-  ]);
+async function persistExchangeRatesFromObject(raw, opts = {}) {
+  const markManual = Boolean(opts.markManual);
+  await upsertExchangeRate('THB', 1, false);
   for (const [k, val] of Object.entries(raw)) {
     const code = normalizeCurrencyCode(String(k));
     if (code === 'THB' || !ALLOWED_CURRENCIES.has(code)) continue;
     const rounded = roundRate6(val);
     if (rounded == null || rounded <= 0) continue;
-    await dbRun('INSERT OR REPLACE INTO exchange_rates (currency_code, thb_per_unit) VALUES (?, ?)', [
-      code,
-      rounded,
-    ]);
+    await upsertExchangeRate(code, rounded, markManual);
   }
 }
 
@@ -1422,21 +1462,34 @@ async function fetchFrankfurterThbPerUnitFromUsdBase() {
   return { date: data.date ? String(data.date) : null, thb_per_unit };
 }
 
-async function mergeAndPersistFrankfurterRates() {
+/**
+ * Apply Frankfurter rates. Skips currencies with manual_override unless force=true.
+ * @param {{ force?: boolean }} [opts]
+ */
+async function mergeAndPersistFrankfurterRates(opts = {}) {
+  const force = Boolean(opts.force);
   const { date, thb_per_unit: fresh } = await fetchFrankfurterThbPerUnitFromUsdBase();
-  const existing = await loadExchangeRatesThbPerUnit();
-  const merged = { ...existing, ...fresh };
-  merged.THB = 1;
-  await persistExchangeRatesFromObject(merged);
+  const { manual_override } = await loadExchangeRatesState();
+  /** @type {string[]} */
+  const skipped_manual = [];
+  for (const [code, val] of Object.entries(fresh)) {
+    if (code === 'THB') continue;
+    if (!force && manual_override[code]) {
+      skipped_manual.push(code);
+      continue;
+    }
+    await upsertExchangeRate(code, val, false);
+  }
   const thb_per_unit = await loadExchangeRatesThbPerUnit();
-  return { date, thb_per_unit };
+  return { date, thb_per_unit, skipped_manual };
 }
 
 /** thb_per_unit = THB per 1 unit of currency (bridge). Shop reference currency in the UI is USD. */
 app.get('/api/exchange-rates', authMiddleware, requireRole(['owner', 'staff']), async (req, res) => {
   try {
-    const thb_per_unit = await loadExchangeRatesThbPerUnit();
-    res.json({ base: 'USD', thb_per_unit });
+    const { thb_per_unit, manual_override } = await loadExchangeRatesState();
+    const manual_currencies = Object.keys(manual_override).filter(c => manual_override[c]);
+    res.json({ base: 'USD', thb_per_unit, manual_currencies });
   } catch (e) {
     console.error('GET /api/exchange-rates', e);
     res.status(500).json({ error: 'Internal server error' });
@@ -1452,14 +1505,39 @@ app.put('/api/exchange-rates', authMiddleware, requireRole(['owner', 'staff']), 
         ? body.rates
         : body;
   try {
-    await persistExchangeRatesFromObject(raw);
-    const thb_per_unit = await loadExchangeRatesThbPerUnit();
-    res.json({ base: 'USD', thb_per_unit });
+    await persistExchangeRatesFromObject(raw, { markManual: true });
+    const { thb_per_unit, manual_override } = await loadExchangeRatesState();
+    const manual_currencies = Object.keys(manual_override).filter(c => manual_override[c]);
+    res.json({ base: 'USD', thb_per_unit, manual_currencies });
   } catch (e) {
     console.error('PUT /api/exchange-rates', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+/** Clear manual pin so the next Frankfurter sync can update those currencies. */
+app.post(
+  '/api/exchange-rates/clear-manual',
+  authMiddleware,
+  requireRole(['owner', 'staff']),
+  async (req, res) => {
+    const body = req.body || {};
+    const codes = Array.isArray(body.currencies) ? body.currencies : [];
+    try {
+      for (const raw of codes) {
+        const code = normalizeCurrencyCode(String(raw));
+        if (code === 'THB' || !ALLOWED_CURRENCIES.has(code)) continue;
+        await dbRun('UPDATE exchange_rates SET manual_override = 0 WHERE currency_code = ?', [code]);
+      }
+      const { thb_per_unit, manual_override } = await loadExchangeRatesState();
+      const manual_currencies = Object.keys(manual_override).filter(c => manual_override[c]);
+      res.json({ base: 'USD', thb_per_unit, manual_currencies });
+    } catch (e) {
+      console.error('POST /api/exchange-rates/clear-manual', e);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
 
 /** Fetch ECB spot rates via Frankfurter (free), USD base → stored THB-per-unit bridge. */
 app.post(
@@ -1467,11 +1545,15 @@ app.post(
   authMiddleware,
   requireRole(['owner', 'staff']),
   async (req, res) => {
+    const body = req.body || {};
+    const force = Boolean(body.force);
     try {
-      const { date, thb_per_unit } = await mergeAndPersistFrankfurterRates();
+      const { date, thb_per_unit, skipped_manual } = await mergeAndPersistFrankfurterRates({ force });
       res.json({
         base: 'USD',
         thb_per_unit,
+        manual_currencies: skipped_manual,
+        skipped_manual,
         source: 'frankfurter',
         rate_date: date,
       });
@@ -1489,17 +1571,42 @@ app.get('/api/inventory', authMiddleware, requireRole(['owner', 'staff']), (req,
   const search = req.query.search ? String(req.query.search).trim() : '';
   const limitStr =
     req.query.limit !== undefined && req.query.limit !== null ? String(req.query.limit).trim() : '';
+  /** Selling POS: include rows that just sold out so “recent / top sold” tabs still list them. */
+  const forSellingCatalog = String(req.query.for_selling_catalog || '').trim() === '1';
+  /** Memo composer: any row with stock can go on a memo (ignore stale/non‑standard status labels). */
+  const forMemoCatalog = String(req.query.for_memo_catalog || '').trim() === '1';
 
   const where = [];
   const params = [];
-  if (status) {
-    where.push('status = ?');
-    params.push(status);
+  if (forMemoCatalog) {
+    where.push('pieces_remaining > 0');
+  } else if (status) {
+    if (forSellingCatalog && status === 'Available') {
+      where.push(`(
+        status = ?
+        OR (
+          status = 'Out of stock'
+          AND EXISTS (
+            SELECT 1 FROM stock_movements sm
+            WHERE sm.inventory_item_id = inventory_items.id
+              AND sm.type = 'SALE'
+              AND sm.ref_type = 'INVOICE'
+              AND sm.qty_change < 0
+          )
+        )
+      )`);
+      params.push(status);
+    } else {
+      where.push('status = ?');
+      params.push(status);
+    }
   }
   if (search) {
-    where.push('(item_code LIKE ? OR item_sticker LIKE ? OR category LIKE ? OR item_type LIKE ? OR description LIKE ?)');
-    const s = `%${search}%`;
-    params.push(s, s, s, s, s);
+    const needle = `%${search.toLowerCase()}%`;
+    where.push(
+      `(LOWER(IFNULL(item_code, '')) LIKE ? OR LOWER(IFNULL(item_sticker, '')) LIKE ? OR LOWER(IFNULL(category, '')) LIKE ? OR LOWER(IFNULL(item_type, '')) LIKE ? OR LOWER(IFNULL(description, '')) LIKE ? OR LOWER(IFNULL(CAST(weight_carats AS TEXT), '')) LIKE ?)`
+    );
+    params.push(needle, needle, needle, needle, needle, needle);
   }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -1512,6 +1619,13 @@ app.get('/api/inventory', authMiddleware, requireRole(['owner', 'staff']), (req,
       params.push(capped);
     }
   }
+
+  const orderSql = forMemoCatalog
+    ? `ORDER BY
+        CASE WHEN IFNULL(TRIM(item_code), '') = '' THEN 1 ELSE 0 END,
+        LOWER(TRIM(item_code)),
+        id`
+    : 'ORDER BY updated_at DESC';
 
   const sql = `
     SELECT
@@ -1528,7 +1642,7 @@ app.get('/api/inventory', authMiddleware, requireRole(['owner', 'staff']), (req,
       created_at, updated_at
     FROM inventory_items
     ${whereSql}
-    ORDER BY updated_at DESC
+    ${orderSql}
     ${limitSql}
   `;
 
@@ -1558,6 +1672,8 @@ app.get('/api/inventory/activity-summary', authMiddleware, requireRole(['owner',
           WHERE sm_s.inventory_item_id = i.id AND sm_s.type IN ('SALE', 'INVOICE_RETURN')),
         0
       ) AS sold_units,
+      (SELECT MAX(sm_sale.created_at) FROM stock_movements sm_sale
+        WHERE sm_sale.inventory_item_id = i.id AND sm_sale.type = 'SALE') AS last_sale_at,
       (SELECT MAX(sm2.created_at) FROM stock_movements sm2 WHERE sm2.inventory_item_id = i.id) AS last_activity,
       EXISTS(
         SELECT 1 FROM stock_movements sm3
@@ -1576,6 +1692,7 @@ app.get('/api/inventory/activity-summary', authMiddleware, requireRole(['owner',
         shrink_units: Number(r.shrink_units) || 0,
         memo_units: Math.max(0, Math.round(Number(r.memo_units) || 0)),
         sold_units: Math.max(0, Math.round(Number(r.sold_units) || 0)),
+        last_sale_at: r.last_sale_at || null,
         last_activity: r.last_activity || null,
         has_manual_edit: Boolean(r.has_manual_edit),
       };
@@ -2972,15 +3089,54 @@ app.post('/api/memos/:id/convert-to-invoice', authMiddleware, requireRole(['owne
         [invoiceId, l.inventory_item_id, l.item_code, l.description, rem, grossPc, lineTotalInv]
       );
 
+      /* Memo conversion: stock was already reduced when the memo went out. Record MEMO_VOID (+rem)
+       * so activity-summary memo_units matches reality, then a normal SALE (-rem) so sold_units does too.
+       * Restock +rem then sale -rem keeps pieces_remaining unchanged (same net as the old zero-qty SALE row). */
+      await dbRun(
+        `
+        UPDATE inventory_items
+        SET
+          pieces_remaining = pieces_remaining + ?,
+          status = CASE WHEN (pieces_remaining + ?) > 0 THEN 'Available' ELSE status END,
+          updated_at = datetime('now')
+        WHERE id = ?
+      `,
+        [rem, rem, l.inventory_item_id]
+      );
       await dbRun(
         `
         INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
-        VALUES (?, 'SALE', 'INVOICE', ?, 0, ?, ?)
+        VALUES (?, 'MEMO_VOID', 'MEMO', ?, ?, ?, ?)
+      `,
+        [
+          l.inventory_item_id,
+          memoId,
+          rem,
+          `Memo ${memo.memo_no} converted to ${invoiceNo} — released ${rem} pc from memo`,
+          req.user.id,
+        ]
+      );
+      await dbRun(
+        `
+        UPDATE inventory_items
+        SET
+          pieces_remaining = MAX(0, pieces_remaining - ?),
+          status = CASE WHEN MAX(0, pieces_remaining - ?) <= 0 THEN 'Out of stock' ELSE 'Available' END,
+          updated_at = datetime('now')
+        WHERE id = ?
+      `,
+        [rem, rem, l.inventory_item_id]
+      );
+      await dbRun(
+        `
+        INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
+        VALUES (?, 'SALE', 'INVOICE', ?, ?, ?, ?)
       `,
         [
           l.inventory_item_id,
           invoiceId,
-          `Billed from memo ${memo.memo_no} (${l.remaining} pc) — no stock change`,
+          -rem,
+          `Sold ${rem} pc via ${invoiceNo} (from memo ${memo.memo_no})`,
           req.user.id,
         ]
       );
@@ -5115,7 +5271,8 @@ async function runCloudSnapshotSync(req) {
       shopId,
       reportsTop: 5,
       reportsRangeDays: 30,
-      dashboardDays: 30,
+      /** Align with cloud dashboard 7D / 30D / 90D / 1Y trend picker (max 366 in sync job). */
+      dashboardDays: Math.min(366, Math.max(7, Number(process.env.BLUECUTS_DASHBOARD_TREND_DAYS) || 366)),
       monthlyYear: yearDefault,
       monthlyMonth: monthDefault,
     }
@@ -5161,8 +5318,12 @@ function scheduleFrankfurterBackgroundSync() {
   }
   const run = () => {
     mergeAndPersistFrankfurterRates()
-      .then(({ date }) => {
-        console.log(`[exchange-rates] Frankfurter background sync OK (${date || 'unknown date'})`);
+      .then(({ date, skipped_manual }) => {
+        const skipNote =
+          skipped_manual && skipped_manual.length
+            ? `; manual override kept for ${skipped_manual.join(', ')}`
+            : '';
+        console.log(`[exchange-rates] Frankfurter background sync OK (${date || 'unknown date'}${skipNote})`);
       })
       .catch(err => {
         console.error('[exchange-rates] Frankfurter background sync failed:', err.message || err);

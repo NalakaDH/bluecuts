@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth';
-import { Sidebar, Topbar, type PageId } from '../components/layout/Layout';
+import { Sidebar, Topbar, useIsMobile, type PageId } from '../components/layout/Layout';
 import {
   DashboardPage,
   CheckInventoryPage,
@@ -40,6 +40,8 @@ export function CloudApp() {
     });
   };
 
+  const isMobile = useIsMobile();
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarHidden, setSidebarHidden] = useState(() => {
     try {
@@ -136,32 +138,42 @@ export function CloudApp() {
     }
   };
 
+  const showSidebar = isMobile ? mobileSidebarOpen : !sidebarHidden;
+
   return (
     <div className={`App theme-${theme}`}>
-      <div className={`layout${sidebarHidden ? ' layout--sidebar-hidden' : ''}`}>
-        {!sidebarHidden && (
+      <div className={`layout${sidebarHidden && !isMobile ? ' layout--sidebar-hidden' : ''}${isMobile ? ' layout--mobile' : ''}`}>
+        {showSidebar && (
           <Sidebar
             activePage={activePage}
             onChangePage={goToPage}
             username={username}
-            // Use staff role + explicit allowed pages to limit nav to cloud pages.
             role="staff"
             allowedPages={allowedPages}
             staffNavAccessOptions={{ linkStockCountToCheckInventory: false }}
-            collapsed={sidebarCollapsed}
+            collapsed={isMobile ? false : sidebarCollapsed}
             onToggleCollapsed={() => setSidebarCollapsed(v => !v)}
+            mobileOpen={isMobile && mobileSidebarOpen}
+            onMobileClose={() => setMobileSidebarOpen(false)}
           />
         )}
         <main className="main">
           <Topbar
             page={activePage}
+            username={username}
             role="staff"
             allowedPages={allowedPages}
             staffNavAccessOptions={{ linkStockCountToCheckInventory: false }}
             collapsed={sidebarCollapsed}
-            onToggleCollapsed={() => setSidebarCollapsed(v => !v)}
-            sidebarHidden={sidebarHidden}
-            onSidebarHiddenChange={setSidebarHidden}
+            onToggleCollapsed={() => {
+              if (isMobile) setMobileSidebarOpen(v => !v);
+              else setSidebarCollapsed(v => !v);
+            }}
+            sidebarHidden={isMobile || sidebarHidden}
+            onSidebarHiddenChange={h => {
+              if (isMobile) setMobileSidebarOpen(!h);
+              else setSidebarHidden(h);
+            }}
             onChangePage={goToPage}
             theme={theme}
             onToggleTheme={toggleTheme}
