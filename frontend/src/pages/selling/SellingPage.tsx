@@ -16,6 +16,22 @@ import {
 import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
 import { dateFromServerUtc } from '../../lib/serverTime';
 import { formatUsdOnlyFromAny } from '../../lib/moneyUsdDisplay';
+import {
+  lotListLineGross,
+  lotListUnitPerPiece,
+  lotNeedsSoldCaratsInput,
+  parseSoldCaratsInput,
+  soldCaratsCartSuffix,
+  validateSoldCaratsForLot,
+} from '../../lib/lotCarats';
+import { InvoicePaymentIntentModal } from '../../components/InvoicePaymentIntentModal';
+import type { InvoicePaymentIntentResult } from '../../lib/invoicePaymentIntent';
+import {
+  offerPaidInvoicePrint,
+  offerPaymentReceiptsPrint,
+  paymentReceiptPayloadsFromRows,
+} from '../../lib/paymentReceipt';
+import { GuardedAmountNumberInput } from '../../components/GuardedAmountNumberInput';
 
 /** Default invoice / checkout display currency for new sales on this page. */
 const SELLING_DEFAULT_CURRENCY = 'USD';
@@ -55,21 +71,39 @@ const IconCartModal = () => (
  * Unit price prefill from inventory list: no FX conversion. Staff enters amounts in invoice currency
  * when it differs from the item's stored list currency.
  */
-function sellingUnitPrefillFromList(item: InventoryItem, invoiceCurrency: string): number {
+function sellingUnitPrefillFromList(
+  item: InventoryItem,
+  invoiceCurrency: string,
+  qty = 1,
+  soldCaratsRaw?: string | number | null
+): number {
   const listCur = normalizeCurrencyCode(item.selling_currency ?? DEFAULT_CURRENCY_CODE);
   const inv = normalizeCurrencyCode(invoiceCurrency);
-  if (listCur === inv) return roundMoney2(Number(item.selling_total_price ?? 0));
-  return 0;
+  if (listCur !== inv) return 0;
+  if (lotNeedsSoldCaratsInput(item)) {
+    const sold =
+      typeof soldCaratsRaw === 'number' ? soldCaratsRaw : parseSoldCaratsInput(soldCaratsRaw);
+    const perPc = lotListUnitPerPiece(item, sold, qty);
+    return perPc != null ? perPc : 0;
+  }
+  return roundMoney2(Number(item.selling_total_price ?? 0));
 }
 
 /** Inventory list price per unit in `invoiceCurrency`, or null if not comparable (currency mismatch). */
 function inventoryListUnitInInvoiceCurrency(
   item: InventoryItem,
-  invoiceCurrency: string
+  invoiceCurrency: string,
+  qty = 1,
+  soldCaratsRaw?: string | number | null
 ): number | null {
   const listCur = normalizeCurrencyCode(item.selling_currency ?? DEFAULT_CURRENCY_CODE);
   const inv = normalizeCurrencyCode(invoiceCurrency);
   if (listCur !== inv) return null;
+  if (lotNeedsSoldCaratsInput(item)) {
+    const sold =
+      typeof soldCaratsRaw === 'number' ? soldCaratsRaw : parseSoldCaratsInput(soldCaratsRaw);
+    return lotListUnitPerPiece(item, sold, qty);
+  }
   const v = Number(item.selling_total_price ?? 0);
   if (!Number.isFinite(v) || v < 0) return null;
   return roundMoney2(v);
@@ -161,6 +195,7 @@ interface ApiInvoice {
   status: InvoiceStatus;
   created_at: string;
   currency_code?: string | null;
+  payments?: { method: string; amount: number; created_at: string }[];
 }
 
 function mapApiInvoiceSummary(inv: ApiInvoice): InvoiceSummary {
@@ -258,6 +293,13 @@ const IconInvoiceDoc = () => (
     <polyline points="14 2 14 8 20 8" />
   </svg>
 );
+
+function customerInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0] ?? ''}${parts[1][0] ?? ''}`.toUpperCase();
+  const one = parts[0] ?? '';
+  return (one.slice(0, 2) || '?').toUpperCase();
+}
 
 const IconCcUser = () => (
   <svg className="selling-pos-cc-btn-icon" width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -366,6 +408,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
   const [invoiceCreatedOpen, setInvoiceCreatedOpen] = useState(false);
   const [createdInvoice, setCreatedInvoice] = useState<InvoiceSummary | null>(null);
   const [invoiceCreatedLineOverride, setInvoiceCreatedLineOverride] = useState<InvoiceCreatedLineView[] | null>(null);
+  const [paymentIntentOpen, setPaymentIntentOpen] = useState(false);
   const [newCustomerModalOpen, setNewCustomerModalOpen] = useState(false);
   /** Picker for customer (search + list + new) or currency list. */
   const [ccModal, setCcModal] = useState<null | 'customer' | 'currency'>(null);
@@ -382,6 +425,10 @@ export const SellingPage: React.FC<SellingPageProps> = ({
   const [itemModalTarget, setItemModalTarget] = useState<InventoryItem | null>(null);
   const [itemModalQty, setItemModalQty] = useState(1);
   const [itemModalUnitPrice, setItemModalUnitPrice] = useState(0);
+  /** Total carats for the qty being sold (multi-piece lots with weight). */
+  const [itemSoldCarats, setItemSoldCarats] = useState<Record<number, string>>({});
+  const [itemModalSoldCarats, setItemModalSoldCarats] = useState('');
+  const itemModalUnitPriceManualRef = useRef(false);
 
   /** Inline edit: load invoice into the composer (same UI as new sale). */
   const [editingInvoiceId, setEditingInvoiceId] = useState<number | null>(null);
@@ -488,9 +535,17 @@ export const SellingPage: React.FC<SellingPageProps> = ({
       }
       if (!raw) return;
       let invoiceId = NaN;
+      let memoSummary: Partial<ApiInvoice> | null = null;
+      let memoPayments: ApiInvoice['payments'] | null = null;
       try {
-        const p = JSON.parse(raw) as { invoiceId?: unknown };
+        const p = JSON.parse(raw) as {
+          invoiceId?: unknown;
+          summary?: Partial<ApiInvoice>;
+          payments?: ApiInvoice['payments'];
+        };
         invoiceId = Number(p.invoiceId);
+        memoSummary = p.summary ?? null;
+        memoPayments = p.payments ?? null;
       } catch {
         clearMemoConvertKey();
         return;
@@ -525,13 +580,13 @@ export const SellingPage: React.FC<SellingPageProps> = ({
 
         const summary = mapApiInvoiceSummary({
           id: data.id,
-          invoice_no: data.invoice_no,
-          customer_name: data.customer_name,
-          total: data.total,
-          paid: data.paid,
-          status: data.status,
-          created_at: data.created_at,
-          currency_code: data.currency_code,
+          invoice_no: memoSummary?.invoice_no ?? data.invoice_no,
+          customer_name: memoSummary?.customer_name ?? data.customer_name,
+          total: memoSummary?.total ?? data.total,
+          paid: memoSummary?.paid ?? data.paid,
+          status: (memoSummary?.status as InvoiceStatus) ?? data.status,
+          created_at: memoSummary?.created_at ?? data.created_at,
+          currency_code: memoSummary?.currency_code ?? data.currency_code,
         });
 
         const rawItems = Array.isArray(data.items) ? data.items : [];
@@ -552,6 +607,22 @@ export const SellingPage: React.FC<SellingPageProps> = ({
         setCreatedInvoice(summary);
         setInvoiceCreatedOpen(true);
         clearMemoConvertKey();
+
+        if (memoPayments?.length) {
+          const payloads = paymentReceiptPayloadsFromRows({
+            invoice_no: summary.invoiceNo,
+            customer_name: summary.customerName === 'Walk-in customer' ? null : summary.customerName,
+            currency_code: summary.currencyCode,
+            invoice_total: summary.total,
+            payments: memoPayments,
+          });
+          void (async () => {
+            await offerPaymentReceiptsPrint(showConfirm, payloads);
+            if (summary.status === 'Paid') {
+              await offerPaidInvoicePrint(showConfirm, summary.invoiceNo, () => printInvoiceReceiptById(summary.id));
+            }
+          })();
+        }
       } catch {
         if (!cancelled) clearMemoConvertKey();
       }
@@ -647,16 +718,15 @@ export const SellingPage: React.FC<SellingPageProps> = ({
     void fetchInvoices();
   }, [fetchInvoices]);
 
-  /** Block wheel/trackpad from changing unit price while scrolling over the modal number field (spinners removed via CSS). */
+  /** When carats or qty change on a lot line, prefill unit price from ct-based list (until manually edited). */
   useEffect(() => {
-    const el = itemModalUnitPriceInputRef.current;
-    if (!el || !itemModalOpen) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-    };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [itemModalOpen, itemModalTarget?.id]);
+    if (!itemModalOpen || !itemModalTarget || !lotNeedsSoldCaratsInput(itemModalTarget)) return;
+    if (itemModalUnitPriceManualRef.current) return;
+    const sold = parseSoldCaratsInput(itemModalSoldCarats);
+    if (sold == null) return;
+    const listUnit = lotListUnitPerPiece(itemModalTarget, sold, itemModalQty);
+    if (listUnit != null) setItemModalUnitPrice(listUnit);
+  }, [itemModalOpen, itemModalTarget, itemModalSoldCarats, itemModalQty]);
 
   /** Pieces remaining on hand (for badges / modal tags). Does not include invoice-edit bonus stock. */
   const rawPiecesAvailForItem = (item: InventoryItem) =>
@@ -684,8 +754,9 @@ export const SellingPage: React.FC<SellingPageProps> = ({
    * (so line discount = list − sell); otherwise the sell unit (premium over list).
    */
   const lineApiUnitPriceForItem = (item: InventoryItem): number => {
+    const q = itemQuantities[item.id] ?? 1;
     const sell = lineSellUnitForItem(item);
-    const list = inventoryListUnitInInvoiceCurrency(item, saleCurrency);
+    const list = inventoryListUnitInInvoiceCurrency(item, saleCurrency, q, itemSoldCarats[item.id]);
     if (list == null) return sell;
     if (sell > list) return sell;
     return list;
@@ -708,8 +779,8 @@ export const SellingPage: React.FC<SellingPageProps> = ({
   /** Line discount = (inventory list − sell) × qty when sell is below list; otherwise 0. */
   const lineDerivedItemDiscount = (item: InventoryItem): number => {
     const sell = lineSellUnitForItem(item);
-    const list = inventoryListUnitInInvoiceCurrency(item, saleCurrency);
     const q = itemQuantities[item.id] ?? 1;
+    const list = inventoryListUnitInInvoiceCurrency(item, saleCurrency, q, itemSoldCarats[item.id]);
     if (list == null || sell >= list) return 0;
     const perUnit = roundMoney2(list - sell);
     const raw = perUnit * q;
@@ -718,7 +789,9 @@ export const SellingPage: React.FC<SellingPageProps> = ({
   };
 
   const addToCart = useCallback((item: InventoryItem) => {
-    const initialUnit = sellingUnitPrefillFromList(item, saleCurrency);
+    const initialUnit = lotNeedsSoldCaratsInput(item)
+      ? 0
+      : sellingUnitPrefillFromList(item, saleCurrency);
     let inserted = false;
     setCart(prev => {
       if (prev.some(c => c.id === item.id)) return prev;
@@ -783,6 +856,11 @@ export const SellingPage: React.FC<SellingPageProps> = ({
       delete next[id];
       return next;
     });
+    setItemSoldCarats(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   };
 
   const setQtyForItem = (item: InventoryItem, raw: number) => {
@@ -791,6 +869,13 @@ export const SellingPage: React.FC<SellingPageProps> = ({
     if (!Number.isFinite(q) || q < 1) q = 1;
     if (q > maxPcs) q = maxPcs;
     setItemQuantities(prev => ({ ...prev, [item.id]: q }));
+    if (lotNeedsSoldCaratsInput(item)) {
+      setItemSoldCarats(prev => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+    }
   };
 
   const bumpQtyForItem = (item: InventoryItem, delta: number) => {
@@ -803,15 +888,35 @@ export const SellingPage: React.FC<SellingPageProps> = ({
     const item = itemModalTarget;
     const maxPcs = maxPcsForItem(item);
     const safeQty = Math.max(1, Math.min(maxPcs, Math.floor(Number(itemModalQty) || 1)));
-    const safeUnit = Math.max(0, roundMoney2(Number(itemModalUnitPrice) || 0));
+    let safeUnit = Math.max(0, roundMoney2(Number(itemModalUnitPrice) || 0));
+    if (lotNeedsSoldCaratsInput(item)) {
+      const soldCt = parseSoldCaratsInput(itemModalSoldCarats);
+      const err = validateSoldCaratsForLot(item.weight_carats, soldCt);
+      if (err) {
+        showAlert({ title: 'Carat weight required', message: err, variant: 'warning' });
+        return;
+      }
+      const listUnit = lotListUnitPerPiece(item, soldCt, safeQty);
+      if (listUnit != null && safeUnit <= 0) safeUnit = listUnit;
+    }
     if (!itemModalFromCartEdit) {
       addToCart(item);
     }
     setItemQuantities(prev => ({ ...prev, [item.id]: safeQty }));
     setItemUnitPrices(prev => ({ ...prev, [item.id]: safeUnit }));
+    if (lotNeedsSoldCaratsInput(item)) {
+      setItemSoldCarats(prev => ({ ...prev, [item.id]: itemModalSoldCarats.trim() }));
+    } else {
+      setItemSoldCarats(prev => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+    }
     setItemModalOpen(false);
     setItemModalTarget(null);
     setItemModalFromCartEdit(false);
+    setItemModalSoldCarats('');
     setSearch('');
   };
 
@@ -826,17 +931,38 @@ export const SellingPage: React.FC<SellingPageProps> = ({
   const finalTotalRaw = afterLineDiscount - orderDiscountValue;
   const finalTotal = finalTotalRaw > 0 ? finalTotalRaw : 0;
   const itemModalListUnit =
-    itemModalTarget != null ? sellingUnitPrefillFromList(itemModalTarget, saleCurrency) : 0;
+    itemModalTarget != null
+      ? sellingUnitPrefillFromList(
+          itemModalTarget,
+          saleCurrency,
+          itemModalQty,
+          itemModalSoldCarats
+        )
+      : 0;
+  const itemModalListLineGross =
+    itemModalTarget != null
+      ? lotListLineGross(itemModalTarget, parseSoldCaratsInput(itemModalSoldCarats))
+      : null;
   const itemModalPiecesAvail =
     itemModalTarget != null ? rawPiecesAvailForItem(itemModalTarget) : 0;
-  const itemModalDiscount = Math.max(0, roundMoney2(itemModalListUnit - itemModalUnitPrice));
+  const itemModalDiscount = Math.max(
+    0,
+    roundMoney2(
+      (itemModalListLineGross ?? itemModalListUnit * Math.max(1, itemModalQty)) -
+        itemModalUnitPrice * Math.max(1, itemModalQty)
+    )
+  );
+  const itemModalListBasis = itemModalListLineGross ?? itemModalListUnit * Math.max(1, itemModalQty);
   const itemModalDiscountPct =
-    itemModalListUnit > 0 ? roundMoney2((itemModalDiscount / itemModalListUnit) * 100) : 0;
+    itemModalListBasis > 0 ? roundMoney2((itemModalDiscount / itemModalListBasis) * 100) : 0;
   const itemModalSubtotal = roundMoney2(Math.max(0, itemModalUnitPrice) * Math.max(1, itemModalQty));
-  const itemModalPremium = Math.max(0, roundMoney2(itemModalUnitPrice - itemModalListUnit));
+  const itemModalPremium = Math.max(
+    0,
+    roundMoney2(itemModalUnitPrice * Math.max(1, itemModalQty) - itemModalListBasis)
+  );
   const itemModalPremiumPct =
-    itemModalListUnit > 0 ? roundMoney2((itemModalPremium / itemModalListUnit) * 100) : 0;
-  const modalPriceDiff = roundMoney2(itemModalListUnit - itemModalUnitPrice);
+    itemModalListBasis > 0 ? roundMoney2((itemModalPremium / itemModalListBasis) * 100) : 0;
+  const modalPriceDiff = roundMoney2(itemModalListBasis - itemModalUnitPrice * Math.max(1, itemModalQty));
   const modalShowSavingBanner = modalPriceDiff > 0.005;
   const modalShowAboveBanner = modalPriceDiff < -0.005;
 
@@ -984,12 +1110,13 @@ export const SellingPage: React.FC<SellingPageProps> = ({
       setItemUnitPrices(prev => {
         const nextPrices: Record<number, number> = {};
         for (const it of cart) {
-          nextPrices[it.id] = sellingUnitPrefillFromList(it, next);
+          const q = itemQuantities[it.id] ?? 1;
+          nextPrices[it.id] = sellingUnitPrefillFromList(it, next, q, itemSoldCarats[it.id]);
         }
         return nextPrices;
       });
     },
-    [cart]
+    [cart, itemQuantities, itemSoldCarats]
   );
 
   useEffect(() => {
@@ -1001,15 +1128,99 @@ export const SellingPage: React.FC<SellingPageProps> = ({
     return () => window.removeEventListener('keydown', onKey);
   }, [ccModal]);
 
-  const createInvoice = async () => {
+  const validateCartForInvoice = (): boolean => {
     if (cart.length === 0) {
       showAlert({
         title: 'No items',
         message: 'Add at least one item before creating an invoice.',
         variant: 'warning',
       });
-      return;
+      return false;
     }
+    for (const item of cart) {
+      if (!lotNeedsSoldCaratsInput(item)) continue;
+      const soldCt = parseSoldCaratsInput(itemSoldCarats[item.id]);
+      const err = validateSoldCaratsForLot(item.weight_carats, soldCt);
+      if (err) {
+        showAlert({
+          title: 'Carat weight required',
+          message: `${item.item_code || item.category || 'Item'}: ${err}`,
+          variant: 'warning',
+        });
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const buildInvoiceItemsBody = () =>
+    cart.map(item => {
+      const soldCt = lotNeedsSoldCaratsInput(item) ? parseSoldCaratsInput(itemSoldCarats[item.id]) : null;
+      return {
+        inventory_item_id: item.id,
+        price: lineApiUnitPriceForItem(item),
+        quantity: itemQuantities[item.id] ?? 1,
+        discount: lineDerivedItemDiscount(item),
+        item_code: item.item_code,
+        ...(soldCt != null ? { weight_carats: soldCt } : {}),
+      };
+    });
+
+  const finalizeCreatedInvoice = async (
+    created: ApiInvoice & {
+      customer_id?: number | null;
+      subtotal?: number;
+      discount?: number;
+    }
+  ) => {
+    const summary = mapApiInvoiceSummary(created);
+    setInvoices(prev => [summary, ...prev]);
+    setNextInvoiceNumber(n => n + 1);
+    setInvoiceMessage(`Invoice ${summary.invoiceNo} created.`);
+    const payLabel =
+      summary.status === 'Paid'
+        ? 'Payment recorded in full.'
+        : summary.status === 'Partial'
+          ? 'Partial payment recorded.'
+          : 'You can record payment from checkout or Payments.';
+    showAlert({
+      title: 'Invoice created',
+      message: `${summary.invoiceNo} is ready. ${payLabel}`,
+      variant: 'success',
+    });
+    const createdLineViews: InvoiceCreatedLineView[] = cart.map(row => {
+      const q = itemQuantities[row.id] ?? 1;
+      const gross = lineSubtotalGrossForItem(row);
+      const disc = lineDerivedItemDiscount(row);
+      const net = lineSellTotalForItem(row);
+      const label = row.item_code || `#${row.id}`;
+      return { label, qty: q, gross, disc, net };
+    });
+    resetInvoice();
+    setInvoiceCreatedLineOverride(createdLineViews);
+    setCreatedInvoice(summary);
+    setInvoiceCreatedOpen(true);
+    await Promise.all([fetchAvailable(), fetchInvoices()]);
+
+    const payments = Array.isArray(created.payments) ? created.payments : [];
+    if (payments.length) {
+      const payloads = paymentReceiptPayloadsFromRows({
+        invoice_no: summary.invoiceNo,
+        customer_name: created.customer_name,
+        currency_code: summary.currencyCode,
+        invoice_total: summary.total,
+        payments,
+      });
+      void (async () => {
+        await offerPaymentReceiptsPrint(showConfirm, payloads);
+        if (summary.status === 'Paid') {
+          await offerPaidInvoicePrint(showConfirm, summary.invoiceNo, () => printInvoiceReceiptById(summary.id));
+        }
+      })();
+    }
+  };
+
+  const submitCreateInvoiceWithPayment = async (paymentIntent: InvoicePaymentIntentResult) => {
     setCreatingInvoice(true);
     setInvoiceMessage(null);
     try {
@@ -1017,42 +1228,10 @@ export const SellingPage: React.FC<SellingPageProps> = ({
         customer_id: selectedCustomer ? selectedCustomer.id : null,
         discount: orderDiscountValue,
         currency_code: saleCurrency,
-        items: cart.map(item => ({
-          inventory_item_id: item.id,
-          price: lineApiUnitPriceForItem(item),
-          quantity: itemQuantities[item.id] ?? 1,
-          discount: lineDerivedItemDiscount(item),
-          item_code: item.item_code,
-        })),
+        items: buildInvoiceItemsBody(),
+        payment_mode: paymentIntent.payment_mode,
+        payments: paymentIntent.payments,
       };
-
-      if (editingInvoiceId != null) {
-        const res = await fetch(apiUrl(`/api/invoices/${editingInvoiceId}`), {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) {
-          const msg = await parseErrorResponse(res, 'Failed to update invoice');
-          throw new Error(msg);
-        }
-        const updated = (await res.json()) as ApiInvoice;
-        const summary = mapApiInvoiceSummary(updated);
-        setInvoices(prev => prev.map(row => (row.id === summary.id ? summary : row)));
-        resetInvoice();
-        setInvoiceMessage(`Invoice ${summary.invoiceNo} updated.`);
-        showAlert({
-          title: 'Invoice updated',
-          message: `${summary.invoiceNo} was saved successfully.`,
-          variant: 'success',
-        });
-        await fetchAvailable(search);
-        return;
-      }
-
       const res = await fetch(apiUrl('/api/invoices'), {
         method: 'POST',
         headers: {
@@ -1065,26 +1244,62 @@ export const SellingPage: React.FC<SellingPageProps> = ({
         const msg = await parseErrorResponse(res, 'Failed to create invoice');
         throw new Error(msg);
       }
-      const created: ApiInvoice & {
+      const created = (await res.json()) as ApiInvoice & {
         customer_id?: number | null;
         subtotal?: number;
         discount?: number;
-      } = await res.json();
+      };
+      setPaymentIntentOpen(false);
+      await finalizeCreatedInvoice(created);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to save invoice';
+      showAlert({ title: 'Could not save invoice', message: msg, variant: 'error' });
+    } finally {
+      setCreatingInvoice(false);
+    }
+  };
 
-      const summary = mapApiInvoiceSummary(created);
-      setInvoices(prev => [summary, ...prev]);
-      setNextInvoiceNumber(n => n + 1);
+  const createInvoice = async () => {
+    if (!validateCartForInvoice()) return;
 
-      setInvoiceMessage(`Invoice ${summary.invoiceNo} created.`);
+    if (editingInvoiceId == null) {
+      setPaymentIntentOpen(true);
+      return;
+    }
+
+    setCreatingInvoice(true);
+    setInvoiceMessage(null);
+    try {
+      const body = {
+        customer_id: selectedCustomer ? selectedCustomer.id : null,
+        discount: orderDiscountValue,
+        currency_code: saleCurrency,
+        items: buildInvoiceItemsBody(),
+      };
+
+      const res = await fetch(apiUrl(`/api/invoices/${editingInvoiceId}`), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const msg = await parseErrorResponse(res, 'Failed to update invoice');
+        throw new Error(msg);
+      }
+      const updated = (await res.json()) as ApiInvoice;
+      const summary = mapApiInvoiceSummary(updated);
+      setInvoices(prev => prev.map(row => (row.id === summary.id ? summary : row)));
+      resetInvoice();
+      setInvoiceMessage(`Invoice ${summary.invoiceNo} updated.`);
       showAlert({
-        title: 'Invoice created',
-        message: `${summary.invoiceNo} is ready. You can record payment below or from Payments.`,
+        title: 'Invoice updated',
+        message: `${summary.invoiceNo} was saved successfully.`,
         variant: 'success',
       });
-      resetInvoice();
-      setCreatedInvoice(summary);
-      setInvoiceCreatedOpen(true);
-      await Promise.all([fetchAvailable(), fetchInvoices()]);
+      await fetchAvailable(search);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to save invoice';
       showAlert({ title: 'Could not save invoice', message: msg, variant: 'error' });
@@ -1114,6 +1329,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
     setItemQuantities({});
     setItemUnitPrices({});
     setItemNotes({});
+    setItemSoldCarats({});
     setDiscountAmount(0);
     setDiscountType('pct');
     setSaleCurrency(SELLING_DEFAULT_CURRENCY);
@@ -1126,7 +1342,6 @@ export const SellingPage: React.FC<SellingPageProps> = ({
     setEditingInvoiceId(null);
     setEditingInvoiceNo(null);
     setReservedPiecesOnEdit({});
-    setInvoiceCreatedLineOverride(null);
   };
 
   const cancelInvoiceEdit = () => {
@@ -1153,6 +1368,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
         itemQuantities,
         itemUnitPrices,
         itemNotes,
+        itemSoldCarats,
         cart,
         saleCurrency,
       };
@@ -1206,6 +1422,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
           itemQuantities?: Record<number, number>;
           itemUnitPrices?: Record<number, number>;
           itemNotes?: Record<number, string>;
+          itemSoldCarats?: Record<number, string>;
           cart: InventoryItem[];
           saleCurrency?: string;
         };
@@ -1232,6 +1449,10 @@ export const SellingPage: React.FC<SellingPageProps> = ({
         payload.itemNotes && typeof payload.itemNotes === 'object'
           ? (payload.itemNotes as Record<number, string>)
           : {};
+      const savedSoldCarats =
+        payload.itemSoldCarats && typeof payload.itemSoldCarats === 'object'
+          ? (payload.itemSoldCarats as Record<number, string>)
+          : {};
       const nextQ: Record<number, number> = {};
       rawCart.forEach(it => {
         const maxP = Math.max(1, Math.floor(Number(it.pieces_remaining ?? it.pieces ?? 1)));
@@ -1250,6 +1471,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
       });
       setItemUnitPrices(nextUnitPrices);
       setItemNotes(savedNotes);
+      setItemSoldCarats(savedSoldCarats);
       setCart(rawCart);
       setEditingInvoiceId(null);
       setEditingInvoiceNo(null);
@@ -1290,6 +1512,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
       const cartRows: InventoryItem[] = [];
       const quantities: Record<number, number> = {};
       const unitPrices: Record<number, number> = {};
+      const soldCarats: Record<number, string> = {};
 
       for (const line of data.items) {
         const invRes = await fetch(apiUrl(`/api/inventory/${line.inventory_item_id}`), {
@@ -1306,6 +1529,10 @@ export const SellingPage: React.FC<SellingPageProps> = ({
         reserved[row.id] = qty;
         const lineTotal = Number(line.line_total || 0);
         unitPrices[row.id] = roundMoney2(qty > 0 ? lineTotal / qty : 0);
+        const lineCt = (line as { weight_carats?: number | null }).weight_carats;
+        if (lineCt != null && Number.isFinite(Number(lineCt)) && Number(lineCt) > 0) {
+          soldCarats[row.id] = String(lineCt);
+        }
       }
 
       let itemsDiscSum = 0;
@@ -1319,6 +1546,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
       setCart(cartRows);
       setItemQuantities(quantities);
       setItemUnitPrices(unitPrices);
+      setItemSoldCarats(soldCarats);
       setDiscountAmount(orderDisc);
       setReservedPiecesOnEdit(reserved);
       setEditingInvoiceId(data.id);
@@ -1413,32 +1641,32 @@ export const SellingPage: React.FC<SellingPageProps> = ({
           })
           .slice(0, 8);
 
-  const addSuggestedItem = (item: InventoryItem) => {
-    const defaultUnit = lineSellUnitForItem(item);
-    setItemModalFromCartEdit(false);
+  const openItemModalWithItem = (item: InventoryItem, fromCartEdit: boolean) => {
+    const q = fromCartEdit ? itemQuantities[item.id] ?? 1 : 1;
+    const safeQty = Math.max(1, Math.floor(Number(q) || 1));
+    const soldRaw = fromCartEdit ? itemSoldCarats[item.id] ?? '' : '';
+    const defaultUnit = fromCartEdit
+      ? lineSellUnitForItem(item)
+      : sellingUnitPrefillFromList(item, saleCurrency, safeQty, soldRaw);
+    itemModalUnitPriceManualRef.current = fromCartEdit;
+    setItemModalFromCartEdit(fromCartEdit);
     setItemModalTarget(item);
-    setItemModalQty(1);
+    setItemModalQty(safeQty);
     setItemModalUnitPrice(defaultUnit);
+    setItemModalSoldCarats(soldRaw);
     setItemModalOpen(true);
+  };
+
+  const addSuggestedItem = (item: InventoryItem) => {
+    openItemModalWithItem(item, false);
   };
 
   const openItemModal = (item: InventoryItem) => {
-    const defaultUnit = lineSellUnitForItem(item);
-    setItemModalFromCartEdit(false);
-    setItemModalTarget(item);
-    setItemModalQty(1);
-    setItemModalUnitPrice(defaultUnit);
-    setItemModalOpen(true);
+    openItemModalWithItem(item, false);
   };
 
   const openItemModalEditFromCart = (item: InventoryItem) => {
-    const unit = lineSellUnitForItem(item);
-    const q = itemQuantities[item.id] ?? 1;
-    setItemModalFromCartEdit(true);
-    setItemModalTarget(item);
-    setItemModalQty(Math.max(1, Math.floor(Number(q) || 1)));
-    setItemModalUnitPrice(unit);
-    setItemModalOpen(true);
+    openItemModalWithItem(item, true);
   };
 
   const catalogItems = useMemo(() => {
@@ -1770,9 +1998,10 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                 const showPlaceholder = !imgSrc || cartImageLoadFailed.has(it.id);
                 const codeLabel = it.item_code || `#${it.id}`;
                 const displayName = (it.category || codeLabel).replace(/_/g, ' ');
-                const typeCtLabel = `${(it.item_type || 'item').replace(/_/g, ' ').toLowerCase()}${
-                  it.weight_carats != null ? ` · ${it.weight_carats} ct` : ''
-                }`;
+                const typeCtLabel = `${(it.item_type || 'item').replace(/_/g, ' ').toLowerCase()}${soldCaratsCartSuffix(
+                  itemSoldCarats[it.id],
+                  it.weight_carats
+                )}`;
                 return (
                   <div key={it.id} className="selling-pos-line">
                     <div className="selling-pos-line-thumb">
@@ -1819,9 +2048,8 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                       </div>
                     </div>
                     <div className="selling-pos-line-side">
-                      <input
+                      <GuardedAmountNumberInput
                         id={`sell-line-unit-${it.id}`}
-                        type="number"
                         className="selling2-unit-price-input"
                         value={lineSellUnitForItem(it)}
                         min={0}
@@ -1861,8 +2089,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
               <div className="selling2-summary-row">
                 <span>Order discount</span>
                 <div className="selling-pos-order-discount-input">
-                  <input
-                    type="number"
+                  <GuardedAmountNumberInput
                     value={discountAmount}
                     onChange={e => setDiscountAmount(parseMoneyInput(e.target.value))}
                     min={0}
@@ -2210,28 +2437,48 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                 <div className="selling-pos-item-modal-eyebrow">Pricing</div>
                 <div className="selling-pos-item-modal-price-grid selling-pos-item-modal-price-grid--single">
                   <div className="selling-pos-item-modal-price-cell">
-                    <div className="selling-pos-item-modal-price-cell-label">Selling Price</div>
-                    <div className="selling-pos-item-modal-price-cell-value selling-pos-item-modal-price-cell-value--sell">
-                      {formatMoneyAmount(itemModalListUnit, saleCurrency)}
+                    <div className="selling-pos-item-modal-price-cell-label">
+                      {itemModalTarget && lotNeedsSoldCaratsInput(itemModalTarget)
+                        ? 'List price (this sale)'
+                        : 'Selling Price'}
                     </div>
+                    <div className="selling-pos-item-modal-price-cell-value selling-pos-item-modal-price-cell-value--sell">
+                      {itemModalListLineGross != null
+                        ? formatMoneyAmount(itemModalListLineGross, saleCurrency)
+                        : formatMoneyAmount(itemModalListUnit, saleCurrency)}
+                    </div>
+                    {itemModalTarget &&
+                    lotNeedsSoldCaratsInput(itemModalTarget) &&
+                    itemModalTarget.selling_carat_price != null &&
+                    Number(itemModalTarget.selling_carat_price) > 0 ? (
+                      <div className="selling-pos-item-modal-carats-hint">
+                        {formatMoneyAmount(Number(itemModalTarget.selling_carat_price), saleCurrency)}/ct
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
                 <div className="selling-pos-item-modal-unit-row">
                   <div className="selling-pos-item-modal-unit-label">
                     <IconEdit />
-                    <span>Unit Price</span>
+                    <span>
+                      {itemModalTarget && lotNeedsSoldCaratsInput(itemModalTarget)
+                        ? 'Price per pc'
+                        : 'Unit Price'}
+                    </span>
                   </div>
                   <div className="selling-pos-item-modal-unit-input-wrap">
                     <span className="selling-pos-item-modal-unit-currency">{currencySymbolFor(saleCurrency)}</span>
-                    <input
+                    <GuardedAmountNumberInput
                       ref={itemModalUnitPriceInputRef}
-                      type="number"
                       className="selling-pos-item-modal-unit-input"
                       value={itemModalUnitPrice}
                       min={0}
                       step={0.01}
-                      onChange={e => setItemModalUnitPrice(Math.max(0, parseMoneyInput(e.target.value)))}
+                      onChange={e => {
+                        itemModalUnitPriceManualRef.current = true;
+                        setItemModalUnitPrice(Math.max(0, parseMoneyInput(e.target.value)));
+                      }}
                       aria-label={`Unit price (${saleCurrency})`}
                     />
                   </div>
@@ -2260,6 +2507,35 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                   </div>
                 ) : null}
               </section>
+
+              {itemModalTarget && lotNeedsSoldCaratsInput(itemModalTarget) ? (
+                <section className="selling-pos-item-modal-pricing">
+                  <div className="selling-pos-item-modal-unit-row">
+                    <div className="selling-pos-item-modal-unit-label">
+                      <span>Carats sold</span>
+                    </div>
+                    <div className="selling-pos-item-modal-unit-input-wrap">
+                      <GuardedAmountNumberInput
+                        className="selling-pos-item-modal-unit-input"
+                        value={itemModalSoldCarats}
+                        min={0}
+                        step={0.001}
+                        placeholder="0.000"
+                        onChange={e => {
+                          itemModalUnitPriceManualRef.current = false;
+                          setItemModalSoldCarats(e.target.value);
+                        }}
+                        aria-label="Total carat weight for pieces being sold"
+                      />
+                      <span className="selling-pos-item-modal-unit-currency">ct</span>
+                    </div>
+                  </div>
+                  <p className="selling-pos-item-modal-carats-hint">
+                    Enter total weight for {itemModalQty} pc{itemModalQty === 1 ? '' : 's'} (lot has{' '}
+                    {itemModalTarget.weight_carats} ct remaining).
+                  </p>
+                </section>
+              ) : null}
 
               <section className="selling-pos-item-modal-bottom">
                 <div className="selling-pos-item-modal-qty-row">
@@ -2334,11 +2610,19 @@ export const SellingPage: React.FC<SellingPageProps> = ({
           onClick={() => setCcModal(null)}
         >
           <div
-            className="selling2-modal selling-pos-cc-modal selling-pos-cc-modal--pickers"
+            className="selling2-modal selling-pos-cc-modal selling-pos-cc-modal--pickers selling-pos-cc-modal--customer"
             onClick={e => e.stopPropagation()}
           >
-            <div className="selling2-modal-header selling-pos-cc-modal-head">
-              <h3 id="selling-cc-customer-title">Select customer</h3>
+            <div className="selling2-modal-header selling-pos-cc-modal-head selling-pos-cc-modal-head--customer">
+              <div className="selling-pos-cc-modal-head-main">
+                <span className="selling-pos-cc-modal-head-icon" aria-hidden="true">
+                  <IconCcUser />
+                </span>
+                <div>
+                  <h3 id="selling-cc-customer-title">Select customer</h3>
+                  <p className="selling-pos-cc-modal-head-sub">Search your list or add someone new</p>
+                </div>
+              </div>
               <button
                 type="button"
                 className="selling2-modal-close selling-pos-cc-modal-close"
@@ -2349,6 +2633,9 @@ export const SellingPage: React.FC<SellingPageProps> = ({
               </button>
             </div>
             <div className="selling2-modal-body selling-pos-cc-modal-body">
+              <label className="selling-pos-cc-modal-search-label" htmlFor="selling-cc-customer-search">
+                Find customer
+              </label>
               <div className="selling2-customer-search selling2-customer-search--gem selling-pos-cc-modal-search">
                 <span className="selling2-search-icon" aria-hidden="true">
                   <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2357,25 +2644,26 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                   </svg>
                 </span>
                 <input
+                  id="selling-cc-customer-search"
                   type="search"
                   value={customerSearch}
                   onChange={e => setCustomerSearch(e.target.value)}
                   className="selling2-search-input"
-                  placeholder="Search by name or phone..."
+                  placeholder="Name or phone number…"
                   autoFocus
                 />
               </div>
               <div className="selling-pos-cc-modal-list selling-pos-cc-modal-list--customers">
                 {customers.length === 0 ? (
-                  <p className="selling-pos-cc-modal-empty">
-                    <span className="selling-pos-cc-modal-empty-icon" aria-hidden="true">
-                      <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="11" cy="11" r="8" />
-                        <path d="m21 21-4.35-4.35" />
-                      </svg>
+                  <div className="selling-pos-cc-modal-empty">
+                    <span className="selling-pos-cc-modal-empty-icon selling-pos-cc-modal-empty-icon--users" aria-hidden="true">
+                      <IconNewCustomerUser />
                     </span>
-                    Type to search customers, or add a new one below.
-                  </p>
+                    <strong className="selling-pos-cc-modal-empty-title">No customers to show</strong>
+                    <p className="selling-pos-cc-modal-empty-text">
+                      Type in the search box above to find an existing customer.
+                    </p>
+                  </div>
                 ) : (
                   customers.map(c => (
                     <button
@@ -2389,18 +2677,28 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                         setCcModal(null);
                       }}
                     >
-                      <span className="selling-pos-cc-customer-option-name">{c.name}</span>
-                      <span className="selling-pos-cc-customer-option-sub">
-                        {c.phone ? (
-                          <span className="selling-pos-cc-customer-option-phone">{c.phone}</span>
-                        ) : null}
-                        {c.phone && c.email ? <span className="selling-pos-cc-customer-option-dot"> · </span> : null}
-                        {c.email ? (
-                          <span className="selling-pos-cc-customer-option-email">{c.email}</span>
-                        ) : null}
-                        {!c.phone && !c.email ? (
-                          <span className="selling-pos-cc-customer-option-muted">No phone or email on file</span>
-                        ) : null}
+                      <span className="selling-pos-cc-customer-option-avatar" aria-hidden="true">
+                        {customerInitials(c.name)}
+                      </span>
+                      <span className="selling-pos-cc-customer-option-body">
+                        <span className="selling-pos-cc-customer-option-name">{c.name}</span>
+                        <span className="selling-pos-cc-customer-option-sub">
+                          {c.phone ? (
+                            <span className="selling-pos-cc-customer-option-phone">{c.phone}</span>
+                          ) : null}
+                          {c.phone && c.email ? <span className="selling-pos-cc-customer-option-dot"> · </span> : null}
+                          {c.email ? (
+                            <span className="selling-pos-cc-customer-option-email">{c.email}</span>
+                          ) : null}
+                          {!c.phone && !c.email ? (
+                            <span className="selling-pos-cc-customer-option-muted">No phone or email on file</span>
+                          ) : null}
+                        </span>
+                      </span>
+                      <span className="selling-pos-cc-customer-option-chevron" aria-hidden="true">
+                        <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="m9 18 6-6 6-6" />
+                        </svg>
                       </span>
                     </button>
                   ))
@@ -2408,16 +2706,19 @@ export const SellingPage: React.FC<SellingPageProps> = ({
               </div>
               <button
                 type="button"
-                className="selling-pos-cc-modal-new"
+                className="selling-pos-cc-modal-new selling-pos-cc-modal-new--prominent"
                 onClick={() => {
                   setCcModal(null);
                   setNewCustomerModalOpen(true);
                 }}
               >
-                <span className="selling-pos-cc-modal-new-icon" aria-hidden="true">
+                <span className="selling-pos-cc-modal-new-icon-wrap" aria-hidden="true">
                   <IconPlus />
                 </span>
-                Add new customer
+                <span className="selling-pos-cc-modal-new-copy">
+                  <span className="selling-pos-cc-modal-new-title">Add new customer</span>
+                  <span className="selling-pos-cc-modal-new-sub">Create a profile for a walk-in or new buyer</span>
+                </span>
               </button>
             </div>
             <div className="selling2-modal-footer selling-pos-cc-modal-foot">
@@ -2685,6 +2986,15 @@ export const SellingPage: React.FC<SellingPageProps> = ({
         </div>
       )}
 
+      <InvoicePaymentIntentModal
+        open={paymentIntentOpen}
+        total={finalTotal}
+        currencyCode={saleCurrency}
+        busy={creatingInvoice}
+        onCancel={() => setPaymentIntentOpen(false)}
+        onConfirm={payload => void submitCreateInvoiceWithPayment(payload)}
+      />
+
       {invoiceCreatedOpen && createdInvoice && (
         <div className="selling2-modal-overlay" role="dialog" aria-modal="true">
           <div className="selling2-created">
@@ -2711,6 +3021,27 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                 <span>Total Amount</span>
                 <span>{formatMoneyAmount(createdInvoice.total, createdInvoice.currencyCode)}</span>
               </div>
+              <div>
+                <span>Status</span>
+                <span>{createdInvoice.status}</span>
+              </div>
+              {createdInvoice.paid > 0 ? (
+                <div>
+                  <span>Paid</span>
+                  <span>{formatMoneyAmount(createdInvoice.paid, createdInvoice.currencyCode)}</span>
+                </div>
+              ) : null}
+              {createdInvoice.status === 'Partial' ? (
+                <div>
+                  <span>Balance</span>
+                  <span>
+                    {formatMoneyAmount(
+                      Math.max(0, createdInvoice.total - createdInvoice.paid),
+                      createdInvoice.currencyCode
+                    )}
+                  </span>
+                </div>
+              ) : null}
               <div>
                 <span>Items</span>
                 <span>
@@ -2752,23 +3083,29 @@ export const SellingPage: React.FC<SellingPageProps> = ({
               onClick={() => createdInvoice && printInvoiceReceiptById(createdInvoice.id)}
             >
               <span className="btn-icon" aria-hidden="true"><IconPrinter /></span>
-              Print receipt
+              Print invoice
             </button>
-            <button
-              type="button"
-              className="ghost-button selling2-created-btn"
-              onClick={() => {
-                setInvoiceCreatedLineOverride(null);
-                setInvoiceCreatedOpen(false);
-                if (createdInvoice) openInvoiceCheckout(createdInvoice.id);
-              }}
-            >
-              Continue to Checkout
-            </button>
+            {createdInvoice.status !== 'Paid' ? (
+              <button
+                type="button"
+                className="ghost-button selling2-created-btn"
+                onClick={() => {
+                  setInvoiceCreatedLineOverride(null);
+                  setInvoiceCreatedOpen(false);
+                  if (createdInvoice) openInvoiceCheckout(createdInvoice.id);
+                }}
+              >
+                {createdInvoice.status === 'Partial' ? 'Add payment' : 'Continue to Checkout'}
+              </button>
+            ) : null}
             <button
               type="button"
               className="ghost-button selling2-created-btn selling2-created-btn-muted"
-              onClick={() => { setInvoiceCreatedOpen(false); resetInvoice(); }}
+              onClick={() => {
+                setInvoiceCreatedLineOverride(null);
+                setInvoiceCreatedOpen(false);
+                resetInvoice();
+              }}
             >
               Start New Invoice
             </button>

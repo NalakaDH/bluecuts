@@ -27,6 +27,7 @@ interface TopItem {
 
 interface StatusRow {
   status: string;
+  item_count?: number;
   pcs_remaining: number;
   value: number;
 }
@@ -745,8 +746,10 @@ export function ReportsPage() {
               <div key={i} className="status-row">
                 <div className="status-dot" style={{ background: statusDotColor(r.status) }} />
                 <div className="status-label">{r.status}</div>
-                <div className="status-pcs">{r.pcs_remaining} pcs</div>
-                <div className="status-val">{r.pcs_remaining > 0 ? `$${fmt(r.value)}` : '—'}</div>
+                <div className="status-pcs">
+                  {r.item_count ?? 0} items{r.pcs_remaining > 0 ? ` · ${r.pcs_remaining} pcs` : ''}
+                </div>
+                <div className="status-val">{r.value > 0 ? `$${fmt(r.value)}` : '—'}</div>
               </div>
             ))}
           </div>

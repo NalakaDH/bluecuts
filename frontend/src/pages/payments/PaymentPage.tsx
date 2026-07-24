@@ -3,6 +3,7 @@ import { useAlertDialog } from '../../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../../api';
 import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
 import { mapApiInvoiceToReceipt, openInvoiceReceiptWindow } from '../../lib/receiptDocument';
+import { openPaymentReceiptForInvoicePayment } from '../../lib/paymentReceipt';
 import { formatUsdOnlyFromThb } from '../../lib/moneyUsdDisplay';
 import { DEFAULT_CURRENCY_CODE, formatMoneyAmount, roundMoney2 } from '../../lib/currencies';
 import { dateFromServerUtc } from '../../lib/serverTime';
@@ -475,6 +476,33 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
     );
   };
 
+  const printPaymentReceipt = (inv: InvoiceDetail, paymentId: number) => {
+    const currency =
+      inv.currency_code != null && inv.currency_code !== ''
+        ? inv.currency_code
+        : DEFAULT_CURRENCY_CODE;
+    const ok = openPaymentReceiptForInvoicePayment({
+      invoice_no: inv.invoice_no,
+      customer_name: inv.customer_name,
+      currency_code: currency,
+      invoice_total: inv.total,
+      payments: inv.payments.map(p => ({
+        id: p.id,
+        method: p.method,
+        amount: p.amount,
+        created_at: p.created_at,
+      })),
+      paymentId,
+    });
+    if (!ok) {
+      showAlert({
+        title: 'Could not print',
+        message: 'Payment receipt could not be opened.',
+        variant: 'error',
+      });
+    }
+  };
+
   return (
     <div className="page page-payments">
       {checkoutOpen && (
@@ -824,6 +852,14 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
                                     {formatMoneyAmount(p.amount, detailCurrency)}
                                   </div>
                                 </div>
+                                <button
+                                  type="button"
+                                  className="pay-inv-payment-print-btn"
+                                  onClick={() => printPaymentReceipt(selectedInvoice, p.id)}
+                                >
+                                  <IconPrinter />
+                                  Print payment receipt
+                                </button>
                               </div>
                             </div>
                           ))}

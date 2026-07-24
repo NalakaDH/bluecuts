@@ -10,8 +10,10 @@
     "build:frontend": "cross-env REACT_APP_API_URL=http://127.0.0.1:4000 npm run build --prefix frontend",
     "build:backend": "npm run build --prefix backend",
     "predist": "node scripts/ensure-electron-native.cjs && npm run build:frontend",
-    "dist": "electron-builder",
+    "dist": "electron-builder --win nsis portable",
     "dist:dir": "electron-builder --dir",
+    "dist:setup": "electron-builder --win nsis",
+    "dist:portable": "electron-builder --win portable",
     "package": "npm run dist",
     "restore:dev-native": "npm rebuild sqlite3 bcrypt --prefix backend"
   },
@@ -28,6 +30,7 @@
       "output": "release"
     },
     "npmRebuild": false,
+    "compression": "normal",
     "files": [
       "electron-main.js",
       "frontend/build/**/*",
@@ -40,7 +43,11 @@
         "filter": [
           "**/*",
           "!data/**",
-          "!uploads/**"
+          "!uploads/**",
+          "!node_modules/blue-cuts-gems/**",
+          "!node_modules/nodemon/**",
+          "!scripts/**",
+          "!**/*.md"
         ]
       }
     ],

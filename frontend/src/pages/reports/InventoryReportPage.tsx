@@ -41,6 +41,10 @@ interface ReportItem {
   selling_currency: string;
   revenue_thb: number;
   revenue_usd: number | null;
+  cost_thb?: number;
+  cost_usd?: number | null;
+  profit_thb?: number;
+  profit_usd?: number | null;
   stock_value?: number;
   stock_value_usd: number | null;
   stock_value_thb?: number;
@@ -53,6 +57,9 @@ interface Summary {
   totalReturned?: number;
   totalRevenueThb: number;
   totalRevenueUsd: number | null;
+  totalCostThb?: number;
+  totalProfitThb?: number;
+  totalProfitUsd: number | null;
   stockValue?: number;
   stockValueUsd: number | null;
   stockValueThb?: number;
@@ -66,7 +73,7 @@ interface FxInfo {
   usd_available: boolean;
 }
 
-type ActiveTab = 'all' | 'top' | 'none' | 'low' | 'shrinkage';
+type ActiveTab = 'all' | 'top' | 'none' | 'low';
 
 type SortKey =
   | 'name'
@@ -74,12 +81,12 @@ type SortKey =
   | 'opening'
   | 'sold'
   | 'returned'
-  | 'shrinkage'
   | 'restocked'
   | 'remaining'
   | 'memo_out'
   | 'price'
   | 'revenue'
+  | 'profit'
   | 'stock_value';
 
 const MONTHS = [
@@ -153,14 +160,6 @@ const IconUpRight = () => (
   <svg viewBox="0 0 24 24" aria-hidden>
     <line x1="7" y1="17" x2="17" y2="7" />
     <polyline points="7 7 17 7 17 17" />
-  </svg>
-);
-
-const IconAlert = () => (
-  <svg viewBox="0 0 24 24" aria-hidden>
-    <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" />
-    <line x1="12" y1="8" x2="12" y2="12" strokeWidth="2" strokeLinecap="round" />
-    <line x1="12" y1="16" x2="12.01" y2="16" strokeWidth="3" strokeLinecap="round" />
   </svg>
 );
 
@@ -244,7 +243,6 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
       top: items.filter((i) => i.sold > 0).length,
       none: items.filter((i) => i.sold === 0 && i.returned === 0).length,
       low: items.filter((i) => i.remaining <= 3 && i.remaining > 0).length,
-      shrinkage: items.filter((i) => i.shrinkage > 0).length,
     }),
     [items]
   );
@@ -272,7 +270,6 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
         .slice(0, 10);
     } else if (activeTab === 'none') data = data.filter((i) => i.sold === 0 && i.returned === 0);
     else if (activeTab === 'low') data = data.filter((i) => i.remaining <= 3 && i.remaining > 0);
-    else if (activeTab === 'shrinkage') data = data.filter((i) => i.shrinkage > 0);
 
     const getVal = (row: ReportItem, key: SortKey): string | number => {
       switch (key) {
@@ -286,8 +283,6 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
           return row.sold;
         case 'returned':
           return row.returned;
-        case 'shrinkage':
-          return row.shrinkage;
         case 'restocked':
           return row.restocked;
         case 'remaining':
@@ -298,6 +293,8 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
           return row.unit_price ?? 0;
         case 'revenue':
           return row.revenue_usd ?? -1;
+        case 'profit':
+          return row.profit_usd ?? -1;
         case 'stock_value':
           return row.stock_value_usd ?? -1;
         default:
@@ -337,7 +334,11 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
       Math.round(
         filtered.reduce((s, i) => s + (Number(i.stock_value_usd ?? i.stock_value ?? i.stock_value_thb) || 0), 0) * 100
       ) / 100;
-    return { totalSold, revenueUsd, stockUsd };
+    const profitUsd =
+      fx?.usd_available && thbPerUsd != null && thbPerUsd > 0
+        ? Math.round(filtered.reduce((s, i) => s + (Number(i.profit_usd) || 0), 0) * 100) / 100
+        : null;
+    return { totalSold, revenueUsd, profitUsd, stockUsd };
   }, [filtered, fx]);
 
   const handleSort = (key: SortKey) => {
@@ -365,9 +366,7 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
       category && category !== 'All' ? `Category: ${category}` : null,
       itemCodeFilter === 'contains_m' ? 'Item code: contains "M"' : null,
       search.trim() ? `Search: "${search.trim()}"` : null,
-      `Segment: ${
-        tabs.find(t => t.key === activeTab)?.label ?? activeTab
-      }`,
+      `Segment: ${tabs.find(t => t.key === activeTab)?.label ?? activeTab}`,
       fx?.usd_available && fx.thb_per_usd ? `USD @ ${fx.thb_per_usd} THB/USD` : null,
       `Rows: ${rows.length}`,
       `Generated: ${new Date().toLocaleString()}`,
@@ -392,12 +391,12 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
       'Opening',
       'Net sold',
       'Returned',
-      'Shrinkage',
       'Restocked',
       'Remaining',
       'On memo',
       'Unit price',
       'Revenue (USD)',
+      'Profit (USD)',
       'Stock (USD)',
       'Status',
     ]];
@@ -407,6 +406,8 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
       const unit = item.unit_price != null ? formatMoneyAmount(item.unit_price, item.selling_currency) : '—';
       const revUsd =
         item.revenue_usd != null && Number.isFinite(item.revenue_usd) ? String(item.revenue_usd) : '—';
+      const profitUsd =
+        item.profit_usd != null && Number.isFinite(item.profit_usd) ? String(item.profit_usd) : '—';
       const stockUsd = item.stock_value_usd != null ? String(item.stock_value_usd) : '—';
       return [
         item.item_code?.trim() || '—',
@@ -414,12 +415,12 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
         String(item.opening),
         String(item.sold),
         String(item.returned),
-        item.shrinkage > 0 ? `-${item.shrinkage}` : '—',
         item.restocked > 0 ? `+${item.restocked}` : '—',
         String(item.remaining),
         String(item.memo_out_qty ?? 0),
         unit,
         revUsd,
+        profitUsd,
         stockUsd,
         badge.label,
       ];
@@ -457,9 +458,7 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
       didParseCell: (data) => {
         if (data.section !== 'body') return;
         const raw = data.row.raw as unknown;
-        const status =
-          Array.isArray(raw) ? String(raw[12] ?? '') : '';
-        // Status badge-like tint (subtle)
+        const status = Array.isArray(raw) ? String(raw[12] ?? '') : '';
         if (data.column.index === 12) {
           if (status === 'Shrinkage') data.cell.styles.textColor = [183, 28, 28];
           else if (status === 'Out of stock') data.cell.styles.textColor = [220, 38, 38];
@@ -474,18 +473,18 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
   };
 
   const cols: { key: SortKey; label: string; w: string }[] = [
-    { key: 'name', label: 'Item code', w: '22%' },
-    { key: 'category', label: 'Category', w: '10%' },
-    { key: 'opening', label: 'Opening', w: '8%' },
-    { key: 'sold', label: 'Net sold', w: '8%' },
-    { key: 'returned', label: 'Returned', w: '8%' },
-    { key: 'shrinkage', label: 'Shrinkage', w: '9%' },
-    { key: 'restocked', label: 'Restocked', w: '9%' },
-    { key: 'remaining', label: 'Remaining', w: '9%' },
-    { key: 'memo_out', label: 'On memo', w: '8%' },
-    { key: 'price', label: 'Unit price', w: '8%' },
-    { key: 'revenue', label: 'Revenue (USD)', w: '9%' },
-    { key: 'stock_value', label: 'Stock (USD)', w: '9%' },
+    { key: 'name', label: 'Item code', w: '20%' },
+    { key: 'category', label: 'Category', w: '9%' },
+    { key: 'opening', label: 'Opening', w: '7%' },
+    { key: 'sold', label: 'Net sold', w: '7%' },
+    { key: 'returned', label: 'Returned', w: '7%' },
+    { key: 'restocked', label: 'Restocked', w: '8%' },
+    { key: 'remaining', label: 'Remaining', w: '8%' },
+    { key: 'memo_out', label: 'On memo', w: '7%' },
+    { key: 'price', label: 'List price', w: '8%' },
+    { key: 'revenue', label: 'Revenue (USD)', w: '8%' },
+    { key: 'profit', label: 'Profit (USD)', w: '8%' },
+    { key: 'stock_value', label: 'Stock (USD)', w: '8%' },
   ];
 
   const tabs: { key: ActiveTab; label: string; count: number }[] = [
@@ -493,7 +492,6 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
     { key: 'top', label: 'Top sellers', count: tabCounts.top },
     { key: 'none', label: 'No invoice activity', count: tabCounts.none },
     { key: 'low', label: 'Low stock', count: tabCounts.low },
-    { key: 'shrinkage', label: 'Shrinkage', count: tabCounts.shrinkage },
   ];
 
   const SortIcon: React.FC<{ k: SortKey }> = ({ k }) => {
@@ -522,7 +520,12 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
     const stockVal = narrowed ? formatUsd(filteredKpis.stockUsd) : formatUsd(sum.stockValueUsd);
     const stockSub = narrowed
       ? `Shown in table · Month (all items): ${formatUsd(sum.stockValueUsd)}`
-      : 'Remaining × USD list price';
+      : 'Remaining stock at list (carat × $/ct or lot prorated)';
+
+    const profitVal = narrowed ? formatUsd(filteredKpis.profitUsd) : formatUsd(sum.totalProfitUsd);
+    const profitSub = narrowed
+      ? `Shown in table · Month (all items): ${formatUsd(sum.totalProfitUsd)}`
+      : 'Revenue minus purchase cost (snapshotted at sale) · this calendar month';
 
     return [
       { label: 'Net sold', value: soldVal, sub: soldSub, variant: 'blue' as const, icon: <IconTrend /> },
@@ -530,6 +533,13 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
         label: 'Revenue',
         value: revVal,
         sub: revSub,
+        variant: 'emerald' as const,
+        icon: <IconUpRight />,
+      },
+      {
+        label: 'Profit',
+        value: profitVal,
+        sub: profitSub,
         variant: 'emerald' as const,
         icon: <IconUpRight />,
       },
@@ -545,14 +555,6 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
         value: stockVal,
         sub: stockSub,
         variant: 'amber' as const,
-      },
-      {
-        label: 'Shrinkage',
-        value: String(sum.totalShrinkage),
-        sub: 'units lost/missing',
-        tone: 'danger' as const,
-        variant: 'red' as const,
-        icon: <IconAlert />,
       },
       { label: 'Out of stock', value: String(sum.outOfStock), sub: 'items depleted', variant: 'slate' as const },
     ] as {
@@ -651,7 +653,12 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
             >
               <IconRefresh />
             </button>
-            <button type="button" className="inv-rpt-export" onClick={exportPdf} disabled={loading || filtered.length === 0}>
+            <button
+              type="button"
+              className="inv-rpt-export"
+              onClick={exportPdf}
+              disabled={loading || filtered.length === 0}
+            >
               Export PDF
             </button>
           </div>
@@ -745,11 +752,6 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
                       >
                         {item.returned}
                       </td>
-                      <td className="inv-rpt-td inv-rpt-td--num">
-                        <span className={item.shrinkage > 0 ? 'inv-rpt-num-bad' : 'inv-rpt-num-dim'}>
-                          {item.shrinkage > 0 ? `−${item.shrinkage}` : '—'}
-                        </span>
-                      </td>
                       <td
                         className={
                           item.restocked > 0 ? 'inv-rpt-td inv-rpt-td--num inv-rpt-num-good' : 'inv-rpt-td inv-rpt-td--num inv-rpt-num-dim'
@@ -789,6 +791,17 @@ export const InventoryReportPage: React.FC<InventoryReportPageProps> = ({ token 
                           }
                         >
                           {revUsd == null || !Number.isFinite(revUsd) ? '—' : formatUsd(revUsd)}
+                        </span>
+                      </td>
+                      <td className="inv-rpt-td inv-rpt-td--num">
+                        <span
+                          className={
+                            item.profit_usd != null && Number.isFinite(item.profit_usd) && item.profit_usd !== 0
+                              ? 'inv-rpt-revenue'
+                              : 'inv-rpt-num-muted'
+                          }
+                        >
+                          {item.profit_usd == null || !Number.isFinite(item.profit_usd) ? '—' : formatUsd(item.profit_usd)}
                         </span>
                       </td>
                       <td className="inv-rpt-td inv-rpt-td--num">

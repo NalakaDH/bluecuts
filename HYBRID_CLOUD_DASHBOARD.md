@@ -48,9 +48,19 @@ Set these on the **shop machine** (never in Vercel):
 
 Firebase Admin credentials (pick one):
 
-- **Recommended**: `FIREBASE_SERVICE_ACCOUNT_PATH` = path to a Firebase service account JSON key file
+- **Recommended**: copy the service account JSON to `%AppData%\Blue Cuts\firebase-service-account.json` (auto-detected on Windows)
+- Or: `FIREBASE_SERVICE_ACCOUNT_PATH` = path to that JSON on **this PC** (not the developer’s path)
 - Or: `GOOGLE_APPLICATION_CREDENTIALS` = path to that JSON (standard)
 - Or: `FIREBASE_SERVICE_ACCOUNT_JSON` = JSON string (only if you really know what you’re doing)
+
+Put env vars in **either**:
+
+1. `backend/.env` (dev / manual install), or  
+2. `%AppData%\Blue Cuts\cloud-sync.env` (recommended for **installed** Blue Cuts — survives app updates)
+
+See `backend/cloud-sync.env.example`. **Restart the app** after changing env files.
+
+If sync fails with *“Unable to detect a Project Id”*, this PC has **no valid Firebase key** — the JSON file is missing or `FIREBASE_SERVICE_ACCOUNT_PATH` points to a path that only exists on another computer.
 
 ### Trigger sync
 

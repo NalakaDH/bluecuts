@@ -18,6 +18,8 @@ import {
   formatItemTypeDisplay,
   inventoryCategoryDisplay,
   inventoryItemPrimaryLabel,
+  deriveInventoryDisplayStatus,
+  matchesInventoryStatusFilter,
 } from '../../lib/inventoryDisplay';
 import { dateFromServerUtc } from '../../lib/serverTime';
 
@@ -676,8 +678,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
       const s = activitySummary[String(i.id)] || ({} as ActivityRow);
       const memoUnits = Math.max(0, Math.round(Number((s as any).memo_units) || 0));
       const soldUnits = Math.max(0, Math.round(Number((s as any).sold_units) || 0));
-      const effectiveStatus =
-        memoUnits > 0 ? 'On Memo' : i.status === 'Out of stock' && soldUnits > 0 ? 'Sold' : i.status;
+      const effectiveStatus = deriveInventoryDisplayStatus(i, memoUnits);
       return { ...i, memoUnits, soldUnits, effectiveStatus };
     });
   }, [items, activitySummary]);
@@ -685,7 +686,7 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
   const displayedItems = useMemo(() => {
     let list = enrichedItems;
     if (listCategoryFilter) list = list.filter((i) => i.category === listCategoryFilter);
-    if (listStatusFilter) list = list.filter((i) => i.effectiveStatus === listStatusFilter);
+    if (listStatusFilter) list = list.filter((i) => matchesInventoryStatusFilter(i, listStatusFilter));
     return list;
   }, [enrichedItems, listCategoryFilter, listStatusFilter]);
 
@@ -695,7 +696,8 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
       total: list.length,
       available: list.filter((i) => i.effectiveStatus === 'Available').length,
       onMemo: list.filter((i) => i.effectiveStatus === 'On Memo').length,
-      sold: list.filter((i) => i.effectiveStatus === 'Sold').length,
+      outOfStock: list.filter((i) => i.effectiveStatus === 'Out of stock').length,
+      sold: list.filter((i) => i.soldUnits > 0).length,
     };
   }, [enrichedItems]);
 
@@ -1600,6 +1602,10 @@ export const UpdateInventoryPage: React.FC<UpdateInventoryPageProps> = ({ token,
         <div className="upd-inv-kpi-card">
           <div className="upd-inv-kpi-label">On memo</div>
           <div className="upd-inv-kpi-value">{kpiStats.onMemo}</div>
+        </div>
+        <div className="upd-inv-kpi-card">
+          <div className="upd-inv-kpi-label">Out of stock</div>
+          <div className="upd-inv-kpi-value">{kpiStats.outOfStock}</div>
         </div>
         <div className="upd-inv-kpi-card">
           <div className="upd-inv-kpi-label">Sold</div>

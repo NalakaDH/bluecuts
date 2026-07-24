@@ -328,18 +328,31 @@ async function syncToFirestore(deps, opts) {
     WHERE ${dateWhereInvoices}
   `;
 
+  const stockValRow =
+    typeof sqlPieces.sqlInventoryStockValueRow === 'function'
+      ? sqlPieces.sqlInventoryStockValueRow('inv')
+      : `CASE
+    WHEN IFNULL(inv.pieces_remaining, 0) <= 0 THEN 0
+    WHEN IFNULL(inv.selling_carat_price, 0) > 0 AND IFNULL(inv.weight_carats, 0) > 0
+      THEN ROUND(inv.weight_carats * inv.selling_carat_price, 2)
+    WHEN IFNULL(inv.pieces, 0) > 1
+      THEN ROUND(IFNULL(inv.selling_total_price, 0) * (inv.pieces_remaining * 1.0 / inv.pieces), 2)
+    ELSE ROUND(IFNULL(inv.selling_total_price, 0), 2)
+  END`;
+
   const inventoryValueSql = `
     SELECT
       IFNULL(SUM(inv.pieces_remaining), 0) AS remaining_pcs,
-      IFNULL(SUM(inv.pieces_remaining * IFNULL(inv.selling_total_price, 0)), 0) AS inventory_value
+      IFNULL(SUM(${stockValRow}), 0) AS inventory_value
     FROM inventory_items inv
   `;
 
   const inventoryByStatusSql = `
     SELECT
       inv.status AS status,
+      COUNT(*) AS item_count,
       IFNULL(SUM(inv.pieces_remaining), 0) AS pcs_remaining,
-      IFNULL(SUM(inv.pieces_remaining * IFNULL(inv.selling_total_price, 0)), 0) AS value
+      IFNULL(SUM(${stockValRow}), 0) AS value
     FROM inventory_items inv
     GROUP BY inv.status
     ORDER BY value DESC

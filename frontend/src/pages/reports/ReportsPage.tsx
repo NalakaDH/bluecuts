@@ -11,6 +11,9 @@ import {
 } from '../../lib/moneyUsdDisplay';
 import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
 import { dateFromServerUtc } from '../../lib/serverTime';
+import { inventoryCategoryDisplay } from '../../lib/inventoryDisplay';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 type GroupMode = 'daily' | 'monthly';
 
@@ -35,6 +38,7 @@ interface ProfitSummary {
 
 interface InventoryByStatusRow {
   status: string;
+  item_count: number;
   pcs_remaining: number;
   value: number;
 }
@@ -83,6 +87,36 @@ interface TopItemRow {
   profit_value: number;
 }
 
+interface NewItemSalesRow extends TopItemRow {
+  description: string | null;
+  added_at: string;
+  pieces_added: number;
+  pieces_remaining: number;
+  status: string;
+  memo_out_qty?: number;
+  revenue_thb?: number;
+  sales_usd?: number | null;
+  revenue_usd?: number | null;
+  cost_usd?: number | null;
+  profit_usd?: number | null;
+}
+
+interface NewItemSalesSummary {
+  items_added: number;
+  items_with_sales: number;
+  qty_sold: number;
+  sales_value: number;
+  cost_total: number;
+  profit_value: number;
+  profit_margin_pct: number;
+}
+
+interface NewItemSalesResponse {
+  range: { from: string; to: string };
+  summary: NewItemSalesSummary;
+  rows: NewItemSalesRow[];
+}
+
 interface LatestStockMovementRow {
   id: number;
   inventory_item_id: number;
@@ -96,6 +130,7 @@ interface LatestStockMovementRow {
 
 interface ReportsSummaryResponse {
   range: { from: string; to: string };
+  new_items_only?: boolean;
   sales: SalesSummary;
   profit: ProfitSummary;
   inventory: { remaining_pcs: number; inventory_value: number };
@@ -113,7 +148,19 @@ interface ReportsPageProps {
 const money = (n: number) => Number(n || 0).toFixed(2);
 
 const TOP_ITEMS_CARD_DESC =
-  "Best sellers in the selected date range. Purchase cost uses each item's purchase price from inventory × invoiced quantity (after returns).";
+  "Best sellers in the selected date range. Purchase cost is snapshotted when each invoice is created and prorated after returns.";
+
+const NEW_ITEMS_SALES_DESC =
+  'Items added to inventory in the selected date range, with invoice sales in the same period.';
+
+function formatNewItemUsd(
+  usd: number | null | undefined,
+  thb: number,
+  thbPerUnit: ThbPerUnitMap
+): string {
+  if (usd != null && Number.isFinite(usd)) return formatMoneyAmount(usd, 'USD');
+  return formatUsdOnlyFromThb(thb, thbPerUnit);
+}
 
 interface InvoiceListRow {
   id: number;
@@ -679,11 +726,13 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(today);
   const [group, setGroup] = useState<GroupMode>('daily');
+  const [newItemsOnly, setNewItemsOnly] = useState(false);
   const [activeTab, setActiveTab] = useState<ReportsTab>('customers');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<ReportsSummaryResponse | null>(null);
+  const [newItemsSales, setNewItemsSales] = useState<NewItemSalesResponse | null>(null);
   const [salesTrend, setSalesTrend] = useState<TrendRow[]>([]);
   const [profitTrend, setProfitTrend] = useState<ProfitTrendRow[]>([]);
   const [thbPerUnit, setThbPerUnit] = useState<ThbPerUnitMap>({ THB: 1 });
@@ -713,6 +762,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
         setSummary(summaryData);
         setSalesTrend(Array.isArray(trendsData?.sales) ? trendsData.sales : []);
         setProfitTrend(Array.isArray(trendsData?.profit) ? trendsData.profit : []);
+        setNewItemsSales(null);
         if (rates?.thb_per_unit && typeof rates.thb_per_unit === 'object') {
           setThbPerUnit(rates.thb_per_unit as ThbPerUnitMap);
         }
@@ -721,6 +771,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
+      if (newItemsOnly) params.set('new_items_only', '1');
 
       const paramsTrend = new URLSearchParams(params.toString());
       paramsTrend.set('group', group);
@@ -743,13 +794,21 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
       if (!profitRes.ok) throw new Error(await parseErrorResponse(profitRes, 'Failed to load profit trend'));
       const profitData = await profitRes.json();
 
+      const newItemsRes = await fetch(apiUrl(`/api/reports/new-items-sales?${params.toString()}`), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!newItemsRes.ok) throw new Error(await parseErrorResponse(newItemsRes, 'Failed to load new item sales'));
+      const newItemsData: NewItemSalesResponse = await newItemsRes.json();
+
       setSummary(summaryData);
       setSalesTrend(salesData.rows || []);
       setProfitTrend(profitData.rows || []);
+      setNewItemsSales(newItemsData);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to load reports';
       setError(msg);
       setSummary(null);
+      setNewItemsSales(null);
       setSalesTrend([]);
       setProfitTrend([]);
       showAlert({ title: 'Could not load reports', message: msg, variant: 'error' });
@@ -808,7 +867,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
   useEffect(() => {
     fetchAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from, to, group, token]);
+  }, [from, to, group, newItemsOnly, token]);
 
   useEffect(() => {
     if (cloud) return;
@@ -858,6 +917,93 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
   const profit = summary?.profit;
 
   const groupLabel = group === 'daily' ? 'Daily' : 'Monthly';
+  const scopeNote = newItemsOnly ? ' · new items added in range only' : '';
+
+  const exportNewItemsPdf = () => {
+    const rows = newItemsSales?.rows ?? [];
+    if (!rows.length) return;
+
+    const title = 'New Item Sales';
+    const niSum = newItemsSales?.summary;
+    const subtitleBits = [
+      from && to ? `Period: ${from} to ${to}` : null,
+      newItemsOnly ? 'Page scope: new items only' : null,
+      niSum ? `${niSum.items_added} items added · ${niSum.qty_sold} sold` : null,
+      `Rows: ${rows.length}`,
+      `Generated: ${new Date().toLocaleString()}`,
+    ].filter(Boolean);
+
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+    const pageW = doc.internal.pageSize.getWidth();
+    const marginX = 40;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.text(title, marginX, 44);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(60);
+    doc.text(subtitleBits.join('   •   '), marginX, 62, { maxWidth: pageW - marginX * 2 });
+
+    const head = [[
+      'Added',
+      'SKU',
+      'Category',
+      'Added pcs',
+      'Remaining',
+      'On memo',
+      'Qty sold',
+      'Revenue (USD)',
+      'Cost (USD)',
+      'Profit (USD)',
+    ]];
+
+    const body = rows.map(it => [
+      dateFromServerUtc(it.added_at).toLocaleDateString(),
+      it.item_code?.trim() || '—',
+      inventoryCategoryDisplay(it.category) ?? it.category ?? '—',
+      String(it.pieces_added),
+      String(it.pieces_remaining),
+      String(it.memo_out_qty && it.memo_out_qty > 0 ? it.memo_out_qty : '—'),
+      String(it.qty_sold),
+      formatNewItemUsd(it.revenue_usd ?? it.sales_usd, it.revenue_thb ?? it.sales_value, thbPerUnit),
+      formatNewItemUsd(it.cost_usd, it.cost_total, thbPerUnit),
+      formatNewItemUsd(it.profit_usd, it.profit_value, thbPerUnit),
+    ]);
+
+    autoTable(doc, {
+      startY: 78,
+      head,
+      body,
+      styles: {
+        font: 'helvetica',
+        fontSize: 9,
+        cellPadding: { top: 5, right: 6, bottom: 5, left: 6 },
+        lineColor: [226, 232, 240],
+        lineWidth: 0.75,
+      },
+      headStyles: {
+        fillColor: [13, 43, 94],
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
+      },
+      alternateRowStyles: { fillColor: [247, 251, 255] },
+      columnStyles: {
+        3: { halign: 'right' },
+        4: { halign: 'right' },
+        5: { halign: 'right' },
+        6: { halign: 'right' },
+        7: { halign: 'right' },
+        8: { halign: 'right' },
+        9: { halign: 'right' },
+      },
+      margin: { left: marginX, right: marginX },
+    });
+
+    const fileSuffix = from && to ? `${from}_to_${to}` : 'report';
+    doc.save(`new-item-sales-${fileSuffix}.pdf`);
+  };
 
   return (
     <div className="page page-reports">
@@ -868,7 +1014,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
               <MetricCard
                 title="Total Sales"
                 value={formatUsdOnlyFromThb(sales?.sales_total || 0, thbPerUnit)}
-                subtitle={`${sales?.invoices_count || 0} invoices · USD (Profile rates)`}
+                subtitle={`${sales?.invoices_count || 0} invoices · USD (Profile rates)${scopeNote}`}
                 icon={<IconTrendingUp />}
                 variant="blue"
               />
@@ -890,14 +1036,14 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
               <MetricCard
                 title="Purchase cost (sold)"
                 value={formatUsdOnlyFromThb(profit?.cost_total || 0, thbPerUnit)}
-                subtitle="Inventory purchase price × qty sold (after returns) · USD (Profile rates)"
+                subtitle="Purchase cost frozen at sale, prorated after returns · USD (Profile rates)"
                 icon={<IconCoins />}
                 variant="slate"
               />
               <MetricCard
                 title="Gross Profit"
                 value={formatUsdOnlyFromThb(profit?.profit_total || 0, thbPerUnit)}
-                subtitle={`${money(profit?.profit_margin_pct || 0)}% margin · USD (Profile rates)`}
+                subtitle={`${money(profit?.profit_margin_pct || 0)}% margin · USD (Profile rates)${scopeNote}`}
                 variant="emerald"
               />
               <MetricCard
@@ -949,6 +1095,16 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                 <IconRotateCcw />
                 Reset
               </button>
+              <button
+                type="button"
+                className={`rep2-scope-toggle${newItemsOnly ? ' is-active' : ''}`}
+                aria-pressed={newItemsOnly}
+                disabled={cloud || loading}
+                title={cloud ? 'New item sales scope is available in the desktop app' : 'Limit report to inventory items added in the selected date range'}
+                onClick={() => setNewItemsOnly(v => !v)}
+              >
+                New item sales
+              </button>
             </div>
           </section>
 
@@ -965,7 +1121,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                 <div className="rep2-card rep2-card--chart">
                   <div className="rep2-card-head">
                     <h2 className="rep2-card-title">Sales Trend</h2>
-                    <p className="rep2-card-desc">{groupLabel} sales, collections, and outstanding (USD)</p>
+                    <p className="rep2-card-desc">{groupLabel} sales, collections, and outstanding (USD){scopeNote}</p>
                   </div>
                   <div className="rep2-card-body rep2-card-body--chart">
                     <ReportsSalesLineChart rows={salesTrend} thbPerUnit={thbPerUnit} />
@@ -974,7 +1130,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                 <div className="rep2-card rep2-card--chart">
                   <div className="rep2-card-head">
                     <h2 className="rep2-card-title">Profit Trend</h2>
-                    <p className="rep2-card-desc">Selling vs cost vs profit (USD)</p>
+                    <p className="rep2-card-desc">Selling vs cost vs profit (USD){scopeNote}</p>
                   </div>
                   <div className="rep2-card-body rep2-card-body--chart">
                     <ReportsProfitBarChart rows={profitTrend} thbPerUnit={thbPerUnit} />
@@ -1012,7 +1168,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                       <div className="rep2-card-head">
                         <h2 className="rep2-card-title">Top Customers</h2>
                         <p className="rep2-card-desc">
-                          Largest outstanding balances in your selected range
+                          Largest outstanding balances in your selected range{scopeNote}
                         </p>
                       </div>
                       <div className="rep2-card-body">
@@ -1075,7 +1231,10 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                     <div className="rep2-card rep2-table-card">
                       <div className="rep2-card-head">
                         <h2 className="rep2-card-title">Top Items</h2>
-                        <p className="rep2-card-desc">{TOP_ITEMS_CARD_DESC}</p>
+                        <p className="rep2-card-desc">
+                          {TOP_ITEMS_CARD_DESC}
+                          {scopeNote}
+                        </p>
                       </div>
                       <div className="rep2-card-body">
                         <div className="rep2-table-scroll">
@@ -1149,7 +1308,9 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                     <div className="rep2-card rep2-table-card">
                       <div className="rep2-card-head">
                         <h2 className="rep2-card-title">Inventory by Status</h2>
-                        <p className="rep2-card-desc">Current pieces and value remaining per status</p>
+                        <p className="rep2-card-desc">
+                          Current item count, pieces on hand, and value per status{scopeNote}
+                        </p>
                       </div>
                       <div className="rep2-card-body">
                         <div className="rep2-table-scroll">
@@ -1157,6 +1318,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                             <thead>
                               <tr>
                                 <th>Status</th>
+                                <th className="rep2-th-right">Items</th>
                                 <th className="rep2-th-right">Pieces</th>
                                 <th className="rep2-th-right">Value (USD)</th>
                               </tr>
@@ -1164,7 +1326,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                             <tbody>
                               {summary.inventory_by_status.length === 0 ? (
                                 <tr>
-                                  <td colSpan={3} style={{ textAlign: 'center', color: '#64748b' }}>
+                                  <td colSpan={4} style={{ textAlign: 'center', color: '#64748b' }}>
                                     No data
                                   </td>
                                 </tr>
@@ -1172,6 +1334,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                                 summary.inventory_by_status.map(r => (
                                   <tr key={r.status}>
                                     <td className="rep2-cell-name">{r.status}</td>
+                                    <td className="rep2-td-right">{r.item_count ?? 0}</td>
                                     <td className="rep2-td-right">{r.pcs_remaining}</td>
                                     <td className="rep2-td-right rep2-td-money">
                                       {formatMoneyAmount(r.value, 'USD')}
@@ -1193,7 +1356,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                       <div className="rep2-card-head">
                         <h2 className="rep2-card-title">Memos by Status</h2>
                         <p className="rep2-card-desc">
-                          Open memo value and remaining pieces within selected range
+                          Open memo value and remaining pieces within selected range{scopeNote}
                         </p>
                       </div>
                       <div className="rep2-card-body">
@@ -1239,7 +1402,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                     <div className="rep2-card rep2-table-card">
                       <div className="rep2-card-head">
                         <h2 className="rep2-card-title">Latest Stock Activity</h2>
-                        <p className="rep2-card-desc">Recent movements with user and notes</p>
+                        <p className="rep2-card-desc">Recent movements with user and notes{scopeNote}</p>
                       </div>
                       <div className="rep2-card-body">
                         <div className="rep2-table-scroll">
@@ -1288,6 +1451,87 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ token }) => {
                     </div>
                   </div>
                 )}
+              </div>
+
+              <div className="rep2-card rep2-table-card rep2-new-items-section">
+                <div className="rep2-card-head rep2-card-head--row">
+                  <div>
+                    <h2 className="rep2-card-title">New item sales</h2>
+                    <p className="rep2-card-desc">{NEW_ITEMS_SALES_DESC}</p>
+                  </div>
+                  {!cloud && (
+                    <button
+                      type="button"
+                      className="rep2-export-pdf"
+                      onClick={exportNewItemsPdf}
+                      disabled={!newItemsSales?.rows.length}
+                    >
+                      Export PDF
+                    </button>
+                  )}
+                </div>
+                <div className="rep2-card-body">
+                  {cloud ? (
+                    <p style={{ textAlign: 'center', color: '#64748b', margin: 0 }}>
+                      New item sales detail is available in the desktop app.
+                    </p>
+                  ) : (
+                    <div className="rep2-table-scroll">
+                      <table className="rep2-table">
+                        <thead>
+                          <tr>
+                            <th>Added</th>
+                            <th>SKU</th>
+                            <th>Category</th>
+                            <th className="rep2-th-right">Added pcs</th>
+                            <th className="rep2-th-right">Remaining</th>
+                            <th className="rep2-th-right">On memo</th>
+                            <th className="rep2-th-right">Qty sold</th>
+                            <th className="rep2-th-right">Revenue (USD)</th>
+                            <th className="rep2-th-right">Cost (USD)</th>
+                            <th className="rep2-th-right">Profit (USD)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {!newItemsSales || newItemsSales.rows.length === 0 ? (
+                            <tr>
+                              <td colSpan={10} style={{ textAlign: 'center', color: '#64748b' }}>
+                                No items were added in this date range
+                              </td>
+                            </tr>
+                          ) : (
+                            newItemsSales.rows.map(it => (
+                              <tr key={it.inventory_item_id}>
+                                <td>{dateFromServerUtc(it.added_at).toLocaleDateString()}</td>
+                                <td className="rep2-cell-name">{it.item_code || `#${it.inventory_item_id}`}</td>
+                                <td>{inventoryCategoryDisplay(it.category) ?? it.category ?? '—'}</td>
+                                <td className="rep2-td-right">{it.pieces_added}</td>
+                                <td className="rep2-td-right">{it.pieces_remaining}</td>
+                                <td className="rep2-td-right">
+                                  {it.memo_out_qty && it.memo_out_qty > 0 ? it.memo_out_qty : '—'}
+                                </td>
+                                <td className="rep2-td-right">{it.qty_sold}</td>
+                                <td className="rep2-td-right rep2-td-money">
+                                  {formatNewItemUsd(
+                                    it.revenue_usd ?? it.sales_usd,
+                                    it.revenue_thb ?? it.sales_value,
+                                    thbPerUnit
+                                  )}
+                                </td>
+                                <td className="rep2-td-right rep2-td-money">
+                                  {formatNewItemUsd(it.cost_usd, it.cost_total, thbPerUnit)}
+                                </td>
+                                <td className="rep2-td-right rep2-td-money rep2-profit-cell">
+                                  {formatNewItemUsd(it.profit_usd, it.profit_value, thbPerUnit)}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               </div>
             </>
           )}

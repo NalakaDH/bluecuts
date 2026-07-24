@@ -147,7 +147,7 @@ function ItemCard({ item, expanded, onToggle }: { item: MonthlyItem; expanded: b
       <div className="item-detail">
         <div className="detail-grid">
           <div className="detail-cell">
-            <div className="detail-label">Unit Price</div>
+            <div className="detail-label">List price (lot)</div>
             <div className="detail-val price">{fmtPrice(item.unit_price)}</div>
           </div>
           <div className="detail-cell">

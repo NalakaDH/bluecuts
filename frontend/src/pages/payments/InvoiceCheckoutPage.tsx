@@ -3,7 +3,14 @@ import { useAlertDialog } from '../../components/AlertDialog';
 import { apiUrl, parseErrorResponse } from '../../api';
 import { INVOICE_CHECKOUT_INVOICE_ID_KEY } from '../../constants/invoiceCheckout';
 import type { PageId } from '../../components/layout/Layout';
-import { mapApiInvoiceToReceipt, openInvoiceReceiptWindow } from '../../lib/receiptDocument';
+import { mapApiInvoiceToReceipt, openInvoiceReceiptWindow, formatPaymentMethodLabel } from '../../lib/receiptDocument';
+import {
+  buildPaymentReceiptPayload,
+  offerPaidInvoicePrint,
+  offerPaymentReceiptPrint,
+  offerPaymentReceiptsPrint,
+  paymentReceiptPayloadsFromRows,
+} from '../../lib/paymentReceipt';
 import {
   DEFAULT_CURRENCY_CODE,
   SUPPORTED_CURRENCIES,
@@ -13,10 +20,35 @@ import {
   parseMoneyInput,
   roundMoney2,
 } from '../../lib/currencies';
+import { GuardedAmountNumberInput } from '../../components/GuardedAmountNumberInput';
 import { convertAmountViaThb, hasRateFor, type ThbPerUnitMap } from '../../lib/exchangeConversion';
+import { dateFromServerUtc } from '../../lib/serverTime';
 
 type InvoiceStatus = 'Unpaid' | 'Partial' | 'Paid';
+type InvoicePaymentRecord = {
+  id: number;
+  method: string;
+  amount: number;
+  note: string | null;
+  created_at: string;
+};
+
+function formatPriorPaymentWhen(iso: string): string {
+  return dateFromServerUtc(iso).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+/** UI labels; API/DB use BankTransfer for bank transfers (see payments.method CHECK). */
 type PayMethod = 'Cash' | 'Card' | 'Transfer';
+
+function paymentMethodForApi(method: PayMethod): string {
+  if (method === 'Transfer') return 'BankTransfer';
+  return method;
+}
 
 const IconX = ({ size = 20 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -31,6 +63,70 @@ const IconReceipt = () => (
     <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
   </svg>
 );
+
+const IconWallet = () => (
+  <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1" />
+    <path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4" />
+  </svg>
+);
+
+const IconUser = () => (
+  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M20 21a8 8 0 0 0-16 0" />
+    <circle cx="12" cy="7" r="4" />
+  </svg>
+);
+
+const IconTotal = () => (
+  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <line x1="12" y1="1" x2="12" y2="23" />
+    <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+  </svg>
+);
+
+const IconPaid = () => (
+  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z" />
+    <path d="m9 12 2 2 4-4" />
+  </svg>
+);
+
+const IconCurrency = () => (
+  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="10" />
+    <path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 0 1 0 4H8" />
+    <path d="M12 18V6" />
+  </svg>
+);
+
+const IconChange = () => (
+  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M7 10h12l-3-3" />
+    <path d="M17 14H5l3 3" />
+  </svg>
+);
+
+const IconTypeAmount = () => (
+  <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M8 12h.01M12 12h.01M16 12h.01" />
+    <path d="M7 8h10" />
+  </svg>
+);
+
+function currencyInputPrefix(code: string): string {
+  const normalized = normalizeCurrencyCode(code);
+  try {
+    const parts = new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: normalized,
+    }).formatToParts(0);
+    return parts.find(p => p.type === 'currency')?.value ?? normalized;
+  } catch {
+    return normalized;
+  }
+}
 
 const IconCheckCircle = () => (
   <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -96,7 +192,7 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
   onNavigate,
   embedded = false,
 }) => {
-  const { showAlert } = useAlertDialog();
+  const { showAlert, showConfirm } = useAlertDialog();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [invoiceId, setInvoiceId] = useState<number | null>(null);
@@ -114,6 +210,7 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
   const [saving, setSaving] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [printLoading, setPrintLoading] = useState(false);
+  const [invoicePayments, setInvoicePayments] = useState<InvoicePaymentRecord[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -182,6 +279,7 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
           paid: number;
           status: InvoiceStatus;
           currency_code?: string | null;
+          payments?: InvoicePaymentRecord[];
         } = await res.json();
         const invCur = normalizeCurrencyCode(data.currency_code);
         const remaining = roundMoney2(Math.max(0, Number(data.total || 0) - Number(data.paid || 0)));
@@ -194,6 +292,7 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
         setDue(remaining);
         setPaidAmount(roundMoney2(Number(data.paid || 0)));
         setInvoiceStatus(data.status);
+        setInvoicePayments(Array.isArray(data.payments) ? data.payments : []);
         setCheckoutAmount(remaining);
         setCheckoutMethod('Cash');
       } catch (err: unknown) {
@@ -220,6 +319,8 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
   const change = Math.max(0, checkoutAmount - dueDisplay);
   const isCash = checkoutMethod === 'Cash';
   const canPay = invoiceId != null && due > 0;
+  const amountPrefix = currencyInputPrefix(displayCurrency);
+  const showPaidSummary = paidAmount > 0 || invoiceStatus === 'Partial';
 
   const handleDisplayCurrencyChange = (nextRaw: string) => {
     const next = normalizeCurrencyCode(nextRaw);
@@ -242,9 +343,16 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
       showAlert({ title: 'Invalid payment', message: msg, variant: 'warning' });
       return;
     }
-    const amountInInvoice = roundMoney2(
-      convertAmountViaThb(checkoutAmount, displayCurrency, invoiceCurrency, thbPerUnit)
-    );
+    const payingExactShownBalance =
+      due > 0 && roundMoney2(checkoutAmount) === roundMoney2(dueDisplay);
+
+    let amountInInvoice = payingExactShownBalance
+      ? due
+      : roundMoney2(convertAmountViaThb(checkoutAmount, displayCurrency, invoiceCurrency, thbPerUnit));
+
+    // Never record more than the invoice balance (invoice currency is source of truth).
+    amountInInvoice = roundMoney2(Math.min(amountInInvoice, due));
+
     if (!amountInInvoice || amountInInvoice <= 0) {
       const msg = 'Payment amount must be greater than zero.';
       setError(msg);
@@ -261,7 +369,7 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          method: checkoutMethod,
+          method: paymentMethodForApi(checkoutMethod),
           amount: amountInInvoice,
         }),
       });
@@ -270,9 +378,21 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
         throw new Error(msg);
       }
       const data: {
-        invoice: { invoice_no: string; total: number; paid: number; status: InvoiceStatus };
+        payment: InvoicePaymentRecord;
+        invoice: {
+          invoice_no: string;
+          total: number;
+          paid: number;
+          status: InvoiceStatus;
+          paid_before?: number;
+          currency_code?: string;
+          customer_name?: string | null;
+        };
       } = await res.json();
       const remaining = roundMoney2(Math.max(0, data.invoice.total - data.invoice.paid));
+      const paidBefore = roundMoney2(
+        data.invoice.paid_before ?? data.invoice.paid - data.payment.amount
+      );
       setSuccessMessage(`Payment recorded for ${data.invoice.invoice_no}.`);
       showAlert({
         title: 'Payment recorded',
@@ -282,13 +402,28 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
       setDue(remaining);
       setPaidAmount(roundMoney2(Number(data.invoice.paid || 0)));
       setInvoiceStatus(data.invoice.status);
+      if (data.payment?.id) {
+        setInvoicePayments(prev => [...prev, data.payment]);
+      }
       setCheckoutAmount(
         remaining > 0
           ? roundMoney2(convertAmountViaThb(remaining, invoiceCurrency, displayCurrency, thbPerUnit))
           : 0
       );
+
+      const paymentPayload = buildPaymentReceiptPayload({
+        invoice_no: data.invoice.invoice_no,
+        customer_name: data.invoice.customer_name ?? customerName,
+        currency_code: data.invoice.currency_code ?? invoiceCurrency,
+        invoice_total: data.invoice.total,
+        paid_before: paidBefore,
+        payment: data.payment,
+        paid_after: data.invoice.paid,
+      });
+      await offerPaymentReceiptPrint(showConfirm, paymentPayload);
+
       if (remaining <= 0) {
-        setTimeout(() => onNavigate('payments'), 1600);
+        await offerPaidInvoicePrint(showConfirm, data.invoice.invoice_no, () => handlePrintReceipt());
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to record payment';
@@ -445,7 +580,7 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
           <header className="invoice-checkout-ui-topbar">
             <div className="invoice-checkout-ui-topbar-left">
               <div className="invoice-checkout-ui-topbar-icon" aria-hidden="true">
-                <IconReceipt />
+                <IconWallet />
               </div>
               <div>
                 <div className="invoice-checkout-ui-eyebrow">Collect payment</div>
@@ -503,7 +638,7 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
                   disabled={!invoiceId || printLoading}
                 >
                   <IconPrinter />
-                  {printLoading ? 'Printing…' : 'Print receipt'}
+                  {printLoading ? 'Printing…' : 'Print invoice'}
                 </button>
                 <button type="button" className="invoice-checkout-ui-cancel invoice-checkout-ui-full-btn" onClick={goBack}>
                   {successMessage ? 'Back to Payments now' : 'Back to Payments'}
@@ -517,41 +652,89 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
                   <h4 id="checkout-summary-heading" className="invoice-checkout-ui-summary-heading">
                     Invoice summary
                   </h4>
-                  <dl className="invoice-checkout-ui-details">
-                    <div className="invoice-checkout-ui-detail-row">
-                      <dt>Invoice number</dt>
-                      <dd>
-                        <span className="invoice-checkout-ui-detail-inv">
-                          <IconReceipt />
-                          {invoiceNo}
+
+                  <div className="invoice-checkout-ui-hero">
+                    <div className="invoice-checkout-ui-hero-top">
+                      <span className="invoice-checkout-ui-hero-eyebrow">Amount to collect</span>
+                      <span className={`invoice-checkout-ui-status invoice-checkout-ui-status--${invoiceStatus.toLowerCase()}`}>
+                        {invoiceStatus}
+                      </span>
+                    </div>
+                    <div className="invoice-checkout-ui-hero-value">{formatMoneyAmount(dueDisplay, displayCurrency)}</div>
+                  </div>
+
+                  <div className="invoice-checkout-ui-meta">
+                    <div className="invoice-checkout-ui-meta-card invoice-checkout-ui-meta-card--invoice">
+                      <span className="invoice-checkout-ui-meta-icon" aria-hidden="true">
+                        <IconReceipt />
+                      </span>
+                      <div className="invoice-checkout-ui-meta-copy">
+                        <span className="invoice-checkout-ui-meta-label">Invoice</span>
+                        <span className="invoice-checkout-ui-meta-value invoice-checkout-ui-meta-value--mono">{invoiceNo}</span>
+                      </div>
+                    </div>
+                    <div className="invoice-checkout-ui-meta-card invoice-checkout-ui-meta-card--customer">
+                      <span className="invoice-checkout-ui-meta-icon" aria-hidden="true">
+                        <IconUser />
+                      </span>
+                      <div className="invoice-checkout-ui-meta-copy">
+                        <span className="invoice-checkout-ui-meta-label">Customer</span>
+                        <span className="invoice-checkout-ui-meta-value">{customerName}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {showPaidSummary ? (
+                    <div className="invoice-checkout-ui-breakdown" aria-label="Payment progress">
+                      <div className="invoice-checkout-ui-breakdown-item invoice-checkout-ui-breakdown-item--total">
+                        <span className="invoice-checkout-ui-breakdown-label">
+                          <IconTotal />
+                          Invoice total
                         </span>
-                      </dd>
+                        <strong>{formatMoneyAmount(totalDisplay, displayCurrency)}</strong>
+                      </div>
                     </div>
-                    <div className="invoice-checkout-ui-detail-row">
-                      <dt>Customer</dt>
-                      <dd>{customerName}</dd>
-                    </div>
-                    <div className="invoice-checkout-ui-detail-row">
-                      <dt>Invoice total</dt>
-                      <dd>{formatMoneyAmount(totalDisplay, displayCurrency)}</dd>
-                    </div>
-                    <div className="invoice-checkout-ui-detail-row">
-                      <dt>Already paid</dt>
-                      <dd>{formatMoneyAmount(paidDisplay, displayCurrency)}</dd>
-                    </div>
-                    <div className="invoice-checkout-ui-detail-row invoice-checkout-ui-detail-row--due">
-                      <dt>Balance due</dt>
-                      <dd className="invoice-checkout-ui-detail-due">{formatMoneyAmount(dueDisplay, displayCurrency)}</dd>
-                    </div>
-                    <div className="invoice-checkout-ui-detail-row">
-                      <dt>Status</dt>
-                      <dd>
-                        <span className={`invoice-checkout-ui-status invoice-checkout-ui-status--${invoiceStatus.toLowerCase()}`}>
-                          {invoiceStatus}
+                  ) : null}
+
+                  {invoicePayments.length > 0 ? (
+                    <div className="invoice-checkout-ui-prior-payments" aria-label="Previous payments">
+                      <div className="invoice-checkout-ui-prior-payments-head">
+                        <span className="invoice-checkout-ui-prior-payments-title">
+                          <IconPaid />
+                          Previous payments
                         </span>
-                      </dd>
+                        <span className="invoice-checkout-ui-prior-payments-total">
+                          {formatMoneyAmount(paidDisplay, displayCurrency)} paid
+                        </span>
+                      </div>
+                      <ul className="invoice-checkout-ui-prior-payments-list">
+                        {invoicePayments.map(p => {
+                          const amtDisplay = convertAmountViaThb(
+                            p.amount,
+                            invoiceCurrency,
+                            displayCurrency,
+                            thbPerUnit
+                          );
+                          return (
+                            <li key={p.id} className="invoice-checkout-ui-prior-payment">
+                              <div className="invoice-checkout-ui-prior-payment-main">
+                                <span className="invoice-checkout-ui-prior-payment-method">
+                                  {formatPaymentMethodLabel(p.method)}
+                                </span>
+                                <time className="invoice-checkout-ui-prior-payment-date" dateTime={p.created_at}>
+                                  {formatPriorPaymentWhen(p.created_at)}
+                                </time>
+                              </div>
+                              <strong className="invoice-checkout-ui-prior-payment-amount">
+                                {formatMoneyAmount(amtDisplay, displayCurrency)}
+                              </strong>
+                            </li>
+                          );
+                        })}
+                      </ul>
                     </div>
-                  </dl>
+                  ) : null}
+
                   {needsConversion && !fxMissing ? (
                     <p className="invoice-checkout-ui-summary-fx">
                       Stored in {invoiceCurrency}: total {formatMoneyAmount(invoiceTotal, invoiceCurrency)}, balance{' '}
@@ -560,74 +743,70 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
                   ) : null}
                 </section>
 
-                <section className="invoice-checkout-ui-form">
-                  <div>
-                    <label className="invoice-checkout-ui-label">Payment method</label>
-                    <div className="invoice-checkout-ui-method-row" role="group" aria-label="Payment method">
-                      {payMethods.map(method => (
-                        <button
-                          key={method.id}
-                          type="button"
-                          className={`invoice-checkout-ui-method-btn${checkoutMethod === method.id ? ' is-active' : ''}`}
-                          onClick={() => setCheckoutMethod(method.id)}
-                        >
-                          {method.icon}
-                          {method.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="invoice-checkout-ui-label">Currency</label>
-                    <div className="invoice-checkout-ui-select-wrap">
-                      <select
-                        className="invoice-checkout-ui-select"
-                        value={displayCurrency}
-                        onChange={e => handleDisplayCurrencyChange(e.target.value)}
-                        aria-label="Currency for amounts entered at checkout"
-                      >
-                        {SUPPORTED_CURRENCIES.map(c => (
-                          <option key={c.code} value={c.code}>
-                            {c.label}
-                          </option>
+                <section className="invoice-checkout-ui-form" aria-label="Record payment">
+                  <div className="invoice-checkout-ui-form-grid">
+                    <div>
+                      <label className="invoice-checkout-ui-label">How are they paying?</label>
+                      <div className="invoice-checkout-ui-method-row" role="group" aria-label="Payment method">
+                        {payMethods.map(method => (
+                          <button
+                            key={method.id}
+                            type="button"
+                            className={`invoice-checkout-ui-method-btn invoice-checkout-ui-method-btn--${method.id.toLowerCase()}${checkoutMethod === method.id ? ' is-active' : ''}`}
+                            onClick={() => setCheckoutMethod(method.id)}
+                          >
+                            <span className="invoice-checkout-ui-method-icon" aria-hidden="true">
+                              {method.icon}
+                            </span>
+                            {method.label}
+                          </button>
                         ))}
-                      </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="invoice-checkout-ui-label">
+                        <span className="invoice-checkout-ui-label-icon" aria-hidden="true">
+                          <IconCurrency />
+                        </span>
+                        Currency
+                      </label>
+                      <div className="invoice-checkout-ui-select-wrap">
+                        <select
+                          className="invoice-checkout-ui-select"
+                          value={displayCurrency}
+                          onChange={e => handleDisplayCurrencyChange(e.target.value)}
+                          aria-label="Currency for amounts entered at checkout"
+                        >
+                          {SUPPORTED_CURRENCIES.map(c => (
+                            <option key={c.code} value={c.code}>
+                              {c.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="invoice-checkout-ui-pay-block">
-                    <div className="invoice-checkout-ui-pay-block-head">
-                      <span className="invoice-checkout-ui-label">Payment amount</span>
-                      <p className="invoice-checkout-ui-pay-hint">
-                        {isCash
-                          ? 'How much the customer hands over. Change is calculated from the balance due.'
-                          : 'Amount to record on this invoice (card or transfer).'}
-                      </p>
-                    </div>
-                    <div className="invoice-checkout-ui-pay-card">
-                      <div className="invoice-checkout-ui-pay-due-strip">
-                        <div className="invoice-checkout-ui-pay-due-text">
-                          <span className="invoice-checkout-ui-pay-due-label">Balance due</span>
-                          <strong className="invoice-checkout-ui-pay-due-value">
-                            {formatMoneyAmount(dueDisplay, displayCurrency)}
-                          </strong>
-                        </div>
-                        <button
-                          type="button"
-                          className="invoice-checkout-ui-pay-exact-btn"
-                          onClick={() => setCheckoutAmount(dueDisplay)}
-                        >
-                          Pay exact balance
-                        </button>
+                  <div className="invoice-checkout-ui-pay-primary">
+                    <div className="invoice-checkout-ui-pay-primary-head">
+                      <span className="invoice-checkout-ui-pay-primary-icon" aria-hidden="true">
+                        <IconTypeAmount />
+                      </span>
+                      <div>
+                        <h4 className="invoice-checkout-ui-pay-primary-title">Enter payment amount</h4>
+                        <p className="invoice-checkout-ui-pay-primary-sub">
+                          {isCash
+                            ? 'Type how much cash the customer is handing over.'
+                            : 'Type how much is being paid on this invoice now.'}
+                        </p>
                       </div>
-                      <label className="invoice-checkout-ui-pay-field-label" htmlFor="checkout-payment-amount">
-                        {isCash ? 'Cash received' : 'Amount paying now'}
-                      </label>
-                      <input
+                    </div>
+                    <label className="invoice-checkout-ui-pay-amount-field invoice-checkout-ui-pay-amount-field--primary" htmlFor="checkout-payment-amount">
+                      <span className="invoice-checkout-ui-pay-prefix">{amountPrefix}</span>
+                      <GuardedAmountNumberInput
                         id="checkout-payment-amount"
                         className="invoice-checkout-ui-pay-input"
-                        type="number"
                         min={0}
                         step="0.01"
                         inputMode="decimal"
@@ -636,22 +815,38 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
                           const v = e.target.value;
                           setCheckoutAmount(v === '' ? 0 : parseMoneyInput(v));
                         }}
-                        placeholder={dueDisplay > 0 ? String(dueDisplay) : '0'}
-                        aria-describedby={isCash ? 'checkout-change-hint' : undefined}
+                        placeholder={dueDisplay > 0 ? String(dueDisplay) : '0.00'}
+                        autoFocus
+                        aria-describedby={isCash ? 'checkout-pay-help checkout-change-hint' : 'checkout-pay-help'}
                       />
-                      {isCash ? (
-                        <div
-                          id="checkout-change-hint"
-                          className={`invoice-checkout-ui-pay-change${change > 0 ? ' has-change' : ''}`}
-                          aria-live="polite"
-                        >
-                          <span className="invoice-checkout-ui-pay-change-label">Change to return</span>
-                          <span className="invoice-checkout-ui-pay-change-value">
-                            {formatMoneyAmount(change, displayCurrency)}
-                          </span>
-                        </div>
-                      ) : null}
+                    </label>
+                    <p id="checkout-pay-help" className="invoice-checkout-ui-pay-primary-help">
+                      Type the amount in the field above, or tap <strong>Pay exact balance</strong>.
+                    </p>
+                    <div className="invoice-checkout-ui-pay-primary-actions">
+                      <button
+                        type="button"
+                        className="invoice-checkout-ui-pay-exact-btn"
+                        onClick={() => setCheckoutAmount(dueDisplay)}
+                      >
+                        Pay exact balance ({formatMoneyAmount(dueDisplay, displayCurrency)})
+                      </button>
                     </div>
+                    {isCash ? (
+                      <div
+                        id="checkout-change-hint"
+                        className={`invoice-checkout-ui-pay-change${change > 0 ? ' has-change' : ''}`}
+                        aria-live="polite"
+                      >
+                        <span className="invoice-checkout-ui-pay-change-label">
+                          <IconChange />
+                          Change to return
+                        </span>
+                        <span className="invoice-checkout-ui-pay-change-value">
+                          {formatMoneyAmount(change, displayCurrency)}
+                        </span>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div>
@@ -704,7 +899,7 @@ export const InvoiceCheckoutPage: React.FC<InvoiceCheckoutPageProps> = ({
                   disabled={!invoiceId || printLoading}
                 >
                   <IconPrinter />
-                  {printLoading ? 'Printing…' : 'Print'}
+                  {printLoading ? 'Printing…' : 'Print invoice'}
                 </button>
                 <button
                   type="button"

@@ -9,6 +9,9 @@ import {
   categoryLooksLikeShortCode,
   formatItemTypeDisplay,
   inventoryCategoryDisplay,
+  deriveInventoryDisplayStatus,
+  inventoryRemainingPieces,
+  matchesInventoryStatusFilter,
 } from '../../lib/inventoryDisplay';
 import { dateFromServerUtc } from '../../lib/serverTime';
 
@@ -87,7 +90,7 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
 ];
 
 function remainingOf(item: InventoryItem): number {
-  return typeof item.pieces_remaining === 'number' ? item.pieces_remaining : item.pieces;
+  return inventoryRemainingPieces(item);
 }
 
 function healthOf(rem: number, pieces: number): StockHealth {
@@ -280,12 +283,7 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, r
       const rem = remainingOf(item);
       const memoUnits = Math.max(0, Math.round(Number((s as any).memo_units) || 0));
       const soldUnits = Math.max(0, Math.round(Number((s as any).sold_units) || 0));
-      const effectiveStatus =
-        memoUnits > 0
-          ? 'On Memo'
-          : rem === 0 && soldUnits > 0
-            ? 'Sold'
-            : item.status;
+      const effectiveStatus = deriveInventoryDisplayStatus(item, memoUnits);
       return {
         ...item,
         rem,
@@ -327,7 +325,7 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, r
           .toLowerCase();
         if (!hay.includes(q)) return false;
       }
-      if (filterStatus && i.effectiveStatus !== filterStatus) return false;
+      if (filterStatus && !matchesInventoryStatusFilter(i, filterStatus)) return false;
       if (filterCat && i.category !== filterCat) return false;
       const h = healthOf(i.rem, i.pieces);
       if (isOwner && filterHealth !== 'all' && h !== filterHealth) return false;
@@ -421,7 +419,7 @@ export const CheckInventoryPage: React.FC<CheckInventoryPageProps> = ({ token, r
         </div>
         <div className="ci2-summary-cell">
           <span className="ci2-summary-label">Out of stock</span>
-          <span className="ci2-summary-val ci2-summary-val--bad">{filtered.filter((i) => i.rem === 0).length}</span>
+          <span className="ci2-summary-val ci2-summary-val--bad">{filtered.filter((i) => i.effectiveStatus === 'Out of stock').length}</span>
         </div>
         <div className="ci2-summary-cell">
           <span className="ci2-summary-label">Low / Critical</span>

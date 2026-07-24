@@ -135,62 +135,41 @@ function formatWtCtShort(ct: number | null | undefined, g: number | null | undef
   return '—';
 }
 
-/** Strip inventory item `description` prose when it appears as a ·-separated segment (fallback path). */
-function stripInventoryNoteFromMergedDescription(merged: string, invNote: string): string {
-  const n = invNote.trim();
-  if (!n) return merged;
-  return merged
-    .split(/\s*·\s*/)
-    .map(s => s.trim())
-    .filter(s => s.toLowerCase() !== n.toLowerCase())
-    .join(' · ')
-    .replace(/\s*·\s*·\s*/g, ' · ')
-    .replace(/^\s*·\s*|\s*·\s*$/g, '')
-    .trim();
-}
-
-/**
- * Invoice receipt line text: category, type, and weights only — not the inventory freeform description.
- */
-function invoiceLineDescription(row: ReceiptInvoiceLine): string {
-  const typeLine = [row.inv_category, row.inv_item_type].filter(Boolean).join(' ').trim();
-  const wSegs: string[] = [];
-  const ct = row.weight_carats != null ? Number(row.weight_carats) : NaN;
-  const g = row.weight_grams != null ? Number(row.weight_grams) : NaN;
-  if (Number.isFinite(ct)) wSegs.push(`${ct} ct`);
-  if (Number.isFinite(g)) wSegs.push(`${g} g`);
-  const weightPart = wSegs.join(' · ');
-
-  const specParts: string[] = [];
-  if (typeLine) specParts.push(typeLine);
-  if (weightPart) specParts.push(weightPart);
-  const fromSpecs = specParts.join(' · ').trim();
-  if (fromSpecs) return fromSpecs;
-
-  const invNote = (row.inventory_description || '').trim();
-  let merged = (row.description || '').trim();
-  if (merged && invNote) merged = stripInventoryNoteFromMergedDescription(merged, invNote);
-  return merged || (row.item_code || '').trim() || '—';
-}
-
-function splitDescriptionForTable(desc: string): { title: string; sub: string } {
-  const raw = desc.trim() || '—';
-  const parts = raw.split(/\s*·\s*/);
-  if (parts.length >= 2) {
-    return { title: parts[0].trim(), sub: parts.slice(1).join(' · ').trim() };
+function gemNameFromSpecs(
+  category: string | null | undefined,
+  itemType: string | null | undefined,
+  description: string | null | undefined,
+  itemCode: string | null | undefined
+): string {
+  const typeLine = [category, itemType].filter(Boolean).join(' ').trim();
+  if (typeLine) return typeLine;
+  const merged = (description || '').trim();
+  if (merged) {
+    const first = merged.split(/\s*·\s*/)[0]?.trim();
+    if (first) return first;
   }
-  const lineBreak = raw.indexOf('\n');
-  if (lineBreak > 0) {
-    return { title: raw.slice(0, lineBreak).trim(), sub: raw.slice(lineBreak + 1).trim() };
-  }
-  return { title: raw, sub: '' };
+  return (itemCode || '').trim() || '—';
 }
 
-function pricePerCarat(lineTotal: number, qty: number, carats: number | null | undefined): number | null {
+/** Invoice line: gem name + inventory code (weight and price live in their columns). */
+function invoiceLineReceiptParts(row: ReceiptInvoiceLine): { title: string; sub: string } {
+  const title = gemNameFromSpecs(row.inv_category, row.inv_item_type, row.description, row.item_code);
+  const code = (row.item_code || '').trim();
+  return { title, sub: code ? `Code: ${code}` : '' };
+}
+
+/** Memo line: same layout as invoice receipt. */
+function memoLineReceiptParts(row: ReceiptMemoLine): { title: string; sub: string } {
+  const title = gemNameFromSpecs(row.category, row.item_type, row.description, row.item_code);
+  const code = (row.item_code || '').trim();
+  return { title, sub: code ? `Code: ${code}` : '' };
+}
+
+/** List $/ct before line discount (gross ÷ carats). */
+function listPricePerCarat(grossAmount: number, carats: number | null | undefined): number | null {
   const ct = carats != null && Number.isFinite(Number(carats)) ? Number(carats) : NaN;
-  const q = Math.max(1, qty || 1);
   if (!Number.isFinite(ct) || ct <= 0) return null;
-  return (Number(lineTotal) || 0) / (q * ct);
+  return (Number(grossAmount) || 0) / ct;
 }
 
 /** Gross line amount from stored unit price × qty (before line discount). */
@@ -793,6 +772,58 @@ body{background:#E8F1FA;font-family:'Lato',sans-serif;min-height:100vh;padding:2
   .memo-receipt-doc .footer-brand{font-size:8.5px!important}
   .doc-wrap:has(.memo-receipt-doc) > .doc-watermark{opacity:0.07!important}
 }
+
+.payment-receipt-doc .payment-hero{
+  margin:0 0 22px;
+  padding:20px 22px;
+  border-radius:10px;
+  background:linear-gradient(135deg,#E8F4FD 0%,#F7FBFF 100%);
+  border:1px solid #C5DFF5;
+  text-align:center;
+}
+.payment-receipt-doc .payment-hero-label{
+  font-size:9px;
+  font-weight:700;
+  letter-spacing:2px;
+  text-transform:uppercase;
+  color:#7FA8C4;
+  margin-bottom:8px;
+}
+.payment-receipt-doc .payment-hero-amount{
+  font-family:'Cormorant Garamond',serif;
+  font-size:34px;
+  font-weight:700;
+  color:#0D2B5E;
+  line-height:1.1;
+}
+.payment-receipt-doc .payment-hero-method{
+  margin-top:8px;
+  font-size:13px;
+  color:#3A6080;
+  font-weight:700;
+}
+.payment-receipt-doc .payment-summary{
+  border:1px solid #D6E8FA;
+  border-radius:10px;
+  overflow:hidden;
+  margin-bottom:24px;
+}
+.payment-receipt-doc .payment-summary-row{
+  display:flex;
+  justify-content:space-between;
+  gap:16px;
+  padding:11px 16px;
+  font-size:13px;
+  border-bottom:1px solid #E8F2FA;
+}
+.payment-receipt-doc .payment-summary-row:last-child{border-bottom:none}
+.payment-receipt-doc .payment-summary-row span:first-child{color:#5A7A9A}
+.payment-receipt-doc .payment-summary-row strong{color:#0D2B5E}
+.payment-receipt-doc .payment-summary-row--emphasis{
+  background:#F7FBFF;
+  font-size:14px;
+}
+.payment-receipt-doc .payment-summary-row--balance strong{color:#1565C0}
 `;
 
 function buildInvoiceTableRows(
@@ -804,16 +835,14 @@ function buildInvoiceTableRows(
   }
   return inv.items
     .map((row, i) => {
-      const descFull = invoiceLineDescription(row);
-      const parts = splitDescriptionForTable(descFull);
+      const parts = invoiceLineReceiptParts(row);
       const qty = row.quantity || 0;
       const ct = row.weight_carats;
-      const ppc = pricePerCarat(row.line_total, qty, ct);
+      const gross = invoiceLineGross(row);
+      const ppc = listPricePerCarat(gross, ct);
       const priceCol =
         ppc != null ? formatMoney(ppc, currencyCode) : formatMoney(row.unit_price, currencyCode);
       const idx = String(i + 1).padStart(2, '0');
-      const codeMono = (row.item_code || '').trim();
-      const subExtra = codeMono ? `${parts.sub ? `${parts.sub} · ` : ''}Code: ${codeMono}` : parts.sub;
       const lineDisc = invoiceLineDiscount(row);
       const discCol =
         lineDisc > 0 ? `− ${formatMoney(lineDisc, currencyCode)}` : '—';
@@ -821,16 +850,28 @@ function buildInvoiceTableRows(
         <td class="center td-mono">${escapeHtml(idx)}</td>
         <td>
           <div class="td-gem-name">${escapeHtml(parts.title)}</div>
-          ${subExtra ? `<div class="td-gem-sub">${escapeHtml(subExtra)}</div>` : ''}
+          ${parts.sub ? `<div class="td-gem-sub">${escapeHtml(parts.sub)}</div>` : ''}
         </td>
         <td class="center">${escapeHtml(String(qty))}</td>
-        <td class="center">${formatWtCtShort(ct, row.weight_grams)}</td>
+        <td class="center">${formatWtCtShort(ct, null)}</td>
         <td class="td-price">${escapeHtml(priceCol)}</td>
         <td class="td-discount">${escapeHtml(discCol)}</td>
         <td class="td-total">${escapeHtml(formatMoney(row.line_total, currencyCode))}</td>
           </tr>`;
         })
     .join('');
+}
+
+function invoiceReceiptPaymentStatus(inv: ReceiptInvoicePayload): 'Unpaid' | 'Partial' | 'Paid' {
+  const explicit = String(inv.status || '').trim();
+  if (/^paid$/i.test(explicit)) return 'Paid';
+  if (/^partial$/i.test(explicit)) return 'Partial';
+  if (/^unpaid$/i.test(explicit)) return 'Unpaid';
+  const paid = Number(inv.paid || 0);
+  const total = Number(inv.total || 0);
+  if (total > 0 && paid >= total - 0.005) return 'Paid';
+  if (paid > 0) return 'Partial';
+  return 'Unpaid';
 }
 
 function buildInvoiceDoc(
@@ -873,10 +914,13 @@ function buildInvoiceDoc(
     `<tr><td>Country of Origin</td><td>${escapeHtml(co.countryOfOrigin || '—')}</td></tr>`,
     `<tr><td>Currency</td><td>${escapeHtml(co.currencyLabel || currencyCode)}</td></tr>`,
   ];
-  if (inv && (inv.paid != null || inv.status)) {
-    metaRows.push(`<tr><td>Status</td><td>${escapeHtml(inv.status || '—')}</td></tr>`);
-    metaRows.push(`<tr><td>Paid</td><td>${escapeHtml(formatMoney(invPaid, currencyCode))}</td></tr>`);
-    metaRows.push(`<tr><td>Balance</td><td>${escapeHtml(formatMoney(invBalance, currencyCode))}</td></tr>`);
+  if (inv) {
+    const payStatus = invoiceReceiptPaymentStatus(inv);
+    metaRows.push(`<tr><td>Status</td><td>${escapeHtml(payStatus)}</td></tr>`);
+    if (payStatus === 'Partial') {
+      metaRows.push(`<tr><td>Paid</td><td>${escapeHtml(formatMoney(invPaid, currencyCode))}</td></tr>`);
+      metaRows.push(`<tr><td>Pending</td><td>${escapeHtml(formatMoney(invBalance, currencyCode))}</td></tr>`);
+    }
   }
 
   const discountRows =
@@ -934,7 +978,7 @@ function buildInvoiceDoc(
           <th class="center">Pcs</th>
           <th class="center">Weight (cts)</th>
           <th>Price / ct</th>
-          <th>Line disc.</th>
+          <th>Discount</th>
           <th>Total</th>
               </tr>
             </thead>
@@ -1036,25 +1080,22 @@ function buildMemoTableRows(me: ReceiptMemoPayload | null, currencyCode: string)
   return me.items
     .map((row, i) => {
       const { remaining, lineGrossRem, lineDiscRem, lineNetRem } = memoReceiptLineRemainingAmounts(row);
-      const descFull = row.description || `${row.item_code || ''}`.trim() || '—';
-      const parts = splitDescriptionForTable(descFull);
+      const parts = memoLineReceiptParts(row);
       const ct = row.weight_carats;
-      const ppc = pricePerCarat(lineNetRem, remaining, ct);
+      const ppc = listPricePerCarat(lineGrossRem, ct);
       const priceCol =
-        ppc != null ? formatMoney(ppc, currencyCode) : formatMoney(lineGrossRem, currencyCode);
+        ppc != null ? formatMoney(ppc, currencyCode) : formatMoney(row.unit_price, currencyCode);
       const idx = String(i + 1).padStart(2, '0');
-      const codeMono = (row.item_code || '').trim();
-      const subExtra = codeMono ? `${parts.sub ? `${parts.sub} · ` : ''}Code: ${codeMono}` : parts.sub;
       const discCol =
         lineDiscRem > 0.0001 ? `− ${formatMoney(lineDiscRem, currencyCode)}` : '—';
       return `<tr>
         <td class="center td-mono">${escapeHtml(idx)}</td>
         <td>
           <div class="td-gem-name">${escapeHtml(parts.title)}</div>
-          ${subExtra ? `<div class="td-gem-sub">${escapeHtml(subExtra)}</div>` : ''}
+          ${parts.sub ? `<div class="td-gem-sub">${escapeHtml(parts.sub)}</div>` : ''}
         </td>
         <td class="center">${escapeHtml(String(remaining))}</td>
-        <td class="center">${formatWtCtShort(ct, row.weight_grams)}</td>
+        <td class="center">${formatWtCtShort(ct, null)}</td>
         <td class="td-price">${escapeHtml(priceCol)}</td>
         <td class="td-discount">${escapeHtml(discCol)}</td>
         <td class="td-total">${escapeHtml(formatMoney(lineNetRem, currencyCode))}</td>
@@ -1207,7 +1248,7 @@ function buildMemoDoc(
           <th class="center">Pcs</th>
           <th class="center">Weight (cts)</th>
           <th class="right">Price / CT</th>
-          <th class="right">Line disc.</th>
+          <th class="right">Discount</th>
           <th class="right">Total</th>
               </tr>
             </thead>
@@ -1372,6 +1413,177 @@ export function openInvoiceReceiptWindow(payload: ReceiptInvoicePayload): void {
 export function openMemoReceiptWindow(payload: ReceiptMemoPayload): void {
   const html = buildInvoiceMemoReceiptHtml(loadCompanyReceiptSettings(), 'memo', null, payload);
   const w = window.open('', '_blank', 'width=840,height=1180');
+  if (!w) return;
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+}
+
+export interface ReceiptPaymentPayload {
+  invoice_no: string;
+  customer_name: string | null;
+  currency_code: string;
+  invoice_total: number;
+  paid_before: number;
+  payment_amount: number;
+  payment_method: string;
+  payment_date: string;
+  paid_after: number;
+  balance_remaining: number;
+  invoice_status: 'Unpaid' | 'Partial' | 'Paid';
+}
+
+export function formatPaymentMethodLabel(method: string): string {
+  const m = String(method || '').trim();
+  if (m === 'BankTransfer') return 'Transfer';
+  return m || '—';
+}
+
+function invoiceStatusFromAmounts(paidAfter: number, total: number): 'Unpaid' | 'Partial' | 'Paid' {
+  const t = Number(total) || 0;
+  const p = Number(paidAfter) || 0;
+  if (t > 0 && p >= t - 0.005) return 'Paid';
+  if (p > 0.005) return 'Partial';
+  return 'Unpaid';
+}
+
+function buildPaymentReceiptDoc(
+  co: CompanyReceiptSettings,
+  payload: ReceiptPaymentPayload,
+  currencyCode: string,
+  logoSrc: string,
+  logoOnErrorJs: string
+): string {
+  const addrLine = [co.addressLine1, co.addressLine2, co.city].filter(x => x?.trim()).join(' ');
+  const custName = payload.customer_name?.trim() || 'Walk-in customer';
+  const payLabel = formatPaymentMethodLabel(payload.payment_method);
+  const status = payload.invoice_status || invoiceStatusFromAmounts(payload.paid_after, payload.invoice_total);
+  const isFollowUpPayment = payload.paid_before > 0.005;
+  const currencyLabel = currencyReceiptLabel(currencyCode);
+
+  const summaryRows: string[] = [
+    `<div class="payment-summary-row"><span>Invoice total</span><strong>${escapeHtml(formatMoney(payload.invoice_total, currencyCode))}</strong></div>`,
+  ];
+  if (isFollowUpPayment) {
+    summaryRows.push(
+      `<div class="payment-summary-row"><span>Previously paid</span><strong>${escapeHtml(formatMoney(payload.paid_before, currencyCode))}</strong></div>`
+    );
+  }
+  summaryRows.push(
+    `<div class="payment-summary-row payment-summary-row--emphasis"><span>This payment</span><strong>${escapeHtml(formatMoney(payload.payment_amount, currencyCode))}</strong></div>`
+  );
+  if (isFollowUpPayment) {
+    summaryRows.push(
+      `<div class="payment-summary-row"><span>Total paid to date</span><strong>${escapeHtml(formatMoney(payload.paid_after, currencyCode))}</strong></div>`
+    );
+  }
+  summaryRows.push(
+    `<div class="payment-summary-row payment-summary-row--balance"><span>Balance remaining</span><strong>${escapeHtml(formatMoney(payload.balance_remaining, currencyCode))}</strong></div>`,
+    `<div class="payment-summary-row"><span>Invoice status</span><strong>${escapeHtml(status)}</strong></div>`
+  );
+
+  return `<div class="doc payment-receipt-doc">
+  <div class="doc-header">
+    <div class="header-logo-box">
+      <img class="header-logo-img" src="${escapeHtml(logoSrc)}" alt="${escapeHtml(co.name)}" onerror="${escapeHtmlAttr(logoOnErrorJs)}"/>
+    </div>
+    <div class="header-center">
+      <div class="company-name">${escapeHtml(co.name)}</div>
+      <div class="company-tagline">${escapeHtml(co.tagline)}</div>
+    </div>
+    <div class="doc-type-badge">
+      <div class="doc-type-text">PAYMENT</div>
+      <div class="doc-number">Receipt</div>
+    </div>
+  </div>
+  <div class="addr-strip">
+    <div class="addr-item"><span aria-hidden="true">📍</span><span>${escapeHtml(addrLine || '—')}</span></div>
+    <div class="addr-item"><span aria-hidden="true">📞</span><span>${escapeHtml(co.phone || '—')}</span></div>
+    <div class="addr-item"><span aria-hidden="true">✉️</span><span>${escapeHtml(co.email || '—')}</span></div>
+  </div>
+  <div class="doc-body">
+    <div class="meta-row">
+      <div class="bill-to-box">
+        <div class="bill-to-lbl">Received From</div>
+        <div class="bill-to-name">${escapeHtml(custName)}</div>
+      </div>
+      <div class="doc-meta">
+        <table class="meta-table">
+          <tr><td>Payment date</td><td>${formatInvoiceDate(payload.payment_date)}</td></tr>
+          <tr><td>Invoice no.</td><td>${escapeHtml(payload.invoice_no)}</td></tr>
+          <tr><td>Currency</td><td>${escapeHtml(currencyLabel)}</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="divider" aria-hidden="true"></div>
+    <div class="payment-hero">
+      <div class="payment-hero-label">Amount received</div>
+      <div class="payment-hero-amount">${escapeHtml(formatMoney(payload.payment_amount, currencyCode))}</div>
+      <div class="payment-hero-method">Method: ${escapeHtml(payLabel)}</div>
+    </div>
+    <div class="payment-summary">${summaryRows.join('')}</div>
+    <div class="notes-box">
+      <div class="notes-title">Note</div>
+      <div class="notes-body">This receipt confirms payment received against invoice ${escapeHtml(payload.invoice_no)}. It is not a substitute for the official invoice document.</div>
+    </div>
+    <div class="sig-row">
+      <div class="sig-box">
+        <div class="sig-pretitle">Authorized Signature</div>
+        <div class="sig-line"></div>
+        <div class="sig-subtitle">${escapeHtml(co.name.replace(/\.$/, ''))}</div>
+      </div>
+      <div class="sig-box">
+        <div class="sig-pretitle">Customer Signature</div>
+        <div class="sig-line"></div>
+        <div class="sig-subtitle">${escapeHtml(custName)}</div>
+      </div>
+    </div>
+  </div>
+  <div class="doc-footer">
+    <div class="footer-text">${escapeHtml(co.notesConditions)}</div>
+    <div class="footer-brand">${escapeHtml(co.name)}</div>
+  </div>
+</div>`;
+}
+
+function buildPaymentReceiptHtml(co: CompanyReceiptSettings, payload: ReceiptPaymentPayload): string {
+  const currencyCode = normalizeCurrencyCode(payload.currency_code);
+  const logoSrc = receiptLogoSrcForHtml();
+  const logoOnErrorJs = receiptLogoOnErrorJs();
+  const watermarkUrl = resolveReceiptWatermarkUrl();
+  const watermarkCss = watermarkUrl ? ` style="background-image:url('${escapeHtmlAttr(watermarkUrl)}')"` : '';
+  const doc = buildPaymentReceiptDoc(co, payload, currencyCode, logoSrc, logoOnErrorJs);
+  const title = `Payment — ${payload.invoice_no}`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Blue Cuts Co., Ltd. — ${escapeHtml(title)}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet"/>
+  <style>${RECEIPT_STYLES}</style>
+</head>
+<body>
+  <div class="app-header">
+    <h1>Blue Cuts Co., Ltd. — Payment Receipt</h1>
+    <p>Print or Save as PDF</p>
+  </div>
+  <button type="button" class="print-btn" onclick="window.print()">🖨 Print / Save as PDF</button>
+  <div class="doc-wrap">
+    ${watermarkCss ? `<div class="doc-watermark" aria-hidden="true"${watermarkCss}></div>` : ''}
+    ${doc}
+  </div>
+</body>
+</html>`;
+}
+
+export function openPaymentReceiptWindow(payload: ReceiptPaymentPayload): void {
+  const html = buildPaymentReceiptHtml(loadCompanyReceiptSettings(), payload);
+  const w = window.open('', '_blank', 'width=720,height=960');
   if (!w) return;
   w.document.open();
   w.document.write(html);

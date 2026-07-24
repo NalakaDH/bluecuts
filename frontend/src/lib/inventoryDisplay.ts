@@ -1,10 +1,6 @@
 /** Categories shorter than this are treated as legacy codes and hidden from list UI. */
 export const INVENTORY_CATEGORY_MIN_DISPLAY_LENGTH = 3;
 
-export function categoryLooksLikeShortCode(category: string | null | undefined): boolean {
-  return (category?.trim().length ?? 0) < INVENTORY_CATEGORY_MIN_DISPLAY_LENGTH;
-}
-
 export const ITEM_TYPE_OPTIONS: readonly string[] = ['cut single', 'cut lot', 'rough single', 'rough lot'];
 
 export const ITEM_TYPE_LABELS: Record<string, string> = {
@@ -15,6 +11,10 @@ export const ITEM_TYPE_LABELS: Record<string, string> = {
 };
 
 const SINGLE_ITEM_TYPES = new Set<string>(['cut single', 'rough single']);
+
+export function categoryLooksLikeShortCode(category: string | null | undefined): boolean {
+  return (category?.trim().length ?? 0) < INVENTORY_CATEGORY_MIN_DISPLAY_LENGTH;
+}
 
 export function normalizeItemType(raw: string): string | null {
   const n = raw.trim().toLowerCase();
@@ -54,4 +54,33 @@ export function inventoryCategoryDisplay(category: string | null | undefined): s
   const c = category?.trim() ?? '';
   if (categoryLooksLikeShortCode(c)) return null;
   return c || null;
+}
+
+/** Pieces left on hand (falls back to original lot size). */
+export function inventoryRemainingPieces(item: {
+  pieces_remaining?: number | null;
+  pieces?: number | null;
+}): number {
+  if (typeof item.pieces_remaining === 'number') return item.pieces_remaining;
+  return typeof item.pieces === 'number' ? item.pieces : 0;
+}
+
+/** List / filter status: On Memo when units are on memo; Out of stock when depleted; else Available. */
+export function deriveInventoryDisplayStatus(
+  item: { status?: string | null; pieces_remaining?: number | null; pieces?: number | null },
+  memoUnits: number
+): string {
+  if (memoUnits > 0) return 'On Memo';
+  if (inventoryRemainingPieces(item) <= 0) return 'Out of stock';
+  return 'Available';
+}
+
+/** Status dropdown / pill filter (Sold = any sale history, not a display badge). */
+export function matchesInventoryStatusFilter(
+  item: { effectiveStatus: string; soldUnits: number },
+  filter: string
+): boolean {
+  if (!filter) return true;
+  if (filter === 'Sold') return item.soldUnits > 0;
+  return item.effectiveStatus === filter;
 }

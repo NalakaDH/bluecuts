@@ -4,25 +4,34 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-// Load local env file if present (Windows-friendly).
-// This enables backend/.env to configure cloud sync secrets on shop machines.
-try {
-  const dotenvPath = path.join(__dirname, '..', '.env');
-  if (fs.existsSync(dotenvPath)) {
+// Load local env (shop PC): backend/.env then AppData cloud-sync.env (Electron userData).
+function loadBackendEnvFiles() {
+  try {
     // eslint-disable-next-line global-require
-    require('dotenv').config({ path: dotenvPath });
-  } else {
-    // eslint-disable-next-line global-require
-    require('dotenv').config();
+    const dotenv = require('dotenv');
+    const backendRoot = path.join(__dirname, '..');
+    const paths = [path.join(backendRoot, '.env')];
+    const userData =
+      process.env.BLUECUTS_USER_DATA && String(process.env.BLUECUTS_USER_DATA).trim();
+    if (userData) {
+      paths.push(path.join(userData, 'cloud-sync.env'));
+    }
+    for (const dotenvPath of paths) {
+      if (fs.existsSync(dotenvPath)) {
+        dotenv.config({ path: dotenvPath, override: true });
+      }
+    }
+  } catch (_e) {
+    // ignore; env may come from the OS / process manager
   }
-} catch (_e) {
-  // ignore dotenv failures; env vars may still come from the OS/process manager
 }
+loadBackendEnvFiles();
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const { syncToFirestore } = require('./cloud/syncToFirestore');
+const { getCloudSyncConfigStatus } = require('./cloud/firestoreAdmin');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -191,6 +200,182 @@ const ALLOWED_CURRENCIES = new Set([
 ]);
 const SINGLE_INVENTORY_ITEM_TYPES = new Set(['cut single', 'rough single']);
 
+function roundCarats(n) {
+  return Math.round(Number(n) * 1000) / 1000;
+}
+
+function isSingleStoneLot(stockRow) {
+  const itemType = String(stockRow.item_type || '').trim().toLowerCase();
+  if (SINGLE_INVENTORY_ITEM_TYPES.has(itemType)) return true;
+  const pieces = Math.floor(Number(stockRow.pieces || 0));
+  const remaining = Math.floor(Number(stockRow.pieces_remaining ?? (pieces || 0)));
+  const lotSize = Math.max(pieces, remaining);
+  return lotSize <= 1;
+}
+
+/** Carats leaving stock for a sale/memo line (null when lot has no carat weight). */
+function resolveSoldCaratsForStockOut(stockRow, quantity, requestedCarats) {
+  const stockCt =
+    stockRow.weight_carats != null && stockRow.weight_carats !== ''
+      ? Number(stockRow.weight_carats)
+      : null;
+  if (stockCt == null || !Number.isFinite(stockCt) || stockCt <= 0) {
+    return { soldCarats: null };
+  }
+  if (isSingleStoneLot(stockRow)) {
+    return { soldCarats: roundCarats(stockCt) };
+  }
+  const req =
+    requestedCarats != null && requestedCarats !== '' ? Number(requestedCarats) : NaN;
+  if (!Number.isFinite(req) || req <= 0) {
+    const label = stockRow.item_code || stockRow.item_sticker || `#${stockRow.id}`;
+    return { error: `Carat weight is required when selling from lot ${label}` };
+  }
+  if (req > stockCt + 0.001) {
+    return {
+      error: `Sold carats (${req} ct) cannot exceed remaining lot weight (${stockCt} ct)`,
+    };
+  }
+  return { soldCarats: roundCarats(req) };
+}
+
+/** Carats to restore when pcs are returned/restocked from a stored line total. */
+function caratsToRestoreForQty(lineWeightCarats, lineQty, restoreQty) {
+  const total = lineWeightCarats != null ? Number(lineWeightCarats) : NaN;
+  const q = Math.max(1, Math.floor(Number(lineQty || 1)));
+  const r = Math.max(0, Math.floor(Number(restoreQty || 0)));
+  if (!Number.isFinite(total) || total <= 0 || r <= 0) return null;
+  if (r >= q) return roundCarats(total);
+  return roundCarats((total * r) / q);
+}
+
+/**
+ * Purchase cost for one invoice/memo line in inventory list-price currency (USD in UI).
+ * Snapshotted on invoice_items.cost_total so later inventory edits do not rewrite history.
+ */
+function computeLinePurchaseCostNative(stockRow, quantity, soldCarats, opts = {}) {
+  const qty = Math.max(0, Math.floor(Number(quantity || 0)));
+  if (qty <= 0) return 0;
+
+  const purchTotal =
+    stockRow.purchasing_total_price != null && stockRow.purchasing_total_price !== ''
+      ? Number(stockRow.purchasing_total_price)
+      : null;
+  const purchPerCt =
+    stockRow.purchasing_carat_price != null && stockRow.purchasing_carat_price !== ''
+      ? Number(stockRow.purchasing_carat_price)
+      : null;
+  const remainingCt =
+    stockRow.weight_carats != null && stockRow.weight_carats !== ''
+      ? Number(stockRow.weight_carats)
+      : null;
+  const soldCt =
+    soldCarats != null && soldCarats !== '' && Number.isFinite(Number(soldCarats)) && Number(soldCarats) > 0
+      ? roundCarats(soldCarats)
+      : null;
+
+  if (isSingleStoneLot(stockRow)) {
+    if (purchTotal != null && Number.isFinite(purchTotal) && purchTotal >= 0) return roundMoney2(purchTotal);
+    const ct =
+      soldCt ?? (remainingCt != null && Number.isFinite(remainingCt) && remainingCt > 0 ? remainingCt : null);
+    if (purchPerCt != null && Number.isFinite(purchPerCt) && purchPerCt >= 0 && ct != null) {
+      return roundMoney2(purchPerCt * ct);
+    }
+    return 0;
+  }
+
+  const lotCaratsBefore =
+    opts.lotCaratsBeforeSale != null && Number.isFinite(Number(opts.lotCaratsBeforeSale))
+      ? Number(opts.lotCaratsBeforeSale)
+      : soldCt != null && remainingCt != null && remainingCt >= 0
+        ? remainingCt + soldCt
+        : null;
+
+  if (soldCt != null) {
+    if (purchPerCt != null && Number.isFinite(purchPerCt) && purchPerCt >= 0) {
+      return roundMoney2(purchPerCt * soldCt);
+    }
+    if (
+      purchTotal != null &&
+      Number.isFinite(purchTotal) &&
+      purchTotal >= 0 &&
+      lotCaratsBefore != null &&
+      lotCaratsBefore > 0
+    ) {
+      return roundMoney2(purchTotal * (soldCt / lotCaratsBefore));
+    }
+  }
+
+  const pieces = Math.max(1, Math.floor(Number(stockRow.pieces || 0)) || 1);
+  const perPiece =
+    purchTotal != null && Number.isFinite(purchTotal) && purchTotal >= 0 ? purchTotal / pieces : 0;
+  return roundMoney2(perPiece * qty);
+}
+
+async function stockOutInventory(inventoryItemId, quantity, soldCarats) {
+  const q = Math.max(0, Math.floor(Number(quantity || 0)));
+  if (q <= 0) return;
+  if (soldCarats != null && Number.isFinite(Number(soldCarats)) && Number(soldCarats) > 0) {
+    const ct = roundCarats(soldCarats);
+    await dbRun(
+      `
+      UPDATE inventory_items
+      SET
+        pieces_remaining = MAX(0, pieces_remaining - ?),
+        weight_carats = MAX(0, ROUND(IFNULL(weight_carats, 0) - ?, 3)),
+        status = CASE WHEN MAX(0, pieces_remaining - ?) <= 0 THEN 'Out of stock' ELSE 'Available' END,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `,
+      [q, ct, q, inventoryItemId]
+    );
+    return;
+  }
+  await dbRun(
+    `
+    UPDATE inventory_items
+    SET
+      pieces_remaining = MAX(0, pieces_remaining - ?),
+      status = CASE WHEN MAX(0, pieces_remaining - ?) <= 0 THEN 'Out of stock' ELSE 'Available' END,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `,
+    [q, q, inventoryItemId]
+  );
+}
+
+async function stockInInventory(inventoryItemId, quantity, restoreCarats) {
+  const q = Math.max(0, Math.floor(Number(quantity || 0)));
+  if (q <= 0) return;
+  if (restoreCarats != null && Number.isFinite(Number(restoreCarats)) && Number(restoreCarats) > 0) {
+    const ct = roundCarats(restoreCarats);
+    await dbRun(
+      `
+      UPDATE inventory_items
+      SET
+        pieces_remaining = pieces_remaining + ?,
+        weight_carats = ROUND(IFNULL(weight_carats, 0) + ?, 3),
+        status = CASE WHEN (pieces_remaining + ?) > 0 THEN 'Available' ELSE status END,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `,
+      [q, ct, q, inventoryItemId]
+    );
+    return;
+  }
+  await dbRun(
+    `
+    UPDATE inventory_items
+    SET
+      pieces_remaining = pieces_remaining + ?,
+      status = CASE WHEN (pieces_remaining + ?) > 0 THEN 'Available' ELSE status END,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `,
+    [q, q, inventoryItemId]
+  );
+}
+
 function normalizeCurrencyCode(raw) {
   const code = String(raw == null || raw === '' ? 'THB' : raw)
     .trim()
@@ -204,6 +389,84 @@ function roundMoney2(n) {
   const x = Number(n);
   if (!Number.isFinite(x)) return 0;
   return Math.round(x * 100) / 100;
+}
+
+const VALID_PAYMENT_METHODS = ['Cash', 'Card', 'QR', 'BankTransfer'];
+
+function invoiceStatusFromPaid(paidRaw, total) {
+  const totalR = roundMoney2(total);
+  const paid = roundMoney2(Math.min(paidRaw, totalR));
+  if (paidRaw >= totalR - 0.005) return { status: 'Paid', paid };
+  if (paidRaw > 0.005) return { status: 'Partial', paid };
+  return { status: 'Unpaid', paid: 0 };
+}
+
+/** Parse optional payment_mode + payments[] on invoice create / memo convert. */
+function parseInitialInvoicePayments(body, total) {
+  const rawMode = String(body?.payment_mode || 'later').trim().toLowerCase();
+  const mode = rawMode === 'full' || rawMode === 'partial' || rawMode === 'later' ? rawMode : 'later';
+  const totalR = roundMoney2(total);
+
+  if (mode === 'later') {
+    return { mode, payments: [], status: 'Unpaid', paid: 0 };
+  }
+
+  const rows = Array.isArray(body?.payments) ? body.payments : [];
+  if (!rows.length) {
+    throw new Error('At least one payment is required when paying now');
+  }
+
+  const payments = [];
+  let paidSum = 0;
+  for (const row of rows) {
+    const method = String(row?.method || '').trim();
+    if (!VALID_PAYMENT_METHODS.includes(method)) {
+      throw new Error(`Invalid payment method: ${method || '(empty)'}`);
+    }
+    const amount = roundMoney2(Number(row?.amount || 0));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error('Each payment amount must be greater than zero');
+    }
+    payments.push({ method, amount });
+    paidSum = roundMoney2(paidSum + amount);
+  }
+
+  if (mode === 'full') {
+    if (Math.abs(paidSum - totalR) > 0.01) {
+      throw new Error(`Pay-in-full requires payments to equal invoice total (${totalR})`);
+    }
+    return { mode, payments, status: 'Paid', paid: roundMoney2(Math.min(paidSum, totalR)) };
+  }
+
+  if (paidSum >= totalR - 0.005) {
+    throw new Error('Partial payment must be less than invoice total. Use pay in full instead.');
+  }
+  if (paidSum <= 0.005) {
+    throw new Error('Partial payment must be greater than zero');
+  }
+  return { mode, payments, status: 'Partial', paid: paidSum };
+}
+
+async function insertInvoicePayments(invoiceId, payments) {
+  for (const p of payments) {
+    await dbRun(
+      `
+      INSERT INTO payments (invoice_id, method, amount, note, created_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+    `,
+      [invoiceId, p.method, p.amount, null]
+    );
+  }
+  if (!payments.length) return [];
+  return dbAll(
+    `
+    SELECT id, invoice_id, method, amount, note, created_at
+    FROM payments
+    WHERE invoice_id = ?
+    ORDER BY id ASC
+  `,
+    [invoiceId]
+  );
 }
 
 function roundRate6(n) {
@@ -227,8 +490,37 @@ const SQL_THB_PER_INVITEM = `COALESCE(er_inv.thb_per_unit, 1.0)`;
 const SQL_INV_LINE_REMAINING_QTY = `CASE WHEN IFNULL(ii.quantity, 0) > IFNULL(ii.returned_qty, 0) THEN ii.quantity - ii.returned_qty ELSE 0 END`;
 /** Remaining native line value after returns, proportional to original line_total. */
 const SQL_INV_LINE_REMAINING_NATIVE = `CASE WHEN IFNULL(ii.quantity, 0) > 0 THEN IFNULL(ii.line_total, 0) * (${SQL_INV_LINE_REMAINING_QTY} * 1.0 / ii.quantity) ELSE 0 END`;
-/** COGS: purchasing_total_price is stored in same currency as list price (`selling_currency`), not invoice currency. */
-const SQL_LINE_PURCH_COST_THB = `(${SQL_INV_LINE_REMAINING_QTY} * IFNULL(inv.purchasing_total_price, 0) * ${SQL_THB_PER_INVITEM})`;
+/** Lot piece count for prorating lot-level purchase cost (never zero). */
+const SQL_LOT_PIECES_DIVISOR = `CASE WHEN IFNULL(inv.pieces, 0) > 0 THEN inv.pieces ELSE 1 END`;
+/** Carats still on the line after returns (proportional to returned pieces). */
+const SQL_INV_LINE_REMAINING_CARATS = `CASE
+  WHEN ii.weight_carats IS NOT NULL AND IFNULL(ii.quantity, 0) > 0
+  THEN ii.weight_carats * (${SQL_INV_LINE_REMAINING_QTY} * 1.0 / ii.quantity)
+  ELSE NULL
+END`;
+/** Live-inventory fallback when invoice line has no cost snapshot (legacy rows). */
+const SQL_LINE_PURCH_COST_LEGACY_NATIVE = `CASE
+  WHEN IFNULL(inv.purchasing_carat_price, 0) > 0
+    AND (${SQL_INV_LINE_REMAINING_CARATS}) IS NOT NULL
+    AND (${SQL_INV_LINE_REMAINING_CARATS}) > 0
+    AND NOT (IFNULL(inv.pieces, 0) <= 1 AND LOWER(TRIM(IFNULL(inv.item_type, ''))) IN ('cut single', 'rough single'))
+  THEN (${SQL_INV_LINE_REMAINING_CARATS}) * inv.purchasing_carat_price
+  WHEN IFNULL(inv.purchasing_total_price, 0) > 0
+    AND (${SQL_INV_LINE_REMAINING_CARATS}) IS NOT NULL
+    AND (${SQL_INV_LINE_REMAINING_CARATS}) > 0
+    AND NOT (IFNULL(inv.pieces, 0) <= 1 AND LOWER(TRIM(IFNULL(inv.item_type, ''))) IN ('cut single', 'rough single'))
+    AND (IFNULL((${SQL_INV_LINE_REMAINING_CARATS}), 0) + IFNULL(inv.weight_carats, 0)) > 0
+  THEN inv.purchasing_total_price * ((${SQL_INV_LINE_REMAINING_CARATS}) / ((${SQL_INV_LINE_REMAINING_CARATS}) + IFNULL(inv.weight_carats, 0)))
+  ELSE (${SQL_INV_LINE_REMAINING_QTY} * IFNULL(inv.purchasing_total_price, 0) / ${SQL_LOT_PIECES_DIVISOR})
+END`;
+/** Remaining purchase cost on line: snapshot at sale, prorated after returns; else legacy formula. */
+const SQL_INV_LINE_REMAINING_COST_NATIVE = `CASE
+  WHEN IFNULL(ii.quantity, 0) > 0 AND ii.cost_total IS NOT NULL
+  THEN IFNULL(ii.cost_total, 0) * (${SQL_INV_LINE_REMAINING_QTY} * 1.0 / ii.quantity)
+  ELSE (${SQL_LINE_PURCH_COST_LEGACY_NATIVE})
+END`;
+/** COGS in THB: snapshot or legacy native cost × inventory currency rate. */
+const SQL_LINE_PURCH_COST_THB = `((${SQL_INV_LINE_REMAINING_COST_NATIVE}) * ${SQL_THB_PER_INVITEM})`;
 /** Per-invoice paid sum, cents-rounded (stable balance vs payment rows). Alias `ip`. */
 const SQL_PAYMENTS_AGG_IP = `(SELECT invoice_id, ROUND(SUM(amount), 2) AS paid FROM payments GROUP BY invoice_id) ip`;
 /** Same subquery with alias `p` for queries that join as `p`. */
@@ -259,6 +551,22 @@ const sqlInvLineThbGrossRow = () => `ROUND((${SQL_INV_LINE_NET}) * ${SQL_THB_PER
 
 /** Memo line: proportional `line_total` for pieces still on memo (not returned). Alias `mi`. */
 const SQL_MEMO_LINE_REMAINING_VALUE = `CASE WHEN IFNULL(mi.quantity, 0) > IFNULL(mi.returned_qty, 0) AND mi.quantity > 0 THEN IFNULL(mi.line_total, 0) * (mi.quantity - mi.returned_qty) * 1.0 / mi.quantity ELSE 0 END`;
+
+/**
+ * List value of stock on hand for one inventory row.
+ * Carat lots: remaining ct × selling_carat_price; multi-pc lots: prorate selling_total_price by pcs left.
+ */
+const sqlInventoryStockValueRow = (alias = 'i') => {
+  const a = alias;
+  return `CASE
+    WHEN IFNULL(${a}.pieces_remaining, 0) <= 0 THEN 0
+    WHEN IFNULL(${a}.selling_carat_price, 0) > 0 AND IFNULL(${a}.weight_carats, 0) > 0
+      THEN ROUND(${a}.weight_carats * ${a}.selling_carat_price, 2)
+    WHEN IFNULL(${a}.pieces, 0) > 1
+      THEN ROUND(IFNULL(${a}.selling_total_price, 0) * (${a}.pieces_remaining * 1.0 / ${a}.pieces), 2)
+    ELSE ROUND(IFNULL(${a}.selling_total_price, 0), 2)
+  END`;
+};
 
 // ===== DB schema =====
 db.serialize(() => {
@@ -426,6 +734,9 @@ db.serialize(() => {
 
   ensureColumn('memo_items', 'returned_qty', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('invoice_items', 'returned_qty', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('invoice_items', 'weight_carats', 'REAL');
+  ensureColumn('invoice_items', 'cost_total', 'REAL');
+  ensureColumn('memo_items', 'weight_carats', 'REAL');
 
   // Internal: thb_per_unit = THB per 1 unit of each ISO code (bridge for SQL + convertAmountViaThb).
   // Profile UI is USD-centric; client derives these values from USD anchor + per-currency USD rates.
@@ -589,6 +900,161 @@ const dbAll = (sql, params = []) =>
     });
   });
 
+const INVENTORY_LINE_STOCK_SQL = `id, pieces, pieces_remaining, status, category, item_type, weight_grams, weight_carats,
+  purchasing_total_price, purchasing_carat_price, item_code, item_sticker, description`;
+
+/** One-time / startup: snapshot purchase cost on invoice lines created before cost_total existed. */
+async function backfillInvoiceItemCostSnapshots() {
+  try {
+    await dbRun(`ALTER TABLE invoice_items ADD COLUMN cost_total REAL`).catch(err => {
+      if (!String(err?.message || '').includes('duplicate column')) throw err;
+    });
+    const rows = await dbAll(`
+      SELECT
+        ii.id,
+        ii.quantity,
+        ii.weight_carats AS line_carats,
+        inv.pieces,
+        inv.pieces_remaining,
+        inv.item_type,
+        inv.weight_carats AS inv_weight_carats,
+        inv.purchasing_total_price,
+        inv.purchasing_carat_price
+      FROM invoice_items ii
+      JOIN inventory_items inv ON inv.id = ii.inventory_item_id
+      WHERE ii.cost_total IS NULL
+    `);
+    if (!rows.length) return;
+    for (const row of rows) {
+      const stockRow = {
+        pieces: row.pieces,
+        pieces_remaining: row.pieces_remaining,
+        item_type: row.item_type,
+        weight_carats: row.inv_weight_carats,
+        purchasing_total_price: row.purchasing_total_price,
+        purchasing_carat_price: row.purchasing_carat_price,
+      };
+      const lineCarats = row.line_carats;
+      const lotCaratsBefore =
+        lineCarats != null && Number(lineCarats) > 0
+          ? (Number(row.inv_weight_carats) || 0) + Number(lineCarats)
+          : undefined;
+      const costTotal = computeLinePurchaseCostNative(stockRow, row.quantity, lineCarats, {
+        lotCaratsBeforeSale: lotCaratsBefore > 0 ? lotCaratsBefore : undefined,
+      });
+      await dbRun('UPDATE invoice_items SET cost_total = ? WHERE id = ?', [costTotal, row.id]);
+    }
+    console.log(`Backfilled purchase cost snapshot on ${rows.length} invoice line(s).`);
+  } catch (e) {
+    console.error('Invoice line cost backfill failed', e);
+  }
+}
+
+backfillInvoiceItemCostSnapshots();
+
+function monthDateRangeYmd(year, month) {
+  const ym = `${year}-${String(month).padStart(2, '0')}`;
+  const from = `${ym}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const to = `${ym}-${String(lastDay).padStart(2, '0')}`;
+  return { from, to, ym };
+}
+
+/** Items added in [from, to] with invoice sales in the same window (THB aggregates). */
+async function buildNewItemsSalesReport(from, to) {
+  const dateWhereInvAdded = 'date(inv.created_at) BETWEEN date(?) AND date(?)';
+  const dateWhereInvoices = 'date(i.created_at) BETWEEN date(?) AND date(?)';
+
+  const salesSubquery = `
+    SELECT
+      inv.id AS inventory_item_id,
+      IFNULL(SUM(ii.quantity), 0) AS qty_sold,
+      IFNULL(SUM((${SQL_INV_LINE_NET}) * ${SQL_THB_PER_INV}), 0) AS sales_value,
+      IFNULL(SUM(${SQL_LINE_PURCH_COST_THB}), 0) AS cost_total,
+      IFNULL(SUM((${SQL_INV_LINE_NET}) * ${SQL_THB_PER_INV} - ${SQL_LINE_PURCH_COST_THB}), 0) AS profit_value
+    FROM inventory_items inv
+    JOIN invoice_items ii ON ii.inventory_item_id = inv.id
+    JOIN invoices i ON i.id = ii.invoice_id
+    ${SQL_INV_LINES_SUM_JOIN}
+    ${SQL_INV_FX_JOIN}
+    ${SQL_INVITEM_FX_JOIN}
+    WHERE ${dateWhereInvAdded}
+      AND ${dateWhereInvoices}
+    GROUP BY inv.id
+  `;
+
+  const memoSubquery = `
+    SELECT
+      mi.inventory_item_id,
+      SUM(
+        CASE
+          WHEN IFNULL(mi.quantity, 0) > IFNULL(mi.returned_qty, 0)
+          THEN mi.quantity - mi.returned_qty
+          ELSE 0
+        END
+      ) AS memo_out_qty
+    FROM memo_items mi
+    JOIN memos m ON m.id = mi.memo_id
+    WHERE m.status IN ('Open', 'Partially Returned')
+    GROUP BY mi.inventory_item_id
+  `;
+
+  const sql = `
+    SELECT
+      inv.id AS inventory_item_id,
+      COALESCE(inv.item_code, inv.item_sticker) AS item_code,
+      inv.category,
+      inv.item_type,
+      inv.description,
+      inv.created_at AS added_at,
+      inv.pieces AS pieces_added,
+      inv.pieces_remaining AS pieces_remaining,
+      inv.status,
+      IFNULL(memo_o.memo_out_qty, 0) AS memo_out_qty,
+      IFNULL(sales.qty_sold, 0) AS qty_sold,
+      IFNULL(sales.sales_value, 0) AS sales_value,
+      IFNULL(sales.sales_value, 0) AS revenue_thb,
+      IFNULL(sales.cost_total, 0) AS cost_total,
+      IFNULL(sales.profit_value, 0) AS profit_value
+    FROM inventory_items inv
+    LEFT JOIN (${salesSubquery}) sales ON sales.inventory_item_id = inv.id
+    LEFT JOIN (${memoSubquery}) memo_o ON memo_o.inventory_item_id = inv.id
+    WHERE ${dateWhereInvAdded}
+    ORDER BY inv.created_at DESC, sales_value DESC, inv.id DESC
+  `;
+
+  const params = [from, to, from, to, from, to];
+  const list = (await dbAll(sql, params)) || [];
+
+  let qty_sold = 0;
+  let sales_value = 0;
+  let cost_total = 0;
+  let profit_value = 0;
+  let items_with_sales = 0;
+  for (const r of list) {
+    const q = Number(r.qty_sold) || 0;
+    qty_sold += q;
+    sales_value += Number(r.sales_value) || 0;
+    cost_total += Number(r.cost_total) || 0;
+    profit_value += Number(r.profit_value) || 0;
+    if (q > 0) items_with_sales += 1;
+  }
+
+  return {
+    range: { from, to },
+    summary: {
+      items_added: list.length,
+      items_with_sales,
+      qty_sold,
+      sales_value,
+      cost_total,
+      profit_value,
+      profit_margin_pct: sales_value > 0 ? Math.round((profit_value / sales_value) * 10000) / 100 : 0,
+    },
+    rows: list,
+  };
+}
+
 async function buildInventoryMonthlyReport(year, month) {
   const nowY = new Date().getFullYear();
   if (!Number.isFinite(year) || year < 2000 || year > nowY + 5) {
@@ -621,7 +1087,8 @@ async function buildInventoryMonthlyReport(year, month) {
         IFNULL(memo_o.memo_out_qty, 0) AS memo_out_qty,
         IFNULL(memo_o.memo_item_notes, '') AS memo_item_notes,
         IFNULL(rev_m.rev_thb, 0) AS revenue_thb,
-        ROUND(i.pieces_remaining * IFNULL(i.selling_total_price, 0), 2) AS stock_value_usd
+        IFNULL(cost_m.cost_thb, 0) AS cost_thb,
+        ${sqlInventoryStockValueRow('i')} AS stock_value_usd
       FROM inventory_items i
       LEFT JOIN (
         SELECT inventory_item_id, SUM(qty_change) AS sum_q
@@ -727,10 +1194,23 @@ async function buildInventoryMonthlyReport(year, month) {
           AND strftime('%Y-%m', sm.created_at) = ?
         GROUP BY sm.inventory_item_id
       ) rev_m ON rev_m.inventory_item_id = i.id
+      LEFT JOIN (
+        SELECT
+          inv.id AS inventory_item_id,
+          IFNULL(SUM(${SQL_LINE_PURCH_COST_THB}), 0) AS cost_thb
+        FROM invoices i
+        JOIN invoice_items ii ON ii.invoice_id = i.id
+        JOIN inventory_items inv ON inv.id = ii.inventory_item_id
+        ${SQL_INV_LINES_SUM_JOIN}
+        ${SQL_INV_FX_JOIN}
+        ${SQL_INVITEM_FX_JOIN}
+        WHERE strftime('%Y-%m', i.created_at) = ?
+        GROUP BY inv.id
+      ) cost_m ON cost_m.inventory_item_id = i.id
       ORDER BY i.category ASC, i.item_code ASC, i.id ASC
     `;
 
-  const rows = await dbAll(sql, [year, month, ym, ym, ym, ym, ym]);
+  const rows = await dbAll(sql, [year, month, ym, ym, ym, ym, ym, ym]);
 
   const erUsdRow = await dbGet(`SELECT thb_per_unit FROM exchange_rates WHERE currency_code = 'USD'`);
   const thbPerUsd = erUsdRow && Number(erUsdRow.thb_per_unit) > 0 ? Number(erUsdRow.thb_per_unit) : null;
@@ -749,6 +1229,8 @@ async function buildInventoryMonthlyReport(year, month) {
     const restocked = Math.max(0, Math.round(Number(r.restocked) || 0));
     const unit_price = Number(r.unit_price);
     const revenueThb = Math.round((Number(r.revenue_thb) || 0) * 100) / 100;
+    const costThb = Math.round((Number(r.cost_thb) || 0) * 100) / 100;
+    const profitThb = Math.round((revenueThb - costThb) * 100) / 100;
     const stockValueUsd = Math.round((Number(r.stock_value_usd) || 0) * 100) / 100;
     return {
       id: r.id,
@@ -768,6 +1250,10 @@ async function buildInventoryMonthlyReport(year, month) {
       selling_currency: r.selling_currency || 'THB',
       revenue_thb: revenueThb,
       revenue_usd: thbToUsd(revenueThb),
+      cost_thb: costThb,
+      cost_usd: thbToUsd(costThb),
+      profit_thb: profitThb,
+      profit_usd: thbToUsd(profitThb),
       stock_value: stockValueUsd,
       stock_value_usd: stockValueUsd,
       // Backward-compatible alias for older clients.
@@ -782,6 +1268,12 @@ async function buildInventoryMonthlyReport(year, month) {
   const totalRevenueUsdFromRows =
     thbPerUsd != null && thbPerUsd > 0
       ? Math.round(items.reduce((s, i) => s + (Number(i.revenue_usd) || 0), 0) * 100) / 100
+      : null;
+  const totalCostThb = Math.round(items.reduce((s, i) => s + i.cost_thb, 0) * 100) / 100;
+  const totalProfitThb = Math.round(items.reduce((s, i) => s + i.profit_thb, 0) * 100) / 100;
+  const totalProfitUsdFromRows =
+    thbPerUsd != null && thbPerUsd > 0
+      ? Math.round(items.reduce((s, i) => s + (Number(i.profit_usd) || 0), 0) * 100) / 100
       : null;
   const totalStockValueUsd = Math.round(items.reduce((s, i) => s + i.stock_value_usd, 0) * 100) / 100;
   const noMovement = items.filter(i => i.sold === 0 && i.returned === 0).length;
@@ -803,6 +1295,9 @@ async function buildInventoryMonthlyReport(year, month) {
       totalRevenueThb,
       /** Sum of per-line USD (matches Revenue column rounding); falls back to THB aggregate if no FX. */
       totalRevenueUsd: totalRevenueUsdFromRows != null ? totalRevenueUsdFromRows : thbToUsd(totalRevenueThb),
+      totalCostThb,
+      totalProfitThb,
+      totalProfitUsd: totalProfitUsdFromRows != null ? totalProfitUsdFromRows : thbToUsd(totalProfitThb),
       stockValue: totalStockValueUsd,
       stockValueUsd: totalStockValueUsd,
       // Backward-compatible alias for older clients.
@@ -1112,6 +1607,11 @@ function openMainDatabase() {
 }
 
 // ===== Routes =====
+/** Owner/staff: check whether this PC can sync to Firestore (credentials + env). */
+app.get('/api/cloud/sync-status', authMiddleware, requireRole(['owner', 'staff']), (_req, res) => {
+  res.json(getCloudSyncConfigStatus());
+});
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
@@ -2309,7 +2809,7 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
 
       const stockRow = await dbGet(
         `
-        SELECT id, pieces_remaining, status, category, item_type, weight_grams, weight_carats,
+        SELECT id, pieces, pieces_remaining, status, category, item_type, weight_grams, weight_carats,
                item_code, item_sticker, description
         FROM inventory_items
         WHERE id = ?
@@ -2329,35 +2829,36 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
       }
 
       const description = buildInventoryLineDescription(stockRow, reqDesc);
+      const soldResolved = resolveSoldCaratsForStockOut(stockRow, quantity, it.weight_carats);
+      if (soldResolved.error) throw new Error(soldResolved.error);
+      const soldCarats = soldResolved.soldCarats;
 
       await dbRun(
         `
         INSERT INTO memo_items (
-          memo_id, inventory_item_id, item_code, description, quantity, returned_qty, unit_price, line_total
+          memo_id, inventory_item_id, item_code, description, quantity, returned_qty, unit_price, line_total, weight_carats
         )
-        VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
       `,
-        [memoId, inventoryItemId, itemCode, description, quantity, unitPrice, lineTotal]
+        [memoId, inventoryItemId, itemCode, description, quantity, unitPrice, lineTotal, soldCarats]
       );
 
-      await dbRun(
-        `
-        UPDATE inventory_items
-        SET
-          pieces_remaining = MAX(0, pieces_remaining - ?),
-          status = CASE WHEN MAX(0, pieces_remaining - ?) <= 0 THEN 'Out of stock' ELSE 'Available' END,
-          updated_at = datetime('now')
-        WHERE id = ?
-      `,
-        [quantity, quantity, inventoryItemId]
-      );
+      await stockOutInventory(inventoryItemId, quantity, soldCarats);
 
       await dbRun(
         `
         INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
         VALUES (?, 'MEMO_OUT', 'MEMO', ?, ?, ?, ?)
       `,
-        [inventoryItemId, memoId, -quantity, `On memo ${memoNo} (${quantity} pc)`, req.user.id]
+        [
+          inventoryItemId,
+          memoId,
+          -quantity,
+          soldCarats != null
+            ? `On memo ${memoNo} (${quantity} pc, ${soldCarats} ct)`
+            : `On memo ${memoNo} (${quantity} pc)`,
+          req.user.id,
+        ]
       );
     }
 
@@ -2433,7 +2934,8 @@ app.get('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), (req,
       inv.item_code AS inv_item_code,
       inv.item_sticker AS inv_item_sticker,
       inv.weight_grams,
-      inv.weight_carats,
+      COALESCE(mi.weight_carats, inv.weight_carats) AS weight_carats,
+      mi.weight_carats AS line_weight_carats,
       inv.description AS inventory_description
     FROM memo_items mi
     LEFT JOIN inventory_items inv ON inv.id = mi.inventory_item_id
@@ -2460,7 +2962,10 @@ app.get('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), (req,
         category: row.inv_category,
         item_type: row.inv_item_type,
         weight_grams: row.weight_grams,
-        weight_carats: row.weight_carats,
+        weight_carats:
+          row.line_weight_carats != null && Number.isFinite(Number(row.line_weight_carats))
+            ? Number(row.line_weight_carats)
+            : row.weight_carats,
       }));
       res.json({ ...memoRow, items: itemsOut });
     });
@@ -2565,23 +3070,22 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
         const rqDel = Math.floor(Number(line.returned_qty || 0));
         const out = Math.max(0, qDel - rqDel);
         if (out > 0) {
-          await dbRun(
-            `
-            UPDATE inventory_items
-            SET
-              pieces_remaining = pieces_remaining + ?,
-              status = CASE WHEN (pieces_remaining + ?) > 0 THEN 'Available' ELSE status END,
-              updated_at = datetime('now')
-            WHERE id = ?
-          `,
-            [out, out, line.inventory_item_id]
-          );
+          const restoreCarats = caratsToRestoreForQty(line.weight_carats, qDel, out);
+          await stockInInventory(line.inventory_item_id, out, restoreCarats);
           await dbRun(
             `
             INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
             VALUES (?, 'MEMO_VOID', 'MEMO', ?, ?, ?, ?)
           `,
-            [line.inventory_item_id, memoId, out, `Memo ${memoNo} line removed — restocked ${out} pc(s)`, req.user.id]
+            [
+              line.inventory_item_id,
+              memoId,
+              out,
+              restoreCarats != null
+                ? `Memo ${memoNo} line removed — restocked ${out} pc(s), ${restoreCarats} ct`
+                : `Memo ${memoNo} line removed — restocked ${out} pc(s)`,
+              req.user.id,
+            ]
           );
         }
         await dbRun(`DELETE FROM memo_items WHERE id = ? AND memo_id = ?`, [line.id, memoId]);
@@ -2635,34 +3139,45 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
               error: `Quantity cannot be less than returned quantity (${oldR}) on this line`,
             });
           }
+          const stockRow2 = await dbGet(
+            `
+            SELECT id, pieces_remaining, status, category, item_type, weight_grams, weight_carats, pieces,
+                   item_code, item_sticker, description
+            FROM inventory_items
+            WHERE id = ?
+          `,
+            [invId]
+          );
+          if (!stockRow2) {
+            await dbRun('ROLLBACK');
+            return res.status(400).json({ error: `Inventory item ${invId} not found` });
+          }
+
           const delta = newQ - oldQ;
-          if (delta > 0) {
-            const stockRow = await dbGet(
-              `SELECT id, pieces_remaining, status, item_code, item_sticker FROM inventory_items WHERE id = ?`,
-              [invId]
-            );
-            if (!stockRow) {
+          const oldLineCarats = row.weight_carats != null ? Number(row.weight_carats) : null;
+          let newLineCarats = oldLineCarats;
+          if (newQ !== oldQ) {
+            const soldResolved = resolveSoldCaratsForStockOut(stockRow2, newQ, it.weight_carats);
+            if (soldResolved.error) {
               await dbRun('ROLLBACK');
-              return res.status(400).json({ error: `Inventory item ${invId} not found` });
+              return res.status(400).json({ error: soldResolved.error });
             }
-            const rem = Math.floor(Number(stockRow.pieces_remaining || 0));
+            newLineCarats = soldResolved.soldCarats;
+          }
+
+          if (delta > 0) {
+            const rem = Math.floor(Number(stockRow2.pieces_remaining || 0));
             if (rem < delta) {
               await dbRun('ROLLBACK');
               return res.status(400).json({
-                error: `Not enough pieces for ${stockRow.item_code || stockRow.item_sticker || `#${invId}`}: need ${delta} more, ${rem} available`,
+                error: `Not enough pieces for ${stockRow2.item_code || stockRow2.item_sticker || `#${invId}`}: need ${delta} more, ${rem} available`,
               });
             }
-            await dbRun(
-              `
-              UPDATE inventory_items
-              SET
-                pieces_remaining = pieces_remaining - ?,
-                status = CASE WHEN (pieces_remaining - ?) <= 0 THEN 'Out of stock' ELSE 'Available' END,
-                updated_at = datetime('now')
-              WHERE id = ?
-            `,
-              [delta, delta, invId]
-            );
+            const addCarats =
+              newLineCarats != null && oldLineCarats != null
+                ? roundCarats(Number(newLineCarats) - Number(oldLineCarats))
+                : newLineCarats;
+            await stockOutInventory(invId, delta, addCarats != null && addCarats > 0 ? addCarats : null);
             await dbRun(
               `
               INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
@@ -2672,29 +3187,33 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
                 invId,
                 memoId,
                 -delta,
-                `Memo ${memoNo} line qty +${delta} pc (${newQ} total)`,
+                addCarats != null && addCarats > 0
+                  ? `Memo ${memoNo} line qty +${delta} pc (${newQ} total, +${addCarats} ct)`
+                  : `Memo ${memoNo} line qty +${delta} pc (${newQ} total)`,
                 req.user.id,
               ]
             );
           } else if (delta < 0) {
             const back = -delta;
-            await dbRun(
-              `
-              UPDATE inventory_items
-              SET
-                pieces_remaining = pieces_remaining + ?,
-                status = CASE WHEN (pieces_remaining + ?) > 0 THEN 'Available' ELSE status END,
-                updated_at = datetime('now')
-              WHERE id = ?
-            `,
-              [back, back, invId]
-            );
+            const restoreCt =
+              newLineCarats != null && oldLineCarats != null
+                ? roundCarats(Number(oldLineCarats) - Number(newLineCarats))
+                : caratsToRestoreForQty(oldLineCarats, oldQ, back);
+            await stockInInventory(invId, back, restoreCt);
             await dbRun(
               `
               INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
               VALUES (?, 'MEMO_RETURN', 'MEMO', ?, ?, ?, ?)
             `,
-              [invId, memoId, back, `Memo ${memoNo} line qty reduced (${newQ} total)`, req.user.id]
+              [
+                invId,
+                memoId,
+                back,
+                restoreCt != null
+                  ? `Memo ${memoNo} line qty reduced (${newQ} total, ${restoreCt} ct)`
+                  : `Memo ${memoNo} line qty reduced (${newQ} total)`,
+                req.user.id,
+              ]
             );
           }
 
@@ -2702,25 +3221,16 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
           const lineTotal = Math.max(0, lineGross - Math.min(disc, lineGross));
           const reqCode = it.item_code != null ? String(it.item_code).trim() || null : null;
           const reqDesc = it.description != null ? String(it.description) : null;
-          const stockRow2 = await dbGet(
-            `
-            SELECT id, pieces_remaining, status, category, item_type, weight_grams, weight_carats,
-                   item_code, item_sticker, description
-            FROM inventory_items
-            WHERE id = ?
-          `,
-            [invId]
-          );
           const itemCode = reqCode || stockRow2.item_code || stockRow2.item_sticker || row.item_code;
           const description = buildInventoryLineDescription(stockRow2, reqDesc);
 
           await dbRun(
             `
             UPDATE memo_items
-            SET item_code = ?, description = ?, quantity = ?, unit_price = ?, line_total = ?
+            SET item_code = ?, description = ?, quantity = ?, unit_price = ?, line_total = ?, weight_carats = ?
             WHERE id = ? AND memo_id = ?
           `,
-            [itemCode, description, newQ, newP, lineTotal, mid, memoId]
+            [itemCode, description, newQ, newP, lineTotal, newLineCarats, mid, memoId]
           );
         } else {
           const reqCode = it.item_code != null ? String(it.item_code).trim() || null : null;
@@ -2728,7 +3238,7 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
 
           const stockRow = await dbGet(
             `
-            SELECT id, pieces_remaining, status, category, item_type, weight_grams, weight_carats,
+            SELECT id, pieces, pieces_remaining, status, category, item_type, weight_grams, weight_carats,
                    item_code, item_sticker, description
             FROM inventory_items
             WHERE id = ?
@@ -2755,35 +3265,39 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
           const description = buildInventoryLineDescription(stockRow, reqDesc);
           const lineGrossNew = newP * newQ;
           const lineTotal = Math.max(0, lineGrossNew - Math.min(disc, lineGrossNew));
+          const soldResolved = resolveSoldCaratsForStockOut(stockRow, newQ, it.weight_carats);
+          if (soldResolved.error) {
+            await dbRun('ROLLBACK');
+            return res.status(400).json({ error: soldResolved.error });
+          }
+          const soldCarats = soldResolved.soldCarats;
 
           await dbRun(
             `
             INSERT INTO memo_items (
-              memo_id, inventory_item_id, item_code, description, quantity, returned_qty, unit_price, line_total
+              memo_id, inventory_item_id, item_code, description, quantity, returned_qty, unit_price, line_total, weight_carats
             )
-            VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
           `,
-            [memoId, invId, itemCode, description, newQ, newP, lineTotal]
+            [memoId, invId, itemCode, description, newQ, newP, lineTotal, soldCarats]
           );
 
-          await dbRun(
-            `
-            UPDATE inventory_items
-            SET
-              pieces_remaining = MAX(0, pieces_remaining - ?),
-              status = CASE WHEN MAX(0, pieces_remaining - ?) <= 0 THEN 'Out of stock' ELSE 'Available' END,
-              updated_at = datetime('now')
-            WHERE id = ?
-          `,
-            [newQ, newQ, invId]
-          );
+          await stockOutInventory(invId, newQ, soldCarats);
 
           await dbRun(
             `
             INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
             VALUES (?, 'MEMO_OUT', 'MEMO', ?, ?, ?, ?)
           `,
-            [invId, memoId, -newQ, `On memo ${memoNo} (${newQ} pc) — added while editing`, req.user.id]
+            [
+              invId,
+              memoId,
+              -newQ,
+              soldCarats != null
+                ? `On memo ${memoNo} (${newQ} pc, ${soldCarats} ct) — added while editing`
+                : `On memo ${memoNo} (${newQ} pc) — added while editing`,
+              req.user.id,
+            ]
           );
         }
       }
@@ -2853,7 +3367,7 @@ app.delete('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), as
     }
 
     const lines = await dbAll(
-      `SELECT inventory_item_id, quantity, IFNULL(returned_qty, 0) AS returned_qty FROM memo_items WHERE memo_id = ?`,
+      `SELECT inventory_item_id, quantity, IFNULL(returned_qty, 0) AS returned_qty, weight_carats FROM memo_items WHERE memo_id = ?`,
       [memoId]
     );
     const memoNo = String(memo.memo_no || `MEM-${memoId}`);
@@ -2865,23 +3379,22 @@ app.delete('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), as
       const rq = Math.floor(Number(line.returned_qty || 0));
       const out = Math.max(0, q - rq);
       if (out <= 0) continue;
-      await dbRun(
-        `
-        UPDATE inventory_items
-        SET
-          pieces_remaining = pieces_remaining + ?,
-          status = CASE WHEN (pieces_remaining + ?) > 0 THEN 'Available' ELSE status END,
-          updated_at = datetime('now')
-        WHERE id = ?
-      `,
-        [out, out, line.inventory_item_id]
-      );
+      const restoreCarats = caratsToRestoreForQty(line.weight_carats, q, out);
+      await stockInInventory(line.inventory_item_id, out, restoreCarats);
       await dbRun(
         `
         INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
         VALUES (?, 'MEMO_VOID', 'MEMO', ?, ?, ?, ?)
       `,
-        [line.inventory_item_id, memoId, out, `Memo ${memoNo} deleted — restocked ${out} pc(s)`, req.user.id]
+        [
+          line.inventory_item_id,
+          memoId,
+          out,
+          restoreCarats != null
+            ? `Memo ${memoNo} deleted — restocked ${out} pc(s), ${restoreCarats} ct`
+            : `Memo ${memoNo} deleted — restocked ${out} pc(s)`,
+          req.user.id,
+        ]
       );
     }
 
@@ -2953,24 +3466,23 @@ app.post('/api/memos/:id/return', authMiddleware, requireRole(['owner', 'staff']
         [take, line.id, memoId]
       );
 
-      await dbRun(
-        `
-        UPDATE inventory_items
-        SET
-          pieces_remaining = pieces_remaining + ?,
-          status = CASE WHEN (pieces_remaining + ?) > 0 THEN 'Available' ELSE status END,
-          updated_at = datetime('now')
-        WHERE id = ?
-      `,
-        [take, take, line.inventory_item_id]
-      );
+      const restoreCarats = caratsToRestoreForQty(line.weight_carats, line.quantity, take);
+      await stockInInventory(line.inventory_item_id, take, restoreCarats);
 
       await dbRun(
         `
         INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
         VALUES (?, 'MEMO_RETURN', 'MEMO', ?, ?, ?, ?)
       `,
-        [line.inventory_item_id, memoId, take, `Returned to stock from ${memoNo}`, req.user.id]
+        [
+          line.inventory_item_id,
+          memoId,
+          take,
+          restoreCarats != null
+            ? `Returned to stock from ${memoNo} (${restoreCarats} ct)`
+            : `Returned to stock from ${memoNo}`,
+          req.user.id,
+        ]
       );
     }
 
@@ -3059,14 +3571,22 @@ app.post('/api/memos/:id/convert-to-invoice', authMiddleware, requireRole(['owne
       memo.customer_id == null || memo.customer_id === '' ? null : Number(memo.customer_id);
     const invCurrency = normalizeCurrencyCode(memo.currency_code);
 
+    let payPlan;
+    try {
+      payPlan = parseInitialInvoicePayments(req.body || {}, total);
+    } catch (payErr) {
+      const msg = payErr instanceof Error ? payErr.message : 'Invalid payment';
+      return res.status(400).json({ error: msg });
+    }
+
     await dbRun('BEGIN TRANSACTION');
 
     const invInsert = await dbRun(
       `
       INSERT INTO invoices (invoice_no, customer_id, subtotal, discount, total, status, currency_code, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'Unpaid', ?, datetime('now'), datetime('now'))
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `,
-      [null, customerId, subtotalGross, totalDiscount, total, invCurrency]
+      [null, customerId, subtotalGross, totalDiscount, total, payPlan.status, invCurrency]
     );
     const invoiceId = invInsert.lastID;
     const invoiceNo = await nextSerialDocNumber('INV', 'invoices', null);
@@ -3079,14 +3599,26 @@ app.post('/api/memos/:id/convert-to-invoice', authMiddleware, requireRole(['owne
       const lineNet =
         q > 0 ? (Number(l.line_total || 0) * rem) / q : 0;
       const lineTotalInv = Math.max(0, Math.round(lineNet * 100) / 100);
+      const lineCarats = caratsToRestoreForQty(l.weight_carats, q, rem);
+      const stockRow = await dbGet(
+        `SELECT ${INVENTORY_LINE_STOCK_SQL} FROM inventory_items WHERE id = ?`,
+        [l.inventory_item_id]
+      );
+      const lotCaratsBefore =
+        lineCarats != null && Number(lineCarats) > 0
+          ? (Number(stockRow?.weight_carats) || 0) + (Number(l.weight_carats) || 0)
+          : undefined;
+      const costTotal = computeLinePurchaseCostNative(stockRow || {}, rem, lineCarats, {
+        lotCaratsBeforeSale: lotCaratsBefore > 0 ? lotCaratsBefore : undefined,
+      });
       await dbRun(
         `
         INSERT INTO invoice_items (
-          invoice_id, inventory_item_id, item_code, description, quantity, unit_price, line_total
+          invoice_id, inventory_item_id, item_code, description, quantity, unit_price, line_total, weight_carats, cost_total
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
-        [invoiceId, l.inventory_item_id, l.item_code, l.description, rem, grossPc, lineTotalInv]
+        [invoiceId, l.inventory_item_id, l.item_code, l.description, rem, grossPc, lineTotalInv, lineCarats, costTotal]
       );
 
       /* Memo conversion: stock was already reduced when the memo went out. Record MEMO_VOID (+rem)
@@ -3143,6 +3675,8 @@ app.post('/api/memos/:id/convert-to-invoice', authMiddleware, requireRole(['owne
     }
 
     await dbRun(`UPDATE invoices SET invoice_no = ? WHERE id = ?`, [invoiceNo, invoiceId]);
+    const paymentsRecorded =
+      payPlan.payments.length ? await insertInvoicePayments(invoiceId, payPlan.payments) : [];
     await dbRun(
       `UPDATE memos SET converted_invoice_id = ?, status = 'Closed', updated_at = datetime('now') WHERE id = ?`,
       [invoiceId, memoId]
@@ -3150,11 +3684,25 @@ app.post('/api/memos/:id/convert-to-invoice', authMiddleware, requireRole(['owne
 
     await dbRun('COMMIT');
 
+    let customer_name = null;
+    if (customerId != null) {
+      const cRow = await dbGet('SELECT name FROM customers WHERE id = ?', [customerId]);
+      if (cRow && cRow.name != null && String(cRow.name).trim() !== '') {
+        customer_name = String(cRow.name).trim();
+      }
+    }
+
     return res.status(201).json({
       ok: true,
       invoice_id: invoiceId,
       invoice_no: invoiceNo,
       total,
+      paid: payPlan.paid,
+      status: payPlan.status,
+      customer_name,
+      currency_code: invCurrency,
+      created_at: new Date().toISOString(),
+      payments: paymentsRecorded,
     });
   } catch (err) {
     try {
@@ -3351,7 +3899,8 @@ app.get('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), (r
       inv.item_code AS inv_item_code,
       inv.item_sticker AS inv_item_sticker,
       inv.weight_grams AS weight_grams,
-      inv.weight_carats AS weight_carats,
+      COALESCE(ii.weight_carats, inv.weight_carats) AS weight_carats,
+      ii.weight_carats AS line_weight_carats,
       inv.description AS inventory_description
     FROM invoice_items ii
     LEFT JOIN inventory_items inv ON inv.id = ii.inventory_item_id
@@ -3384,7 +3933,10 @@ app.get('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), (r
         unit_price: row.unit_price,
         line_total: row.line_total,
         weight_grams: row.weight_grams,
-        weight_carats: row.weight_carats,
+        weight_carats:
+          row.line_weight_carats != null && Number.isFinite(Number(row.line_weight_carats))
+            ? Number(row.line_weight_carats)
+            : row.weight_carats,
         inv_category: row.inv_category,
         inv_item_type: row.inv_item_type,
         inventory_description: row.inventory_description,
@@ -3428,7 +3980,7 @@ app.post('/api/returns/from-invoice', authMiddleware, requireRole(['owner', 'sta
     if (!inv) return res.status(404).json({ error: 'Invoice not found' });
 
     const lines = await dbAll(
-      `SELECT id, invoice_id, inventory_item_id, quantity, IFNULL(returned_qty, 0) AS returned_qty, line_total
+      `SELECT id, invoice_id, inventory_item_id, quantity, IFNULL(returned_qty, 0) AS returned_qty, line_total, weight_carats
        FROM invoice_items WHERE invoice_id = ? ORDER BY id ASC`,
       [invoiceId]
     );
@@ -3463,24 +4015,23 @@ app.post('/api/returns/from-invoice', authMiddleware, requireRole(['owner', 'sta
         invoiceId,
       ]);
 
-      await dbRun(
-        `
-        UPDATE inventory_items
-        SET
-          pieces_remaining = pieces_remaining + ?,
-          status = CASE WHEN (pieces_remaining + ?) > 0 THEN 'Available' ELSE status END,
-          updated_at = datetime('now')
-        WHERE id = ?
-      `,
-        [take, take, line.inventory_item_id]
-      );
+      const restoreCarats = caratsToRestoreForQty(line.weight_carats, line.quantity, take);
+      await stockInInventory(line.inventory_item_id, take, restoreCarats);
 
       await dbRun(
         `
         INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
         VALUES (?, 'INVOICE_RETURN', 'INVOICE', ?, ?, ?, ?)
       `,
-        [line.inventory_item_id, invoiceId, take, `${note} (${invNo})`, req.user.id]
+        [
+          line.inventory_item_id,
+          invoiceId,
+          take,
+          restoreCarats != null
+            ? `${note} (${invNo}, ${restoreCarats} ct)`
+            : `${note} (${invNo})`,
+          req.user.id,
+        ]
       );
     }
 
@@ -3685,15 +4236,23 @@ app.post('/api/invoices', authMiddleware, requireRole(['owner', 'staff']), async
   const totalDiscount = Math.min(subtotal, itemsDiscountTotal + orderDiscount);
   const total = Math.max(0, subtotal - totalDiscount);
 
+  let payPlan;
+  try {
+    payPlan = parseInitialInvoicePayments(body, total);
+  } catch (payErr) {
+    const msg = payErr instanceof Error ? payErr.message : 'Invalid payment';
+    return res.status(400).json({ error: msg });
+  }
+
   try {
     await dbRun('BEGIN TRANSACTION');
 
     const invInsert = await dbRun(
       `
       INSERT INTO invoices (invoice_no, customer_id, subtotal, discount, total, status, currency_code, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'Unpaid', ?, datetime('now'), datetime('now'))
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `,
-      [null, customerId, subtotal, totalDiscount, total, currency_code]
+      [null, customerId, subtotal, totalDiscount, total, payPlan.status, currency_code]
     );
     const invoiceId = invInsert.lastID;
     const invoiceNo = await nextSerialDocNumber('INV', 'invoices', null);
@@ -3707,8 +4266,7 @@ app.post('/api/invoices', authMiddleware, requireRole(['owner', 'staff']), async
       const lineTotal = Math.max(0, lineGross - Math.min(discount, lineGross));
       const stockRow = await dbGet(
         `
-        SELECT id, pieces_remaining, status, category, item_type, weight_grams, weight_carats,
-               item_code, item_sticker, description
+        SELECT ${INVENTORY_LINE_STOCK_SQL}
         FROM inventory_items
         WHERE id = ?
       `,
@@ -3730,38 +4288,49 @@ app.post('/api/invoices', authMiddleware, requireRole(['owner', 'staff']), async
         );
       }
 
-      await dbRun(
-        `
-        INSERT INTO invoice_items (
-          invoice_id, inventory_item_id, item_code, description, quantity, unit_price, line_total
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `,
-        [invoiceId, inventoryItemId, itemCode, description, quantity, unitPrice, lineTotal]
-      );
+      const soldResolved = resolveSoldCaratsForStockOut(stockRow, quantity, it.weight_carats);
+      if (soldResolved.error) throw new Error(soldResolved.error);
+      const soldCarats = soldResolved.soldCarats;
+      const lotCaratsBefore =
+        soldCarats != null && Number(soldCarats) > 0
+          ? (Number(stockRow.weight_carats) || 0) + Number(soldCarats)
+          : undefined;
+      const costTotal = computeLinePurchaseCostNative(stockRow, quantity, soldCarats, {
+        lotCaratsBeforeSale: lotCaratsBefore > 0 ? lotCaratsBefore : undefined,
+      });
 
       await dbRun(
         `
-        UPDATE inventory_items
-        SET
-          pieces_remaining = MAX(0, pieces_remaining - ?),
-          status = CASE WHEN MAX(0, pieces_remaining - ?) <= 0 THEN 'Out of stock' ELSE 'Available' END,
-          updated_at = datetime('now')
-        WHERE id = ?
+        INSERT INTO invoice_items (
+          invoice_id, inventory_item_id, item_code, description, quantity, unit_price, line_total, weight_carats, cost_total
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
-        [quantity, quantity, inventoryItemId]
+        [invoiceId, inventoryItemId, itemCode, description, quantity, unitPrice, lineTotal, soldCarats, costTotal]
       );
+
+      await stockOutInventory(inventoryItemId, quantity, soldCarats);
 
       await dbRun(
         `
         INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
         VALUES (?, 'SALE', 'INVOICE', ?, ?, ?, ?)
       `,
-        [inventoryItemId, invoiceId, -quantity, `Sold ${quantity} pc(s) via ${invoiceNo}`, req.user.id]
+        [
+          inventoryItemId,
+          invoiceId,
+          -quantity,
+          soldCarats != null
+            ? `Sold ${quantity} pc(s), ${soldCarats} ct via ${invoiceNo}`
+            : `Sold ${quantity} pc(s) via ${invoiceNo}`,
+          req.user.id,
+        ]
       );
     }
 
     await dbRun(`UPDATE invoices SET invoice_no = ? WHERE id = ?`, [invoiceNo, invoiceId]);
+    const paymentsRecorded =
+      payPlan.payments.length ? await insertInvoicePayments(invoiceId, payPlan.payments) : [];
     await dbRun('COMMIT');
 
     let customer_name = null;
@@ -3777,13 +4346,14 @@ app.post('/api/invoices', authMiddleware, requireRole(['owner', 'staff']), async
       invoice_no: invoiceNo,
       customer_name,
       total,
-      paid: 0,
-      status: 'Unpaid',
+      paid: payPlan.paid,
+      status: payPlan.status,
       created_at: new Date().toISOString(),
       customer_id: customerId,
       subtotal,
       discount: totalDiscount,
       currency_code,
+      payments: paymentsRecorded,
     });
   } catch (err) {
     try {
@@ -3865,7 +4435,7 @@ app.put('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), as
     const currency_code = requestedCurrency || normalizeCurrencyCode(inv.currency_code);
 
     const oldLines = await dbAll(
-      `SELECT inventory_item_id, quantity FROM invoice_items WHERE invoice_id = ?`,
+      `SELECT inventory_item_id, quantity, weight_carats FROM invoice_items WHERE invoice_id = ?`,
       [id]
     );
 
@@ -3874,17 +4444,8 @@ app.put('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), as
     for (const line of oldLines) {
       const qty = Math.max(0, Math.floor(Number(line.quantity || 0)));
       if (qty <= 0) continue;
-      await dbRun(
-        `
-        UPDATE inventory_items
-        SET
-          pieces_remaining = pieces_remaining + ?,
-          status = CASE WHEN (pieces_remaining + ?) > 0 THEN 'Available' ELSE 'Out of stock' END,
-          updated_at = datetime('now')
-        WHERE id = ?
-      `,
-        [qty, qty, line.inventory_item_id]
-      );
+      const restoreCarats = caratsToRestoreForQty(line.weight_carats, line.quantity, qty);
+      await stockInInventory(line.inventory_item_id, qty, restoreCarats);
     }
 
     await dbRun(`DELETE FROM stock_movements WHERE ref_type = 'INVOICE' AND ref_id = ?`, [id]);
@@ -3910,8 +4471,7 @@ app.put('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), as
       const lineTotal = Math.max(0, lineGross - Math.min(discount, lineGross));
       const stockRow = await dbGet(
         `
-        SELECT id, pieces_remaining, status, category, item_type, weight_grams, weight_carats,
-               item_code, item_sticker, description
+        SELECT ${INVENTORY_LINE_STOCK_SQL}
         FROM inventory_items
         WHERE id = ?
       `,
@@ -3933,34 +4493,43 @@ app.put('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), as
         );
       }
 
-      await dbRun(
-        `
-        INSERT INTO invoice_items (
-          invoice_id, inventory_item_id, item_code, description, quantity, unit_price, line_total
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `,
-        [id, inventoryItemId, itemCode, description, quantity, unitPrice, lineTotal]
-      );
+      const soldResolved = resolveSoldCaratsForStockOut(stockRow, quantity, it.weight_carats);
+      if (soldResolved.error) throw new Error(soldResolved.error);
+      const soldCarats = soldResolved.soldCarats;
+      const lotCaratsBefore =
+        soldCarats != null && Number(soldCarats) > 0
+          ? (Number(stockRow.weight_carats) || 0) + Number(soldCarats)
+          : undefined;
+      const costTotal = computeLinePurchaseCostNative(stockRow, quantity, soldCarats, {
+        lotCaratsBeforeSale: lotCaratsBefore > 0 ? lotCaratsBefore : undefined,
+      });
 
       await dbRun(
         `
-        UPDATE inventory_items
-        SET
-          pieces_remaining = MAX(0, pieces_remaining - ?),
-          status = CASE WHEN MAX(0, pieces_remaining - ?) <= 0 THEN 'Out of stock' ELSE 'Available' END,
-          updated_at = datetime('now')
-        WHERE id = ?
+        INSERT INTO invoice_items (
+          invoice_id, inventory_item_id, item_code, description, quantity, unit_price, line_total, weight_carats, cost_total
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
-        [quantity, quantity, inventoryItemId]
+        [id, inventoryItemId, itemCode, description, quantity, unitPrice, lineTotal, soldCarats, costTotal]
       );
+
+      await stockOutInventory(inventoryItemId, quantity, soldCarats);
 
       await dbRun(
         `
         INSERT INTO stock_movements (inventory_item_id, type, ref_type, ref_id, qty_change, note, user_id)
         VALUES (?, 'SALE', 'INVOICE', ?, ?, ?, ?)
       `,
-        [inventoryItemId, id, -quantity, `Sold ${quantity} pc(s) via ${invoiceNo}`, req.user.id]
+        [
+          inventoryItemId,
+          id,
+          -quantity,
+          soldCarats != null
+            ? `Sold ${quantity} pc(s), ${soldCarats} ct via ${invoiceNo}`
+            : `Sold ${quantity} pc(s) via ${invoiceNo}`,
+          req.user.id,
+        ]
       );
     }
 
@@ -4117,7 +4686,7 @@ app.delete('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']),
     if (!inv) return res.status(404).json({ error: 'Invoice not found' });
 
     const items = await dbAll(
-      `SELECT inventory_item_id, quantity FROM invoice_items WHERE invoice_id = ?`,
+      `SELECT inventory_item_id, quantity, weight_carats FROM invoice_items WHERE invoice_id = ?`,
       [id]
     );
 
@@ -4125,17 +4694,8 @@ app.delete('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']),
     for (const line of items) {
       const qty = Math.max(0, Math.floor(Number(line.quantity || 0)));
       if (qty <= 0) continue;
-      await dbRun(
-        `
-        UPDATE inventory_items
-        SET
-          pieces_remaining = pieces_remaining + ?,
-          status = CASE WHEN (pieces_remaining + ?) > 0 THEN 'Available' ELSE 'Out of stock' END,
-          updated_at = datetime('now')
-        WHERE id = ?
-      `,
-        [qty, qty, line.inventory_item_id]
-      );
+      const restoreCarats = caratsToRestoreForQty(line.weight_carats, line.quantity, qty);
+      await stockInInventory(line.inventory_item_id, qty, restoreCarats);
     }
 
     await dbRun(`DELETE FROM stock_movements WHERE ref_type = 'INVOICE' AND ref_id = ?`, [id]);
@@ -4169,22 +4729,42 @@ app.post('/api/invoices/:id/payments', authMiddleware, requireRole(['owner', 'st
   }
 
   try {
-    const invoice = await dbGet('SELECT id, invoice_no, total FROM invoices WHERE id = ?', [invoiceId]);
+    const invoice = await dbGet(
+      `
+      SELECT i.id, i.invoice_no, i.total, IFNULL(i.currency_code, 'THB') AS currency_code, c.name AS customer_name
+      FROM invoices i
+      LEFT JOIN customers c ON c.id = i.customer_id
+      WHERE i.id = ?
+    `,
+      [invoiceId]
+    );
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+
+    const paidBeforeRow = await dbGet(
+      'SELECT IFNULL(SUM(amount), 0) AS paid FROM payments WHERE invoice_id = ?',
+      [invoiceId]
+    );
+    const paidBefore = roundMoney2(Number(paidBeforeRow?.paid || 0));
+    const total = roundMoney2(Number(invoice.total || 0));
+    const remainingBefore = roundMoney2(Math.max(0, total - paidBefore));
+    const payAmount = roundMoney2(Math.min(amount, remainingBefore));
+    if (payAmount <= 0) {
+      return res.status(400).json({ error: 'Invoice is already fully paid' });
+    }
 
     const paymentInsert = await dbRun(
       `
       INSERT INTO payments (invoice_id, method, amount, note, created_at)
       VALUES (?, ?, ?, ?, datetime('now'))
     `,
-      [invoiceId, method, amount, note]
+      [invoiceId, method, payAmount, note]
     );
 
     const paidRow = await dbGet('SELECT IFNULL(SUM(amount), 0) AS paid FROM payments WHERE invoice_id = ?', [invoiceId]);
-    const paidRaw = Number(paidRow?.paid || 0);
-    const total = Number(invoice.total || 0);
+    const paidRaw = roundMoney2(Number(paidRow?.paid || 0));
     const paid = roundMoney2(Math.min(paidRaw, total));
-    const newStatus = paidRaw >= total ? 'Paid' : paidRaw > 0 ? 'Partial' : 'Unpaid';
+    const newStatus =
+      paidRaw >= total - 0.005 ? 'Paid' : paidRaw > 0 ? 'Partial' : 'Unpaid';
 
     await dbRun('UPDATE invoices SET status = ?, updated_at = datetime(\'now\') WHERE id = ?', [newStatus, invoiceId]);
 
@@ -4205,6 +4785,9 @@ app.post('/api/invoices/:id/payments', authMiddleware, requireRole(['owner', 'st
         total,
         status: newStatus,
         paid,
+        paid_before: paidBefore,
+        currency_code: normalizeCurrencyCode(invoice.currency_code),
+        customer_name: invoice.customer_name,
       },
     });
   } catch (_err) {
@@ -4672,21 +5255,44 @@ function normalizeDateParam(value) {
   return v;
 }
 
-app.get('/api/reports/summary', authMiddleware, requireRole(['owner', 'staff']), (req, res) => {
-  const top = Number(req.query.top) || 5;
-  const now = new Date();
-  const today = now.toISOString().slice(0, 10);
-  const fromDefault = new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const from = normalizeDateParam(req.query.from) || fromDefault;
-  const to = normalizeDateParam(req.query.to) || today;
+function parseNewItemsOnlyFlag(query) {
+  const v = query.new_items_only ?? query.newItemsOnly;
+  return v === '1' || v === 'true' || String(v || '').toLowerCase() === 'yes';
+}
 
+const SQL_INV_ITEM_ADDED_IN_RANGE = 'date(inv.created_at) BETWEEN date(?) AND date(?)';
+const SQL_LINE_SHARE_OF_INV = `CASE WHEN IFNULL(i.total, 0) > 0.000001 THEN (${SQL_INV_LINE_NET}) / i.total ELSE 0 END`;
+const SQL_LINE_THB_SALES = `ROUND((${SQL_INV_LINE_NET}) * ${SQL_THB_PER_INV}, 2)`;
+const SQL_LINE_COLLECTED_THB = `ROUND(${sqlInvThbPaidRow()} * (${SQL_LINE_SHARE_OF_INV}), 2)`;
+const SQL_LINE_OUTSTANDING_THB = `ROUND(${sqlInvThbOutstandingRow()} * (${SQL_LINE_SHARE_OF_INV}), 2)`;
+
+async function buildReportsSummary(from, to, top, newItemsOnly) {
   const dateWhereSales = 'date(i.created_at) BETWEEN date(?) AND date(?)';
   const dateWhereInvoices = 'date(i.created_at) BETWEEN date(?) AND date(?)';
   const dateWhereMemos = 'date(m.memo_date) BETWEEN date(?) AND date(?)';
-
   const paymentsAgg = SQL_PAYMENTS_AGG_IP;
 
-  const salesSql = `
+  const salesSql = newItemsOnly
+    ? `
+    SELECT
+      COUNT(DISTINCT i.id) AS invoices_count,
+      IFNULL(SUM(${SQL_LINE_THB_SALES}), 0) AS sales_total,
+      IFNULL(SUM(${SQL_LINE_COLLECTED_THB}), 0) AS collected_total,
+      IFNULL(SUM(${SQL_LINE_OUTSTANDING_THB}), 0) AS outstanding_total,
+      COUNT(DISTINCT CASE WHEN i.status = 'Paid' THEN i.id END) AS paid_invoices,
+      COUNT(DISTINCT CASE WHEN i.status = 'Partial' THEN i.id END) AS partial_invoices,
+      COUNT(DISTINCT CASE WHEN i.status = 'Unpaid' THEN i.id END) AS unpaid_invoices
+    FROM invoices i
+    JOIN invoice_items ii ON ii.invoice_id = i.id
+    JOIN inventory_items inv ON inv.id = ii.inventory_item_id
+    ${SQL_INV_LINES_SUM_JOIN}
+    LEFT JOIN ${paymentsAgg} ON ip.invoice_id = i.id
+    ${SQL_INV_FX_JOIN}
+    ${SQL_INVITEM_FX_JOIN}
+    WHERE ${dateWhereInvoices}
+      AND ${SQL_INV_ITEM_ADDED_IN_RANGE}
+  `
+    : `
     SELECT
       COUNT(i.id) AS invoices_count,
       IFNULL(SUM(${sqlInvThbTotalRow()}), 0) AS sales_total,
@@ -4722,26 +5328,63 @@ app.get('/api/reports/summary', authMiddleware, requireRole(['owner', 'staff']),
     ${SQL_INV_FX_JOIN}
     ${SQL_INVITEM_FX_JOIN}
     WHERE ${dateWhereInvoices}
+    ${newItemsOnly ? `AND ${SQL_INV_ITEM_ADDED_IN_RANGE}` : ''}
   `;
 
-  const inventoryValueSql = `
+  const inventoryValueSql = newItemsOnly
+    ? `
     SELECT
       IFNULL(SUM(inv.pieces_remaining), 0) AS remaining_pcs,
-      IFNULL(SUM(inv.pieces_remaining * IFNULL(inv.selling_total_price, 0)), 0) AS inventory_value
+      IFNULL(SUM(${sqlInventoryStockValueRow('inv')}), 0) AS inventory_value
+    FROM inventory_items inv
+    WHERE ${SQL_INV_ITEM_ADDED_IN_RANGE}
+  `
+    : `
+    SELECT
+      IFNULL(SUM(inv.pieces_remaining), 0) AS remaining_pcs,
+      IFNULL(SUM(${sqlInventoryStockValueRow('inv')}), 0) AS inventory_value
     FROM inventory_items inv
   `;
 
-  const inventoryByStatusSql = `
+  const inventoryByStatusSql = newItemsOnly
+    ? `
     SELECT
       inv.status AS status,
+      COUNT(*) AS item_count,
       IFNULL(SUM(inv.pieces_remaining), 0) AS pcs_remaining,
-      IFNULL(SUM(inv.pieces_remaining * IFNULL(inv.selling_total_price, 0)), 0) AS value
+      IFNULL(SUM(${sqlInventoryStockValueRow('inv')}), 0) AS value
+    FROM inventory_items inv
+    WHERE ${SQL_INV_ITEM_ADDED_IN_RANGE}
+    GROUP BY inv.status
+    ORDER BY value DESC
+  `
+    : `
+    SELECT
+      inv.status AS status,
+      COUNT(*) AS item_count,
+      IFNULL(SUM(inv.pieces_remaining), 0) AS pcs_remaining,
+      IFNULL(SUM(${sqlInventoryStockValueRow('inv')}), 0) AS value
     FROM inventory_items inv
     GROUP BY inv.status
     ORDER BY value DESC
   `;
 
-  const memosSql = `
+  const memosSql = newItemsOnly
+    ? `
+    SELECT
+      m.status,
+      COUNT(DISTINCT m.id) AS memo_count,
+      IFNULL(SUM(mi.quantity - mi.returned_qty), 0) AS remaining_qty,
+      IFNULL(SUM((${SQL_MEMO_LINE_REMAINING_VALUE}) * ${SQL_THB_PER_MEMO}), 0) AS value
+    FROM memos m
+    ${SQL_MEMO_FX_JOIN}
+    JOIN memo_items mi ON mi.memo_id = m.id
+    JOIN inventory_items inv ON inv.id = mi.inventory_item_id
+    WHERE ${dateWhereMemos}
+      AND ${SQL_INV_ITEM_ADDED_IN_RANGE}
+    GROUP BY m.status
+  `
+    : `
     SELECT
       m.status,
       COUNT(*) AS memo_count,
@@ -4754,7 +5397,32 @@ app.get('/api/reports/summary', authMiddleware, requireRole(['owner', 'staff']),
     GROUP BY m.status
   `;
 
-  const topCustomersSql = `
+  const topCustomersSql = newItemsOnly
+    ? `
+    SELECT
+      c.id,
+      c.name,
+      c.phone,
+      COUNT(DISTINCT i.id) AS invoices_count,
+      IFNULL(SUM(${SQL_LINE_THB_SALES}), 0) AS total_invoiced,
+      IFNULL(SUM(${SQL_LINE_COLLECTED_THB}), 0) AS total_paid,
+      IFNULL(SUM(${SQL_LINE_OUTSTANDING_THB}), 0) AS total_owed,
+      MAX(i.created_at) AS last_invoice_at
+    FROM customers c
+    JOIN invoices i ON i.customer_id = c.id
+    JOIN invoice_items ii ON ii.invoice_id = i.id
+    JOIN inventory_items inv ON inv.id = ii.inventory_item_id
+    ${SQL_INV_LINES_SUM_JOIN}
+    LEFT JOIN ${paymentsAgg} ON ip.invoice_id = i.id
+    ${SQL_INV_FX_JOIN}
+    ${SQL_INVITEM_FX_JOIN}
+    WHERE ${dateWhereInvoices}
+      AND ${SQL_INV_ITEM_ADDED_IN_RANGE}
+    GROUP BY c.id
+    ORDER BY total_owed DESC
+    LIMIT ?
+  `
+    : `
     SELECT
       c.id,
       c.name,
@@ -4791,15 +5459,18 @@ app.get('/api/reports/summary', authMiddleware, requireRole(['owner', 'staff']),
     ${SQL_INV_FX_JOIN}
     ${SQL_INVITEM_FX_JOIN}
     WHERE ${dateWhereInvoices}
+    ${newItemsOnly ? `AND ${SQL_INV_ITEM_ADDED_IN_RANGE}` : ''}
     GROUP BY inv.id
     ORDER BY qty_sold DESC, sales_value DESC
     LIMIT ?
   `;
 
-  const latestStockMovementsSql = `
+  const latestStockMovementsSql = newItemsOnly
+    ? `
     SELECT
       sm.id,
       sm.inventory_item_id,
+      COALESCE(inv.item_code, inv.item_sticker) AS item_code,
       sm.type,
       sm.ref_type,
       sm.ref_id,
@@ -4808,55 +5479,88 @@ app.get('/api/reports/summary', authMiddleware, requireRole(['owner', 'staff']),
       sm.created_at,
       u.username AS user_name
     FROM stock_movements sm
+    JOIN inventory_items inv ON inv.id = sm.inventory_item_id
+    LEFT JOIN users u ON u.id = sm.user_id
+    WHERE date(sm.created_at) BETWEEN date(?) AND date(?)
+      AND ${SQL_INV_ITEM_ADDED_IN_RANGE}
+    ORDER BY sm.created_at DESC, sm.id DESC
+    LIMIT 20
+  `
+    : `
+    SELECT
+      sm.id,
+      sm.inventory_item_id,
+      COALESCE(inv.item_code, inv.item_sticker) AS item_code,
+      sm.type,
+      sm.ref_type,
+      sm.ref_id,
+      sm.qty_change,
+      sm.note,
+      sm.created_at,
+      u.username AS user_name
+    FROM stock_movements sm
+    LEFT JOIN inventory_items inv ON inv.id = sm.inventory_item_id
     LEFT JOIN users u ON u.id = sm.user_id
     ORDER BY sm.created_at DESC, sm.id DESC
     LIMIT 20
   `;
 
-  const q = (sql, params) =>
-    new Promise((resolve, reject) => {
-      db.all(sql, params, (err, rows) => {
-        if (err) return reject(err);
-        resolve(rows);
-      });
-    });
+  const salesParams = newItemsOnly ? [from, to, from, to] : [from, to];
+  const profitParams = newItemsOnly ? [from, to, from, to] : [from, to];
+  const invParams = newItemsOnly ? [from, to] : [];
+  const invByStatusParams = newItemsOnly ? [from, to] : [];
+  const memoParams = newItemsOnly ? [from, to, from, to] : [from, to];
+  const topCustParams = newItemsOnly ? [from, to, from, to, top] : [from, to, top];
+  const topItemsParams = newItemsOnly ? [from, to, from, to, top] : [from, to, top];
+  const latestParams = newItemsOnly ? [from, to, from, to] : [];
 
-  (async () => {
-    try {
-      // Sequential for SQLite safety.
-      const salesRows = await q(salesSql, [from, to]);
-      const profitRows = await q(profitSql, [from, to]);
-      const invRows = await q(inventoryValueSql, []);
-      const invByStatusRows = await q(inventoryByStatusSql, []);
-      const memoRows = await q(memosSql, [from, to]);
-      const topCustRows = await q(topCustomersSql, [from, to, top]);
-      const topItemsRows = await q(topItemsSql, [from, to, top]);
-      const latestRows = await q(latestStockMovementsSql, []);
+  const salesRows = await dbAll(salesSql, salesParams);
+  const profitRows = await dbAll(profitSql, profitParams);
+  const invRows = await dbAll(inventoryValueSql, invParams);
+  const invByStatusRows = await dbAll(inventoryByStatusSql, invByStatusParams);
+  const memoRows = await dbAll(memosSql, memoParams);
+  const topCustRows = await dbAll(topCustomersSql, topCustParams);
+  const topItemsRows = await dbAll(topItemsSql, topItemsParams);
+  const latestRows = await dbAll(latestStockMovementsSql, latestParams);
 
-      res.json({
-        range: { from, to },
-        sales: salesRows[0] || {
-          invoices_count: 0,
-          sales_total: 0,
-          collected_total: 0,
-          outstanding_total: 0,
-          paid_invoices: 0,
-          partial_invoices: 0,
-          unpaid_invoices: 0,
-        },
-        profit: profitRows[0] || { selling_total: 0, cost_total: 0, profit_total: 0, profit_margin_pct: 0 },
-        inventory: invRows[0] || { remaining_pcs: 0, inventory_value: 0 },
-        inventory_by_status: invByStatusRows || [],
-        memos_by_status: memoRows || [],
-        top_customers: topCustRows || [],
-        top_items: topItemsRows || [],
-        latest_stock_movements: latestRows || [],
-      });
-    } catch (err) {
-      console.error('Error generating reports summary', err);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  })();
+  return {
+    range: { from, to },
+    new_items_only: newItemsOnly,
+    sales: salesRows[0] || {
+      invoices_count: 0,
+      sales_total: 0,
+      collected_total: 0,
+      outstanding_total: 0,
+      paid_invoices: 0,
+      partial_invoices: 0,
+      unpaid_invoices: 0,
+    },
+    profit: profitRows[0] || { selling_total: 0, cost_total: 0, profit_total: 0, profit_margin_pct: 0 },
+    inventory: invRows[0] || { remaining_pcs: 0, inventory_value: 0 },
+    inventory_by_status: invByStatusRows || [],
+    memos_by_status: memoRows || [],
+    top_customers: topCustRows || [],
+    top_items: topItemsRows || [],
+    latest_stock_movements: latestRows || [],
+  };
+}
+
+app.get('/api/reports/summary', authMiddleware, requireRole(['owner', 'staff']), async (req, res) => {
+  const top = Number(req.query.top) || 5;
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  const fromDefault = new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const from = normalizeDateParam(req.query.from) || fromDefault;
+  const to = normalizeDateParam(req.query.to) || today;
+  const newItemsOnly = parseNewItemsOnlyFlag(req.query);
+
+  try {
+    const payload = await buildReportsSummary(from, to, top, newItemsOnly);
+    res.json(payload);
+  } catch (err) {
+    console.error('Error generating reports summary', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 app.get('/api/reports/sales-trend', authMiddleware, requireRole(['owner', 'staff']), (req, res) => {
@@ -4866,11 +5570,32 @@ app.get('/api/reports/sales-trend', authMiddleware, requireRole(['owner', 'staff
   const fromDefault = new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const from = normalizeDateParam(req.query.from) || fromDefault;
   const to = normalizeDateParam(req.query.to) || today;
+  const newItemsOnly = parseNewItemsOnlyFlag(req.query);
 
   const periodExpr = group === 'monthly' ? `strftime('%Y-%m', i.created_at)` : `date(i.created_at)`;
   const paymentsAgg = SQL_PAYMENTS_AGG_IP;
 
-  const sql = `
+  const sql = newItemsOnly
+    ? `
+    SELECT
+      ${periodExpr} AS period,
+      COUNT(DISTINCT i.id) AS invoices_count,
+      IFNULL(SUM(${SQL_LINE_THB_SALES}), 0) AS sales_total,
+      IFNULL(SUM(${SQL_LINE_COLLECTED_THB}), 0) AS collected_total,
+      IFNULL(SUM(${SQL_LINE_OUTSTANDING_THB}), 0) AS outstanding_total
+    FROM invoices i
+    JOIN invoice_items ii ON ii.invoice_id = i.id
+    JOIN inventory_items inv ON inv.id = ii.inventory_item_id
+    ${SQL_INV_LINES_SUM_JOIN}
+    LEFT JOIN ${paymentsAgg} ON ip.invoice_id = i.id
+    ${SQL_INV_FX_JOIN}
+    ${SQL_INVITEM_FX_JOIN}
+    WHERE date(i.created_at) BETWEEN date(?) AND date(?)
+      AND ${SQL_INV_ITEM_ADDED_IN_RANGE}
+    GROUP BY period
+    ORDER BY period ASC
+  `
+    : `
     SELECT
       ${periodExpr} AS period,
       COUNT(i.id) AS invoices_count,
@@ -4885,12 +5610,14 @@ app.get('/api/reports/sales-trend', authMiddleware, requireRole(['owner', 'staff
     ORDER BY period ASC
   `;
 
-  db.all(sql, [from, to], (err, rows) => {
+  const params = newItemsOnly ? [from, to, from, to] : [from, to];
+
+  db.all(sql, params, (err, rows) => {
     if (err) {
       console.error('Error generating sales trend', err);
       return res.status(500).json({ error: 'Internal server error' });
     }
-    res.json({ range: { from, to }, group, rows });
+    res.json({ range: { from, to }, group, new_items_only: newItemsOnly, rows });
   });
 });
 
@@ -4901,6 +5628,7 @@ app.get('/api/reports/profit-trend', authMiddleware, requireRole(['owner', 'staf
   const fromDefault = new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const from = normalizeDateParam(req.query.from) || fromDefault;
   const to = normalizeDateParam(req.query.to) || today;
+  const newItemsOnly = parseNewItemsOnlyFlag(req.query);
 
   const periodExpr = group === 'monthly' ? `strftime('%Y-%m', i.created_at)` : `date(i.created_at)`;
 
@@ -4917,16 +5645,19 @@ app.get('/api/reports/profit-trend', authMiddleware, requireRole(['owner', 'staf
     ${SQL_INV_FX_JOIN}
     ${SQL_INVITEM_FX_JOIN}
     WHERE date(i.created_at) BETWEEN date(?) AND date(?)
+    ${newItemsOnly ? `AND ${SQL_INV_ITEM_ADDED_IN_RANGE}` : ''}
     GROUP BY period
     ORDER BY period ASC
   `;
 
-  db.all(sql, [from, to], (err, rows) => {
+  const params = newItemsOnly ? [from, to, from, to] : [from, to];
+
+  db.all(sql, params, (err, rows) => {
     if (err) {
       console.error('Error generating profit trend', err);
       return res.status(500).json({ error: 'Internal server error' });
     }
-    res.json({ range: { from, to }, group, rows });
+    res.json({ range: { from, to }, group, new_items_only: newItemsOnly, rows });
   });
 });
 
@@ -4947,6 +5678,49 @@ app.get('/api/reports/inventory-monthly', authMiddleware, requireRole(['owner'])
     if (String(msg || '').toLowerCase().includes('invalid month')) {
       return res.status(400).json({ error: 'Invalid month (use 1–12)' });
     }
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * Sales for inventory items added within the selected date range.
+ * Sales are counted only from invoices in the same range.
+ */
+app.get('/api/reports/new-items-sales', authMiddleware, requireRole(['owner', 'staff']), async (req, res) => {
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  const fromDefault = new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const from = normalizeDateParam(req.query.from) || fromDefault;
+  const to = normalizeDateParam(req.query.to) || today;
+
+  try {
+    const payload = await buildNewItemsSalesReport(from, to);
+    const erUsdRow = await dbGet(`SELECT thb_per_unit FROM exchange_rates WHERE currency_code = 'USD'`);
+    const thbPerUsd = erUsdRow && Number(erUsdRow.thb_per_unit) > 0 ? Number(erUsdRow.thb_per_unit) : null;
+    const thbToUsd = thb => {
+      if (thbPerUsd == null || thbPerUsd <= 0) return null;
+      const n = Number(thb) || 0;
+      return Math.round((n / thbPerUsd) * 100) / 100;
+    };
+    res.json({
+      ...payload,
+      rows: payload.rows.map(r => ({
+        ...r,
+        memo_out_qty: Math.max(0, Math.round(Number(r.memo_out_qty) || 0)),
+        sales_usd: thbToUsd(Number(r.sales_value) || 0),
+        revenue_usd: thbToUsd(Number(r.revenue_thb ?? r.sales_value) || 0),
+        cost_usd: thbToUsd(Number(r.cost_total) || 0),
+        profit_usd: thbToUsd(Number(r.profit_value) || 0),
+      })),
+      summary: {
+        ...payload.summary,
+        sales_usd: thbToUsd(payload.summary.sales_value),
+        cost_usd: thbToUsd(payload.summary.cost_total),
+        profit_usd: thbToUsd(payload.summary.profit_value),
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/reports/new-items-sales', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -5265,6 +6039,7 @@ async function runCloudSnapshotSync(req) {
         sqlInvThbPaidRow,
         sqlInvThbOutstandingRow,
         sqlInvLineThbGrossRow,
+        sqlInventoryStockValueRow,
       },
     },
     {

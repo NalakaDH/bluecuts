@@ -14,6 +14,20 @@ import {
 } from '../../lib/currencies';
 import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
 import { formatUsdOnlyFromAny, formatUsdOnlyFromThb } from '../../lib/moneyUsdDisplay';
+import {
+  lotListLineGross,
+  lotListUnitPerPiece,
+  lotNeedsSoldCaratsInput,
+  parseSoldCaratsInput,
+  soldCaratsCartSuffix,
+  validateSoldCaratsForLot,
+} from '../../lib/lotCarats';
+import { InvoicePaymentIntentModal } from '../../components/InvoicePaymentIntentModal';
+import { GuardedAmountNumberInput } from '../../components/GuardedAmountNumberInput';
+import {
+  computeMemoConvertInvoiceTotal,
+  type InvoicePaymentIntentResult,
+} from '../../lib/invoicePaymentIntent';
 
 /** Default memo currency for new memos (matches Selling). */
 const MEMO_DEFAULT_CURRENCY = 'USD';
@@ -73,6 +87,13 @@ const IconCcUser = () => (
     <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
   </svg>
 );
+
+function customerInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0] ?? ''}${parts[1][0] ?? ''}`.toUpperCase();
+  const one = parts[0] ?? '';
+  return (one.slice(0, 2) || '?').toUpperCase();
+}
 
 const IconCcCurrency = () => (
   <svg className="selling-pos-cc-btn-icon" width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -188,6 +209,7 @@ interface InventoryItem {
   selling_total_price?: number | null;
   /** Currency the inventory selling price is stored in */
   selling_currency?: string | null;
+  selling_carat_price?: number | null;
   image_path?: string | null;
   item_code?: string | null;
   item_sticker?: string | null;
@@ -225,6 +247,7 @@ interface MemoCartItem {
   unit_price: number;
   /** Original list price & currency (prefill when memo currency matches) */
   source_unit_price: number;
+  source_carat_price?: number | null;
   source_currency: string;
   item_code?: string | null;
   description?: string | null;
@@ -248,23 +271,46 @@ type MemoDraftPayload = {
   cart: MemoCartItem[];
 };
 
-function memoUnitPrefillFromList(item: InventoryItem, memoCur: string): number {
+function memoUnitPrefillFromList(
+  item: InventoryItem,
+  memoCur: string,
+  qty = 1,
+  soldCaratsRaw?: string | number | null
+): number {
   const listCur = normalizeCurrencyCode(item.selling_currency ?? DEFAULT_CURRENCY_CODE);
   const inv = normalizeCurrencyCode(memoCur);
-  if (listCur === inv) return roundMoney2(Number(item.selling_total_price ?? 0));
-  return 0;
+  if (listCur !== inv) return 0;
+  if (lotNeedsSoldCaratsInput(item)) {
+    const sold =
+      typeof soldCaratsRaw === 'number' ? soldCaratsRaw : parseSoldCaratsInput(soldCaratsRaw);
+    const perPc = lotListUnitPerPiece(item, sold, qty);
+    return perPc != null ? perPc : 0;
+  }
+  return roundMoney2(Number(item.selling_total_price ?? 0));
 }
 
-function memoUnitPrefillFromCartLine(c: MemoCartItem, memoCur: string): number {
-  const listCur = normalizeCurrencyCode(c.source_currency ?? DEFAULT_CURRENCY_CODE);
-  const inv = normalizeCurrencyCode(memoCur);
-  if (listCur === inv) return roundMoney2(Number(c.source_unit_price ?? 0));
-  return 0;
+function memoUnitPrefillFromCartLine(
+  c: MemoCartItem,
+  memoCur: string,
+  available: InventoryItem[]
+): number {
+  const inv = resolveInventoryItemForMemoLine(c, available);
+  return memoUnitPrefillFromList(inv, memoCur, memoLineQty(c), memoCartSoldCaratsValue(c));
 }
 
-function listUnitForMemoCartLine(c: MemoCartItem, memoCur: string): number | null {
+function listUnitForMemoCartLine(
+  c: MemoCartItem,
+  memoCur: string,
+  available: InventoryItem[]
+): number | null {
   const listCur = normalizeCurrencyCode(c.source_currency ?? DEFAULT_CURRENCY_CODE);
   if (listCur !== normalizeCurrencyCode(memoCur)) return null;
+  const inv = resolveInventoryItemForMemoLine(c, available);
+  const soldCt = memoCartSoldCaratsValue(c);
+  const qty = memoLineQty(c);
+  if (lotNeedsSoldCaratsInput(inv)) {
+    return lotListUnitPerPiece(inv, soldCt, qty);
+  }
   const v = Number(c.source_unit_price ?? 0);
   if (!Number.isFinite(v) || v < 0) return null;
   return roundMoney2(v);
@@ -274,9 +320,9 @@ function memoLineSellUnit(c: MemoCartItem): number {
   return roundMoney2(Number(c.unit_price) || 0);
 }
 
-function memoLineApiUnit(c: MemoCartItem, memoCur: string): number {
+function memoLineApiUnit(c: MemoCartItem, memoCur: string, available: InventoryItem[]): number {
   const sell = memoLineSellUnit(c);
-  const list = listUnitForMemoCartLine(c, memoCur);
+  const list = listUnitForMemoCartLine(c, memoCur, available);
   if (list == null) return sell;
   if (sell > list) return sell;
   return list;
@@ -286,16 +332,20 @@ function memoLineQty(c: MemoCartItem): number {
   return Math.max(1, Math.floor(Number(c.quantity) || 1));
 }
 
-function memoLineSubtotalGross(c: MemoCartItem, memoCur: string): number {
-  return roundMoney2(memoLineApiUnit(c, memoCur) * memoLineQty(c));
+function memoLineSubtotalGross(c: MemoCartItem, memoCur: string, available: InventoryItem[]): number {
+  return roundMoney2(memoLineApiUnit(c, memoCur, available) * memoLineQty(c));
 }
 
-function memoLineDerivedDiscount(c: MemoCartItem, memoCur: string): number {
+function memoLineDerivedDiscount(
+  c: MemoCartItem,
+  memoCur: string,
+  available: InventoryItem[]
+): number {
   const qty = memoLineQty(c);
   const sell = memoLineSellUnit(c);
-  const list = listUnitForMemoCartLine(c, memoCur);
+  const list = listUnitForMemoCartLine(c, memoCur, available);
   if (list == null || sell >= list) return 0;
-  const gross = memoLineSubtotalGross(c, memoCur);
+  const gross = memoLineSubtotalGross(c, memoCur, available);
   return Math.min(gross, Math.max(0, roundMoney2(roundMoney2(list - sell) * qty)));
 }
 
@@ -314,12 +364,19 @@ function resolveInventoryItemForMemoLine(c: MemoCartItem, available: InventoryIt
     pieces: maxPx,
     pieces_remaining: maxPx,
     selling_total_price: c.source_unit_price,
+    selling_carat_price: c.source_carat_price ?? null,
     selling_currency: c.source_currency,
     image_path: c.image_path ?? null,
     item_code: c.item_code ?? null,
     description: c.description ?? null,
-    weight_carats: c.weight_carats ?? null,
+    weight_carats: null,
   };
+}
+
+function memoCartSoldCaratsValue(c: MemoCartItem): number | null {
+  const v = c.weight_carats;
+  if (v == null || !Number.isFinite(Number(v)) || Number(v) <= 0) return null;
+  return Number(v);
 }
 
 /** Net unit (charged) from stored memo line — works for list+discount and legacy rows. */
@@ -772,6 +829,13 @@ export const MemoPage: React.FC<MemoPageProps> = ({
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detail, setDetail] = useState<MemoDetail | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const [memoConvertPaymentOpen, setMemoConvertPaymentOpen] = useState(false);
+  const [memoConvertSnapshot, setMemoConvertSnapshot] = useState<{
+    detailId: number;
+    memoNo: string;
+    currencyCode: string;
+    total: number;
+  } | null>(null);
   const [returnDraft, setReturnDraft] = useState<Record<number, number>>({});
   const memoMainTab = view;
   const [ccModal, setCcModal] = useState<'customer' | 'currency' | null>(null);
@@ -781,6 +845,8 @@ export const MemoPage: React.FC<MemoPageProps> = ({
   const [itemModalTarget, setItemModalTarget] = useState<InventoryItem | null>(null);
   const [itemModalQty, setItemModalQty] = useState(1);
   const [itemModalUnitPrice, setItemModalUnitPrice] = useState(0);
+  const [itemModalSoldCarats, setItemModalSoldCarats] = useState('');
+  const itemModalUnitPriceManualRef = useRef(false);
   const itemModalUnitPriceInputRef = useRef<HTMLInputElement>(null);
 
   const [memoEditDeleting, setMemoEditDeleting] = useState(false);
@@ -1041,9 +1107,16 @@ export const MemoPage: React.FC<MemoPageProps> = ({
       setItemModalFromCartEdit(false);
       setItemModalTarget(item);
       setItemModalQty(existing ? memoLineQty(existing) : 1);
+      const existingCt = existing ? memoCartSoldCaratsValue(existing) : null;
+      const soldRaw = existingCt != null ? String(existingCt) : '';
+      const q = existing ? memoLineQty(existing) : 1;
+      itemModalUnitPriceManualRef.current = Boolean(existing);
       setItemModalUnitPrice(
-        existing ? memoLineSellUnit(existing) : memoUnitPrefillFromList(item, memoCurrency)
+        existing
+          ? memoLineSellUnit(existing)
+          : memoUnitPrefillFromList(item, memoCurrency, q, soldRaw)
       );
+      setItemModalSoldCarats(soldRaw);
       setItemModalOpen(true);
     },
     [
@@ -1061,9 +1134,12 @@ export const MemoPage: React.FC<MemoPageProps> = ({
       if (memoLinesReadOnly) return;
       const inv = resolveInventoryItemForMemoLine(line, availableItems);
       setItemModalFromCartEdit(true);
+      itemModalUnitPriceManualRef.current = true;
       setItemModalTarget(inv);
       setItemModalQty(memoLineQty(line));
       setItemModalUnitPrice(memoLineSellUnit(line));
+      const soldCt = memoCartSoldCaratsValue(line);
+      setItemModalSoldCarats(soldCt != null ? String(soldCt) : '');
       setItemModalOpen(true);
     },
     [memoLinesReadOnly, availableItems]
@@ -1074,7 +1150,18 @@ export const MemoPage: React.FC<MemoPageProps> = ({
     const item = itemModalTarget;
     const maxPcs = maxPcsForMemoModalItem(item);
     const safeQty = Math.max(1, Math.min(maxPcs, Math.floor(Number(itemModalQty) || 1)));
-    const safeUnit = Math.max(0, roundMoney2(Number(itemModalUnitPrice) || 0));
+    let safeUnit = Math.max(0, roundMoney2(Number(itemModalUnitPrice) || 0));
+    let soldCaratsLine: number | null = null;
+    if (lotNeedsSoldCaratsInput(item)) {
+      soldCaratsLine = parseSoldCaratsInput(itemModalSoldCarats);
+      const err = validateSoldCaratsForLot(item.weight_carats, soldCaratsLine);
+      if (err) {
+        showAlert({ title: 'Carat weight required', message: err, variant: 'warning' });
+        return;
+      }
+      const listUnit = lotListUnitPerPiece(item, soldCaratsLine, safeQty);
+      if (listUnit != null && safeUnit <= 0) safeUnit = listUnit;
+    }
 
     const existing = cart.find(c => c.inventory_item_id === item.id);
     if (!existing) {
@@ -1094,19 +1181,27 @@ export const MemoPage: React.FC<MemoPageProps> = ({
           quantity: safeQty,
           unit_price: safeUnit,
           source_unit_price: srcPrice,
+          source_carat_price: item.selling_carat_price ?? null,
           source_currency: srcCur,
           item_code: code || null,
           description: item.description || null,
           image_path: item.image_path ?? null,
           category: item.category,
           item_type: item.item_type,
-          weight_carats: item.weight_carats ?? null,
+          weight_carats: soldCaratsLine,
         },
       ]);
     } else {
       setCart(prev =>
         prev.map(c =>
-          c.inventory_item_id === item.id ? { ...c, quantity: safeQty, unit_price: safeUnit } : c
+          c.inventory_item_id === item.id
+            ? {
+                ...c,
+                quantity: safeQty,
+                unit_price: safeUnit,
+                weight_carats: soldCaratsLine,
+              }
+            : c
         )
       );
     }
@@ -1114,13 +1209,16 @@ export const MemoPage: React.FC<MemoPageProps> = ({
     setItemModalOpen(false);
     setItemModalTarget(null);
     setItemModalFromCartEdit(false);
+    setItemModalSoldCarats('');
   }, [
     itemModalTarget,
     memoLinesReadOnly,
     itemModalQty,
     itemModalUnitPrice,
+    itemModalSoldCarats,
     cart,
     maxPcsForMemoModalItem,
+    showAlert,
   ]);
 
   const setMemoQtyForLine = useCallback(
@@ -1131,7 +1229,11 @@ export const MemoPage: React.FC<MemoPageProps> = ({
       if (!Number.isFinite(q) || q < 1) q = 1;
       if (q > maxPcs) q = maxPcs;
       setCart(prev =>
-        prev.map(c => (c.inventory_item_id === line.inventory_item_id ? { ...c, quantity: q } : c))
+        prev.map(c =>
+          c.inventory_item_id === line.inventory_item_id
+            ? { ...c, quantity: q, weight_carats: null }
+            : c
+        )
       );
     },
     [memoLinesReadOnly]
@@ -1200,6 +1302,15 @@ export const MemoPage: React.FC<MemoPageProps> = ({
     return () => el.removeEventListener('wheel', onWheel);
   }, [itemModalOpen, itemModalTarget?.id]);
 
+  useEffect(() => {
+    if (!itemModalOpen || !itemModalTarget || !lotNeedsSoldCaratsInput(itemModalTarget)) return;
+    if (itemModalUnitPriceManualRef.current) return;
+    const sold = parseSoldCaratsInput(itemModalSoldCarats);
+    if (sold == null) return;
+    const listUnit = lotListUnitPerPiece(itemModalTarget, sold, itemModalQty);
+    if (listUnit != null) setItemModalUnitPrice(listUnit);
+  }, [itemModalOpen, itemModalTarget, itemModalSoldCarats, itemModalQty]);
+
   const removeCartItem = (inventory_item_id: number) => {
     if (memoLinesReadOnly) return;
     setCart(prev => prev.filter(p => p.inventory_item_id !== inventory_item_id));
@@ -1211,12 +1322,12 @@ export const MemoPage: React.FC<MemoPageProps> = ({
   };
 
   const memoCartSubtotalGross = useMemo(() => {
-    return cart.reduce((sum, c) => sum + memoLineSubtotalGross(c, memoCurrency), 0);
-  }, [cart, memoCurrency]);
+    return cart.reduce((sum, c) => sum + memoLineSubtotalGross(c, memoCurrency, availableItems), 0);
+  }, [cart, memoCurrency, availableItems]);
 
   const memoCartItemsDiscountTotal = useMemo(() => {
-    return cart.reduce((sum, c) => sum + memoLineDerivedDiscount(c, memoCurrency), 0);
-  }, [cart, memoCurrency]);
+    return cart.reduce((sum, c) => sum + memoLineDerivedDiscount(c, memoCurrency, availableItems), 0);
+  }, [cart, memoCurrency, availableItems]);
 
   const memoCartOrderDiscount = useMemo(() => {
     const afterLineDiscount = Math.max(0, roundMoney2(memoCartSubtotalGross - memoCartItemsDiscountTotal));
@@ -1241,10 +1352,10 @@ export const MemoPage: React.FC<MemoPageProps> = ({
     setCart(prev =>
       prev.map(line => ({
         ...line,
-        unit_price: memoUnitPrefillFromCartLine(line, next),
+        unit_price: memoUnitPrefillFromCartLine(line, next, availableItems),
       }))
     );
-  }, []);
+  }, [availableItems]);
 
   const handleNewCustomerChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -1461,6 +1572,19 @@ export const MemoPage: React.FC<MemoPageProps> = ({
       return;
     }
     for (const c of cart) {
+      const inv = resolveInventoryItemForMemoLine(c, availableItems);
+      if (lotNeedsSoldCaratsInput(inv)) {
+        const soldCt = parseSoldCaratsInput(memoCartSoldCaratsValue(c));
+        const err = validateSoldCaratsForLot(inv.weight_carats, soldCt);
+        if (err) {
+          showAlert({
+            title: 'Carat weight required',
+            message: `${c.item_code || c.label}: ${err}`,
+            variant: 'warning',
+          });
+          return;
+        }
+      }
       const q = Math.floor(Number(c.quantity));
       const p = Number(c.unit_price);
       if (!Number.isFinite(q) || q < 1 || q > c.maxQty) {
@@ -1495,14 +1619,21 @@ export const MemoPage: React.FC<MemoPageProps> = ({
           notes: null,
           currency_code: memoCurrency,
           order_discount: memoCartOrderDiscount,
-          items: cart.map(c => ({
-            inventory_item_id: c.inventory_item_id,
-            quantity: c.quantity,
-            unit_price: memoLineApiUnit(c, memoCurrency),
-            discount: memoLineDerivedDiscount(c, memoCurrency),
-            item_code: c.item_code || null,
-            description: c.description || null,
-          })),
+          items: cart.map(c => {
+            const inv = resolveInventoryItemForMemoLine(c, availableItems);
+            const soldCt = lotNeedsSoldCaratsInput(inv)
+              ? parseSoldCaratsInput(memoCartSoldCaratsValue(c))
+              : null;
+            return {
+              inventory_item_id: c.inventory_item_id,
+              quantity: c.quantity,
+              unit_price: memoLineApiUnit(c, memoCurrency, availableItems),
+              discount: memoLineDerivedDiscount(c, memoCurrency, availableItems),
+              item_code: c.item_code || null,
+              description: c.description || null,
+              ...(soldCt != null ? { weight_carats: soldCt } : {}),
+            };
+          }),
         }),
       });
       if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to create memo'));
@@ -1606,7 +1737,13 @@ export const MemoPage: React.FC<MemoPageProps> = ({
               const maxQty = Math.max(1, q, onMemo + rem);
               const list = roundMoney2(Number(row.selling_total_price ?? 0));
               const listCur = normalizeCurrencyCode(row.selling_currency ?? DEFAULT_CURRENCY_CODE);
-              return { ...c, maxQty, source_unit_price: list, source_currency: listCur };
+              return {
+                ...c,
+                maxQty,
+                source_unit_price: list,
+                source_carat_price: row.selling_carat_price ?? c.source_carat_price ?? null,
+                source_currency: listCur,
+              };
             } catch {
               return c;
             }
@@ -1681,6 +1818,19 @@ export const MemoPage: React.FC<MemoPageProps> = ({
           });
           return;
         }
+        const inv = resolveInventoryItemForMemoLine(c, availableItems);
+        if (lotNeedsSoldCaratsInput(inv)) {
+          const soldCt = parseSoldCaratsInput(memoCartSoldCaratsValue(c));
+          const err = validateSoldCaratsForLot(inv.weight_carats, soldCt);
+          if (err) {
+            showAlert({
+              title: 'Carat weight required',
+              message: `${c.item_code || c.label}: ${err}`,
+              variant: 'warning',
+            });
+            return;
+          }
+        }
       }
     }
     const savedId = editingMemoId;
@@ -1699,6 +1849,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({
           discount: number;
           item_code: string | null;
           description: string | null;
+          weight_carats?: number;
         }>;
       } = {
         memo_date: memoDate,
@@ -1709,15 +1860,22 @@ export const MemoPage: React.FC<MemoPageProps> = ({
         body.customer_id = selectedCustomer?.id ?? null;
       }
       if (linesEditable) {
-        body.items = cart.map(c => ({
-          memo_item_id: c.memoItemId ?? null,
-          inventory_item_id: c.inventory_item_id,
-          quantity: Math.floor(Number(c.quantity) || 0),
-          unit_price: memoLineApiUnit(c, memoCurrency),
-          discount: memoLineDerivedDiscount(c, memoCurrency),
-          item_code: c.item_code ?? null,
-          description: c.description ?? null,
-        }));
+        body.items = cart.map(c => {
+          const inv = resolveInventoryItemForMemoLine(c, availableItems);
+          const soldCt = lotNeedsSoldCaratsInput(inv)
+            ? parseSoldCaratsInput(memoCartSoldCaratsValue(c))
+            : null;
+          return {
+            memo_item_id: c.memoItemId ?? null,
+            inventory_item_id: c.inventory_item_id,
+            quantity: Math.floor(Number(c.quantity) || 0),
+            unit_price: memoLineApiUnit(c, memoCurrency, availableItems),
+            discount: memoLineDerivedDiscount(c, memoCurrency, availableItems),
+            item_code: c.item_code ?? null,
+            description: c.description ?? null,
+            ...(soldCt != null ? { weight_carats: soldCt } : {}),
+          };
+        });
       }
       const res = await fetch(apiUrl(`/api/memos/${savedId}`), {
         method: 'PATCH',
@@ -1787,13 +1945,19 @@ export const MemoPage: React.FC<MemoPageProps> = ({
   };
 
   useEffect(() => {
-    if (!detailOpen) return;
+    if (!detailOpen && !memoConvertPaymentOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeDetail();
+      if (e.key !== 'Escape') return;
+      if (memoConvertPaymentOpen) {
+        setMemoConvertPaymentOpen(false);
+        setMemoConvertSnapshot(null);
+        return;
+      }
+      if (detailOpen) closeDetail();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [detailOpen, closeDetail]);
+  }, [detailOpen, memoConvertPaymentOpen, closeDetail]);
 
   const returnAll = async () => {
     if (!detailId) return;
@@ -1864,28 +2028,72 @@ export const MemoPage: React.FC<MemoPageProps> = ({
     }
   };
 
-  const convertToInvoice = async () => {
-    if (!detailId) return;
+  const cancelMemoConvertPayment = () => {
+    setMemoConvertPaymentOpen(false);
+    setMemoConvertSnapshot(null);
+  };
+
+  const convertToInvoice = () => {
+    if (!detailId || !detail) return;
+    setMemoConvertSnapshot({
+      detailId,
+      memoNo: detail.memo_no,
+      currencyCode: normalizeCurrencyCode(detail.currency_code || DEFAULT_CURRENCY_CODE),
+      total: computeMemoConvertInvoiceTotal(detail),
+    });
+    setMemoConvertPaymentOpen(true);
+  };
+
+  const submitMemoConvertWithPayment = async (paymentIntent: InvoicePaymentIntentResult) => {
+    const convertId = memoConvertSnapshot?.detailId ?? detailId;
+    if (!convertId) return;
     setActionBusy(true);
     try {
-      const res = await fetch(apiUrl(`/api/memos/${detailId}/convert-to-invoice`), {
+      const res = await fetch(apiUrl(`/api/memos/${convertId}/convert-to-invoice`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          payment_mode: paymentIntent.payment_mode,
+          payments: paymentIntent.payments,
+        }),
       });
       if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to convert memo'));
-      const data = (await res.json()) as { invoice_id?: unknown };
+      const data = (await res.json()) as {
+        invoice_id?: unknown;
+        invoice_no?: string;
+        total?: number;
+        paid?: number;
+        status?: string;
+        customer_name?: string | null;
+        currency_code?: string | null;
+        created_at?: string;
+        payments?: Array<{ method: string; amount: number; created_at: string }>;
+      };
       const invoiceId = Number(data.invoice_id);
       if (Number.isFinite(invoiceId) && invoiceId > 0) {
         try {
           window.sessionStorage.setItem(
             SELLING_FROM_MEMO_CONVERT_INVOICE_KEY,
-            JSON.stringify({ invoiceId })
+            JSON.stringify({
+              invoiceId,
+              summary: {
+                invoice_no: data.invoice_no,
+                total: data.total,
+                paid: data.paid,
+                status: data.status,
+                customer_name: data.customer_name,
+                currency_code: data.currency_code,
+                created_at: data.created_at,
+              },
+              payments: data.payments ?? [],
+            })
           );
         } catch {
           // ignore storage failures
         }
       }
+      setMemoConvertPaymentOpen(false);
+      setMemoConvertSnapshot(null);
       fetchMemos();
       closeDetail();
       onNavigate?.('selling');
@@ -1931,17 +2139,30 @@ export const MemoPage: React.FC<MemoPageProps> = ({
   };
 
   const itemModalListUnit =
-    itemModalTarget != null ? memoUnitPrefillFromList(itemModalTarget, memoCurrency) : 0;
+    itemModalTarget != null
+      ? memoUnitPrefillFromList(itemModalTarget, memoCurrency, itemModalQty, itemModalSoldCarats)
+      : 0;
+  const itemModalListLineGross =
+    itemModalTarget != null
+      ? lotListLineGross(itemModalTarget, parseSoldCaratsInput(itemModalSoldCarats))
+      : null;
   const itemModalPiecesAvail =
     itemModalTarget != null ? rawPiecesAvailForItem(itemModalTarget) : 0;
-  const itemModalDiscount = Math.max(0, roundMoney2(itemModalListUnit - itemModalUnitPrice));
+  const itemModalListBasis = itemModalListLineGross ?? itemModalListUnit * Math.max(1, itemModalQty);
+  const itemModalDiscount = Math.max(
+    0,
+    roundMoney2(itemModalListBasis - itemModalUnitPrice * Math.max(1, itemModalQty))
+  );
   const itemModalDiscountPct =
-    itemModalListUnit > 0 ? roundMoney2((itemModalDiscount / itemModalListUnit) * 100) : 0;
+    itemModalListBasis > 0 ? roundMoney2((itemModalDiscount / itemModalListBasis) * 100) : 0;
   const itemModalSubtotal = roundMoney2(Math.max(0, itemModalUnitPrice) * Math.max(1, itemModalQty));
-  const itemModalPremium = Math.max(0, roundMoney2(itemModalUnitPrice - itemModalListUnit));
+  const itemModalPremium = Math.max(
+    0,
+    roundMoney2(itemModalUnitPrice * Math.max(1, itemModalQty) - itemModalListBasis)
+  );
   const itemModalPremiumPct =
-    itemModalListUnit > 0 ? roundMoney2((itemModalPremium / itemModalListUnit) * 100) : 0;
-  const modalPriceDiff = roundMoney2(itemModalListUnit - itemModalUnitPrice);
+    itemModalListBasis > 0 ? roundMoney2((itemModalPremium / itemModalListBasis) * 100) : 0;
+  const modalPriceDiff = roundMoney2(itemModalListBasis - itemModalUnitPrice * Math.max(1, itemModalQty));
   const modalShowSavingBanner = modalPriceDiff > 0.005;
   const modalShowAboveBanner = modalPriceDiff < -0.005;
 
@@ -2185,14 +2406,14 @@ export const MemoPage: React.FC<MemoPageProps> = ({
                           const qty = memoLineQty(c);
                           const maxPcs = Math.max(1, Math.floor(Number(c.maxQty) || 1));
                           const lineNet = memoLineSellTotal(c);
-                          const lineDiscount = memoLineDerivedDiscount(c, memoCurrency);
+                          const lineDiscount = memoLineDerivedDiscount(c, memoCurrency, availableItems);
                           const imgSrc = memoItemImageSrc(c.image_path);
                           const showPlaceholder = !imgSrc || cartImageLoadFailed.has(c.inventory_item_id);
                           const codeLabel = c.item_code || `#${c.inventory_item_id}`;
                           const displayName = (c.category || codeLabel).replace(/_/g, ' ');
-                          const typeCtLabel = `${(c.item_type || 'item').replace(/_/g, ' ').toLowerCase()}${
-                            c.weight_carats != null ? ` · ${c.weight_carats} ct` : ''
-                          }`;
+                          const typeCtLabel = `${(c.item_type || 'item').replace(/_/g, ' ').toLowerCase()}${soldCaratsCartSuffix(
+                            c.weight_carats
+                          )}`;
                           return (
                             <div key={c.inventory_item_id} className="selling-pos-line">
                               <div className="selling-pos-line-thumb">
@@ -2641,17 +2862,35 @@ export const MemoPage: React.FC<MemoPageProps> = ({
                   <div className="selling-pos-item-modal-eyebrow">Pricing</div>
                   <div className="selling-pos-item-modal-price-grid selling-pos-item-modal-price-grid--single">
                     <div className="selling-pos-item-modal-price-cell">
-                      <div className="selling-pos-item-modal-price-cell-label">Selling Price</div>
-                      <div className="selling-pos-item-modal-price-cell-value selling-pos-item-modal-price-cell-value--sell">
-                        {formatMoneyAmount(itemModalListUnit, memoCurrency)}
+                      <div className="selling-pos-item-modal-price-cell-label">
+                        {itemModalTarget && lotNeedsSoldCaratsInput(itemModalTarget)
+                          ? 'List price (this sale)'
+                          : 'Selling Price'}
                       </div>
+                      <div className="selling-pos-item-modal-price-cell-value selling-pos-item-modal-price-cell-value--sell">
+                        {itemModalListLineGross != null
+                          ? formatMoneyAmount(itemModalListLineGross, memoCurrency)
+                          : formatMoneyAmount(itemModalListUnit, memoCurrency)}
+                      </div>
+                      {itemModalTarget &&
+                      lotNeedsSoldCaratsInput(itemModalTarget) &&
+                      itemModalTarget.selling_carat_price != null &&
+                      Number(itemModalTarget.selling_carat_price) > 0 ? (
+                        <div className="selling-pos-item-modal-carats-hint">
+                          {formatMoneyAmount(Number(itemModalTarget.selling_carat_price), memoCurrency)}/ct
+                        </div>
+                      ) : null}
                     </div>
                   </div>
 
                   <div className="selling-pos-item-modal-unit-row">
                     <div className="selling-pos-item-modal-unit-label">
                       <IconEdit />
-                      <span>Unit Price</span>
+                      <span>
+                        {itemModalTarget && lotNeedsSoldCaratsInput(itemModalTarget)
+                          ? 'Price per pc'
+                          : 'Unit Price'}
+                      </span>
                     </div>
                     <div className="selling-pos-item-modal-unit-input-wrap">
                       <span className="selling-pos-item-modal-unit-currency">{currencySymbolFor(memoCurrency)}</span>
@@ -2662,7 +2901,10 @@ export const MemoPage: React.FC<MemoPageProps> = ({
                         value={itemModalUnitPrice}
                         min={0}
                         step={0.01}
-                        onChange={e => setItemModalUnitPrice(Math.max(0, parseMoneyInput(e.target.value)))}
+                        onChange={e => {
+                          itemModalUnitPriceManualRef.current = true;
+                          setItemModalUnitPrice(Math.max(0, parseMoneyInput(e.target.value)));
+                        }}
                         aria-label={`Unit price (${memoCurrency})`}
                       />
                     </div>
@@ -2689,6 +2931,35 @@ export const MemoPage: React.FC<MemoPageProps> = ({
                     </div>
                   ) : null}
                 </section>
+
+                {itemModalTarget && lotNeedsSoldCaratsInput(itemModalTarget) ? (
+                  <section className="selling-pos-item-modal-pricing">
+                    <div className="selling-pos-item-modal-unit-row">
+                      <div className="selling-pos-item-modal-unit-label">
+                        <span>Carats sold</span>
+                      </div>
+                      <div className="selling-pos-item-modal-unit-input-wrap">
+                        <GuardedAmountNumberInput
+                          className="selling-pos-item-modal-unit-input"
+                          value={itemModalSoldCarats}
+                          min={0}
+                          step={0.001}
+                          placeholder="0.000"
+                          onChange={e => {
+                            itemModalUnitPriceManualRef.current = false;
+                            setItemModalSoldCarats(e.target.value);
+                          }}
+                          aria-label="Total carat weight for pieces on memo"
+                        />
+                        <span className="selling-pos-item-modal-unit-currency">ct</span>
+                      </div>
+                    </div>
+                    <p className="selling-pos-item-modal-carats-hint">
+                      Enter total weight for {itemModalQty} pc{itemModalQty === 1 ? '' : 's'} (lot has{' '}
+                      {itemModalTarget.weight_carats} ct remaining).
+                    </p>
+                  </section>
+                ) : null}
 
                 <section className="selling-pos-item-modal-bottom">
                   <div className="selling-pos-item-modal-qty-row">
@@ -2736,6 +3007,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({
                     setItemModalOpen(false);
                     setItemModalTarget(null);
                     setItemModalFromCartEdit(false);
+                    setItemModalSoldCarats('');
                   }}
                 >
                   Cancel
@@ -2755,7 +3027,7 @@ export const MemoPage: React.FC<MemoPageProps> = ({
         </div>
       )}
 
-      {detailOpen && (
+      {detailOpen && !memoConvertPaymentOpen && (
         <div
           className="memo-modal-overlay memo-modal-overlay--vault"
           role="dialog"
@@ -3040,11 +3312,19 @@ export const MemoPage: React.FC<MemoPageProps> = ({
               onClick={() => setCcModal(null)}
             >
               <div
-                className="selling2-modal selling-pos-cc-modal selling-pos-cc-modal--pickers"
+                className="selling2-modal selling-pos-cc-modal selling-pos-cc-modal--pickers selling-pos-cc-modal--customer"
                 onClick={e => e.stopPropagation()}
               >
-                <div className="selling2-modal-header selling-pos-cc-modal-head">
-                  <h3 id="memo-cc-customer-title">Select customer</h3>
+                <div className="selling2-modal-header selling-pos-cc-modal-head selling-pos-cc-modal-head--customer">
+                  <div className="selling-pos-cc-modal-head-main">
+                    <span className="selling-pos-cc-modal-head-icon" aria-hidden="true">
+                      <IconCcUser />
+                    </span>
+                    <div>
+                      <h3 id="memo-cc-customer-title">Select customer</h3>
+                      <p className="selling-pos-cc-modal-head-sub">Search your list or add someone new</p>
+                    </div>
+                  </div>
                   <button
                     type="button"
                     className="selling2-modal-close selling-pos-cc-modal-close"
@@ -3055,6 +3335,9 @@ export const MemoPage: React.FC<MemoPageProps> = ({
                   </button>
                 </div>
                 <div className="selling2-modal-body selling-pos-cc-modal-body">
+                  <label className="selling-pos-cc-modal-search-label" htmlFor="memo-cc-customer-search">
+                    Find customer
+                  </label>
                   <div className="selling2-customer-search selling2-customer-search--gem selling-pos-cc-modal-search">
                     <span className="selling2-search-icon" aria-hidden="true">
                       <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -3063,25 +3346,26 @@ export const MemoPage: React.FC<MemoPageProps> = ({
                       </svg>
                     </span>
                     <input
+                      id="memo-cc-customer-search"
                       type="search"
                       value={customerSearch}
                       onChange={e => setCustomerSearch(e.target.value)}
                       className="selling2-search-input"
-                      placeholder="Search by name or phone..."
+                      placeholder="Name or phone number…"
                       autoFocus
                     />
                   </div>
                   <div className="selling-pos-cc-modal-list selling-pos-cc-modal-list--customers">
                     {customers.length === 0 ? (
-                      <p className="selling-pos-cc-modal-empty">
-                        <span className="selling-pos-cc-modal-empty-icon" aria-hidden="true">
-                          <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="11" cy="11" r="8" />
-                            <path d="m21 21-4.35-4.35" />
-                          </svg>
+                      <div className="selling-pos-cc-modal-empty">
+                        <span className="selling-pos-cc-modal-empty-icon selling-pos-cc-modal-empty-icon--users" aria-hidden="true">
+                          <IconNewCustomerUser />
                         </span>
-                        Type to search customers, or add a new one below.
-                      </p>
+                        <strong className="selling-pos-cc-modal-empty-title">No customers to show</strong>
+                        <p className="selling-pos-cc-modal-empty-text">
+                          Type in the search box above to find an existing customer.
+                        </p>
+                      </div>
                     ) : (
                       customers.map(c => (
                         <button
@@ -3095,14 +3379,24 @@ export const MemoPage: React.FC<MemoPageProps> = ({
                             setCcModal(null);
                           }}
                         >
-                          <span className="selling-pos-cc-customer-option-name">{c.name}</span>
-                          <span className="selling-pos-cc-customer-option-sub">
-                            {c.phone ? <span className="selling-pos-cc-customer-option-phone">{c.phone}</span> : null}
-                            {c.phone && c.email ? <span className="selling-pos-cc-customer-option-dot"> · </span> : null}
-                            {c.email ? <span className="selling-pos-cc-customer-option-email">{c.email}</span> : null}
-                            {!c.phone && !c.email ? (
-                              <span className="selling-pos-cc-customer-option-muted">No phone or email on file</span>
-                            ) : null}
+                          <span className="selling-pos-cc-customer-option-avatar" aria-hidden="true">
+                            {customerInitials(c.name)}
+                          </span>
+                          <span className="selling-pos-cc-customer-option-body">
+                            <span className="selling-pos-cc-customer-option-name">{c.name}</span>
+                            <span className="selling-pos-cc-customer-option-sub">
+                              {c.phone ? <span className="selling-pos-cc-customer-option-phone">{c.phone}</span> : null}
+                              {c.phone && c.email ? <span className="selling-pos-cc-customer-option-dot"> · </span> : null}
+                              {c.email ? <span className="selling-pos-cc-customer-option-email">{c.email}</span> : null}
+                              {!c.phone && !c.email ? (
+                                <span className="selling-pos-cc-customer-option-muted">No phone or email on file</span>
+                              ) : null}
+                            </span>
+                          </span>
+                          <span className="selling-pos-cc-customer-option-chevron" aria-hidden="true">
+                            <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="m9 18 6-6 6-6" />
+                            </svg>
                           </span>
                         </button>
                       ))
@@ -3110,16 +3404,19 @@ export const MemoPage: React.FC<MemoPageProps> = ({
                   </div>
                   <button
                     type="button"
-                    className="selling-pos-cc-modal-new"
+                    className="selling-pos-cc-modal-new selling-pos-cc-modal-new--prominent"
                     onClick={() => {
                       setCcModal(null);
                       setNewCustomerModalOpen(true);
                     }}
                   >
-                    <span className="selling-pos-cc-modal-new-icon" aria-hidden="true">
+                    <span className="selling-pos-cc-modal-new-icon-wrap" aria-hidden="true">
                       <IconPlus />
                     </span>
-                    Add new customer
+                    <span className="selling-pos-cc-modal-new-copy">
+                      <span className="selling-pos-cc-modal-new-title">Add new customer</span>
+                      <span className="selling-pos-cc-modal-new-sub">Create a profile for a walk-in or new buyer</span>
+                    </span>
                   </button>
                 </div>
                 <div className="selling2-modal-footer selling-pos-cc-modal-foot">
@@ -3387,6 +3684,21 @@ export const MemoPage: React.FC<MemoPageProps> = ({
           </div>
         </div>
       )}
+
+      <InvoicePaymentIntentModal
+        open={memoConvertPaymentOpen}
+        title="How is this invoice being paid?"
+        subtitle={
+          memoConvertSnapshot
+            ? `Converting memo ${memoConvertSnapshot.memoNo} to invoice`
+            : undefined
+        }
+        total={memoConvertSnapshot?.total ?? 0}
+        currencyCode={memoConvertSnapshot?.currencyCode ?? DEFAULT_CURRENCY_CODE}
+        busy={actionBusy}
+        onCancel={cancelMemoConvertPayment}
+        onConfirm={payload => void submitMemoConvertWithPayment(payload)}
+      />
     </div>
   );
 };
