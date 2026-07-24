@@ -165,17 +165,30 @@ function memoLineReceiptParts(row: ReceiptMemoLine): { title: string; sub: strin
   return { title, sub: code ? `Code: ${code}` : '' };
 }
 
-/** List $/ct before line discount (gross ÷ carats). */
-function listPricePerCarat(grossAmount: number, carats: number | null | undefined): number | null {
+/** List/agreed $/ct. Prefer stored unit_price when it is already per-ct (weight present). */
+function pricePerCaratForReceipt(
+  unitPrice: number,
+  grossAmount: number,
+  carats: number | null | undefined
+): number | null {
   const ct = carats != null && Number.isFinite(Number(carats)) ? Number(carats) : NaN;
   if (!Number.isFinite(ct) || ct <= 0) return null;
+  // After per-ct pricing, unit_price is already $/ct.
+  const u = Number(unitPrice) || 0;
+  if (u > 0) return u;
   return (Number(grossAmount) || 0) / ct;
 }
 
-/** Gross line amount from stored unit price × qty (before line discount). */
+/**
+ * Gross line amount before line discount.
+ * When weight_carats is set, unit_price is $/ct → gross = unit_price × ct.
+ * Otherwise unit_price is per piece → gross = unit_price × qty.
+ */
 function invoiceLineGross(row: ReceiptInvoiceLine): number {
   const q = Math.max(0, Number(row.quantity) || 0);
   const u = Number(row.unit_price) || 0;
+  const ct = row.weight_carats != null && Number.isFinite(Number(row.weight_carats)) ? Number(row.weight_carats) : NaN;
+  if (Number.isFinite(ct) && ct > 0) return u * ct;
   return q * u;
 }
 
@@ -839,7 +852,7 @@ function buildInvoiceTableRows(
       const qty = row.quantity || 0;
       const ct = row.weight_carats;
       const gross = invoiceLineGross(row);
-      const ppc = listPricePerCarat(gross, ct);
+      const ppc = pricePerCaratForReceipt(row.unit_price, gross, ct);
       const priceCol =
         ppc != null ? formatMoney(ppc, currencyCode) : formatMoney(row.unit_price, currencyCode);
       const idx = String(i + 1).padStart(2, '0');
@@ -1018,7 +1031,7 @@ function buildInvoiceDoc(
 </div>`;
 }
 
-/** Per-line amounts for remaining pcs (memo stores gross `unit_price`, net `line_total` for full qty). */
+/** Per-line amounts for remaining pcs (unit_price is $/ct when weight_carats is set). */
 export function memoReceiptLineRemainingAmounts(row: ReceiptMemoLine): {
   remaining: number;
   lineGrossRem: number;
@@ -1027,9 +1040,14 @@ export function memoReceiptLineRemainingAmounts(row: ReceiptMemoLine): {
 } {
   const remaining = Math.max(0, (row.quantity || 0) - (row.returned_qty || 0));
   const q = Math.max(1, Math.floor(Number(row.quantity) || 1));
-  const grossPc = Number(row.unit_price || 0);
+  const unit = Number(row.unit_price || 0);
+  const ctFull =
+    row.weight_carats != null && Number.isFinite(Number(row.weight_carats)) && Number(row.weight_carats) > 0
+      ? Number(row.weight_carats)
+      : null;
   const lineNetFull = roundMoney2(Number(row.line_total) || 0);
-  const lineGrossFull = roundMoney2(grossPc * q);
+  const lineGrossFull =
+    ctFull != null ? roundMoney2(unit * ctFull) : roundMoney2(unit * q);
   const lineGrossRem = q > 0 ? roundMoney2((lineGrossFull * remaining) / q) : 0;
   const lineNetRem = q > 0 ? roundMoney2((lineNetFull * remaining) / q) : 0;
   const lineDiscRem = Math.max(0, roundMoney2(lineGrossRem - lineNetRem));
@@ -1082,7 +1100,7 @@ function buildMemoTableRows(me: ReceiptMemoPayload | null, currencyCode: string)
       const { remaining, lineGrossRem, lineDiscRem, lineNetRem } = memoReceiptLineRemainingAmounts(row);
       const parts = memoLineReceiptParts(row);
       const ct = row.weight_carats;
-      const ppc = listPricePerCarat(lineGrossRem, ct);
+      const ppc = pricePerCaratForReceipt(row.unit_price, lineGrossRem, ct);
       const priceCol =
         ppc != null ? formatMoney(ppc, currencyCode) : formatMoney(row.unit_price, currencyCode);
       const idx = String(i + 1).padStart(2, '0');

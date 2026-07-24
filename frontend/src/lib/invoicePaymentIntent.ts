@@ -78,10 +78,9 @@ export function computeMemoConvertInvoiceTotal(detail: {
     returned_qty: number;
     unit_price: number;
     line_total: number;
+    weight_carats?: number | null;
   }>;
 }): number {
-  let subtotalGross = 0;
-  let itemsDiscountTotal = 0;
   let remainingNetBeforeOrder = 0;
   const memoNetBeforeOrderAll = roundMoney2(
     detail.items.reduce((sum, l) => sum + (Number(l.line_total) || 0), 0)
@@ -91,21 +90,14 @@ export function computeMemoConvertInvoiceTotal(detail: {
     const rq = Math.floor(Number(l.returned_qty) || 0);
     const rem = Math.max(0, q - rq);
     if (rem <= 0) continue;
-    const grossPc = Number(l.unit_price) || 0;
-    const lineGross = grossPc * rem;
     const lineNet = q > 0 ? (Number(l.line_total) || 0) * (rem / q) : 0;
-    const lineNetRounded = roundMoney2(lineNet);
-    const lineDisc = Math.max(0, roundMoney2(lineGross - lineNetRounded));
-    subtotalGross += lineGross;
-    itemsDiscountTotal += lineDisc;
-    remainingNetBeforeOrder += lineNetRounded;
+    remainingNetBeforeOrder += roundMoney2(lineNet);
   }
   const proportionalOrderDiscount =
     memoNetBeforeOrderAll > 0
       ? roundMoney2((Number(detail.order_discount) || 0) * (remainingNetBeforeOrder / memoNetBeforeOrderAll))
       : 0;
-  const totalDiscount = Math.min(subtotalGross, itemsDiscountTotal + proportionalOrderDiscount);
-  return Math.max(0, roundMoney2(subtotalGross - totalDiscount));
+  return Math.max(0, roundMoney2(remainingNetBeforeOrder - proportionalOrderDiscount));
 }
 
 export function newPaymentRowId(): string {

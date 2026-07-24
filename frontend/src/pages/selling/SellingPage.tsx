@@ -17,9 +17,10 @@ import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
 import { dateFromServerUtc } from '../../lib/serverTime';
 import { formatUsdOnlyFromAny } from '../../lib/moneyUsdDisplay';
 import {
+  itemNeedsSoldCaratsInput,
+  lineGrossFromPerCt,
+  listPricePerCt,
   lotListLineGross,
-  lotListUnitPerPiece,
-  lotNeedsSoldCaratsInput,
   parseSoldCaratsInput,
   soldCaratsCartSuffix,
   validateSoldCaratsForLot,
@@ -70,6 +71,7 @@ const IconCartModal = () => (
 /**
  * Unit price prefill from inventory list: no FX conversion. Staff enters amounts in invoice currency
  * when it differs from the item's stored list currency.
+ * For items with carat weight, this is price per ct.
  */
 function sellingUnitPrefillFromList(
   item: InventoryItem,
@@ -77,32 +79,32 @@ function sellingUnitPrefillFromList(
   qty = 1,
   soldCaratsRaw?: string | number | null
 ): number {
+  void qty;
+  void soldCaratsRaw;
   const listCur = normalizeCurrencyCode(item.selling_currency ?? DEFAULT_CURRENCY_CODE);
   const inv = normalizeCurrencyCode(invoiceCurrency);
   if (listCur !== inv) return 0;
-  if (lotNeedsSoldCaratsInput(item)) {
-    const sold =
-      typeof soldCaratsRaw === 'number' ? soldCaratsRaw : parseSoldCaratsInput(soldCaratsRaw);
-    const perPc = lotListUnitPerPiece(item, sold, qty);
-    return perPc != null ? perPc : 0;
+  if (itemNeedsSoldCaratsInput(item)) {
+    const perCt = listPricePerCt(item);
+    return perCt != null ? perCt : 0;
   }
   return roundMoney2(Number(item.selling_total_price ?? 0));
 }
 
-/** Inventory list price per unit in `invoiceCurrency`, or null if not comparable (currency mismatch). */
+/** Inventory list price per unit (per ct when weighed; else whole-item) in invoice currency. */
 function inventoryListUnitInInvoiceCurrency(
   item: InventoryItem,
   invoiceCurrency: string,
   qty = 1,
   soldCaratsRaw?: string | number | null
 ): number | null {
+  void qty;
+  void soldCaratsRaw;
   const listCur = normalizeCurrencyCode(item.selling_currency ?? DEFAULT_CURRENCY_CODE);
   const inv = normalizeCurrencyCode(invoiceCurrency);
   if (listCur !== inv) return null;
-  if (lotNeedsSoldCaratsInput(item)) {
-    const sold =
-      typeof soldCaratsRaw === 'number' ? soldCaratsRaw : parseSoldCaratsInput(soldCaratsRaw);
-    return lotListUnitPerPiece(item, sold, qty);
+  if (itemNeedsSoldCaratsInput(item)) {
+    return listPricePerCt(item);
   }
   const v = Number(item.selling_total_price ?? 0);
   if (!Number.isFinite(v) || v < 0) return null;
@@ -718,13 +720,11 @@ export const SellingPage: React.FC<SellingPageProps> = ({
     void fetchInvoices();
   }, [fetchInvoices]);
 
-  /** When carats or qty change on a lot line, prefill unit price from ct-based list (until manually edited). */
+  /** When carats change on a weighed line, prefill unit price from $/ct list (until manually edited). */
   useEffect(() => {
-    if (!itemModalOpen || !itemModalTarget || !lotNeedsSoldCaratsInput(itemModalTarget)) return;
+    if (!itemModalOpen || !itemModalTarget || !itemNeedsSoldCaratsInput(itemModalTarget)) return;
     if (itemModalUnitPriceManualRef.current) return;
-    const sold = parseSoldCaratsInput(itemModalSoldCarats);
-    if (sold == null) return;
-    const listUnit = lotListUnitPerPiece(itemModalTarget, sold, itemModalQty);
+    const listUnit = listPricePerCt(itemModalTarget);
     if (listUnit != null) setItemModalUnitPrice(listUnit);
   }, [itemModalOpen, itemModalTarget, itemModalSoldCarats, itemModalQty]);
 
@@ -742,16 +742,21 @@ export const SellingPage: React.FC<SellingPageProps> = ({
     return Math.max(1, base + bonus);
   };
 
-  /** Editable unit price (amount charged per piece). */
+  /** Editable unit price: per ct when item has weight; otherwise per piece / whole item. */
   const lineSellUnitForItem = (item: InventoryItem): number => {
     const manual = itemUnitPrices[item.id];
     if (manual != null && Number.isFinite(manual)) return roundMoney2(manual);
     return sellingUnitPrefillFromList(item, saleCurrency);
   };
 
+  const soldCaratsForItem = (item: InventoryItem): number | null => {
+    if (!itemNeedsSoldCaratsInput(item)) return null;
+    return parseSoldCaratsInput(itemSoldCarats[item.id]);
+  };
+
   /**
    * Unit price stored on the invoice line (`price` in API): list when sale is at or below inventory list
-   * (so line discount = list − sell); otherwise the sell unit (premium over list).
+   * (so line discount = list − sell); otherwise the sell unit. For weighed items this is $/ct.
    */
   const lineApiUnitPriceForItem = (item: InventoryItem): number => {
     const q = itemQuantities[item.id] ?? 1;
@@ -766,32 +771,36 @@ export const SellingPage: React.FC<SellingPageProps> = ({
   const lineSubtotalGrossForItem = (item: InventoryItem) => {
     const unit = lineApiUnitPriceForItem(item);
     const q = itemQuantities[item.id] ?? 1;
+    const soldCt = soldCaratsForItem(item);
+    if (itemNeedsSoldCaratsInput(item)) return lineGrossFromPerCt(unit, soldCt);
     return roundMoney2(unit * q);
   };
 
-  /** Amount charged for the line (sell unit × qty). */
+  /** Amount charged for the line (sell unit × ct, or × qty). */
   const lineSellTotalForItem = (item: InventoryItem) => {
     const unit = lineSellUnitForItem(item);
     const q = itemQuantities[item.id] ?? 1;
+    const soldCt = soldCaratsForItem(item);
+    if (itemNeedsSoldCaratsInput(item)) return lineGrossFromPerCt(unit, soldCt);
     return roundMoney2(unit * q);
   };
 
-  /** Line discount = (inventory list − sell) × qty when sell is below list; otherwise 0. */
+  /** Line discount when sell is below list (absolute $ on the line). */
   const lineDerivedItemDiscount = (item: InventoryItem): number => {
     const sell = lineSellUnitForItem(item);
     const q = itemQuantities[item.id] ?? 1;
     const list = inventoryListUnitInInvoiceCurrency(item, saleCurrency, q, itemSoldCarats[item.id]);
     if (list == null || sell >= list) return 0;
-    const perUnit = roundMoney2(list - sell);
-    const raw = perUnit * q;
+    const soldCt = soldCaratsForItem(item);
+    const raw = itemNeedsSoldCaratsInput(item)
+      ? lineGrossFromPerCt(list - sell, soldCt)
+      : roundMoney2((list - sell) * q);
     const gross = lineSubtotalGrossForItem(item);
     return Math.min(gross, Math.max(0, roundMoney2(raw)));
   };
 
   const addToCart = useCallback((item: InventoryItem) => {
-    const initialUnit = lotNeedsSoldCaratsInput(item)
-      ? 0
-      : sellingUnitPrefillFromList(item, saleCurrency);
+    const initialUnit = sellingUnitPrefillFromList(item, saleCurrency);
     let inserted = false;
     setCart(prev => {
       if (prev.some(c => c.id === item.id)) return prev;
@@ -804,6 +813,12 @@ export const SellingPage: React.FC<SellingPageProps> = ({
       [item.id]: 1,
     }));
     setItemUnitPrices(prev => ({ ...prev, [item.id]: roundMoney2(initialUnit) }));
+    if (itemNeedsSoldCaratsInput(item) && item.weight_carats != null) {
+      setItemSoldCarats(prev => ({
+        ...prev,
+        [item.id]: String(item.weight_carats),
+      }));
+    }
   }, [saleCurrency]);
 
   useEffect(() => {
@@ -869,13 +884,6 @@ export const SellingPage: React.FC<SellingPageProps> = ({
     if (!Number.isFinite(q) || q < 1) q = 1;
     if (q > maxPcs) q = maxPcs;
     setItemQuantities(prev => ({ ...prev, [item.id]: q }));
-    if (lotNeedsSoldCaratsInput(item)) {
-      setItemSoldCarats(prev => {
-        const next = { ...prev };
-        delete next[item.id];
-        return next;
-      });
-    }
   };
 
   const bumpQtyForItem = (item: InventoryItem, delta: number) => {
@@ -889,14 +897,14 @@ export const SellingPage: React.FC<SellingPageProps> = ({
     const maxPcs = maxPcsForItem(item);
     const safeQty = Math.max(1, Math.min(maxPcs, Math.floor(Number(itemModalQty) || 1)));
     let safeUnit = Math.max(0, roundMoney2(Number(itemModalUnitPrice) || 0));
-    if (lotNeedsSoldCaratsInput(item)) {
+    if (itemNeedsSoldCaratsInput(item)) {
       const soldCt = parseSoldCaratsInput(itemModalSoldCarats);
       const err = validateSoldCaratsForLot(item.weight_carats, soldCt);
       if (err) {
         showAlert({ title: 'Carat weight required', message: err, variant: 'warning' });
         return;
       }
-      const listUnit = lotListUnitPerPiece(item, soldCt, safeQty);
+      const listUnit = listPricePerCt(item);
       if (listUnit != null && safeUnit <= 0) safeUnit = listUnit;
     }
     if (!itemModalFromCartEdit) {
@@ -904,7 +912,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
     }
     setItemQuantities(prev => ({ ...prev, [item.id]: safeQty }));
     setItemUnitPrices(prev => ({ ...prev, [item.id]: safeUnit }));
-    if (lotNeedsSoldCaratsInput(item)) {
+    if (itemNeedsSoldCaratsInput(item)) {
       setItemSoldCarats(prev => ({ ...prev, [item.id]: itemModalSoldCarats.trim() }));
     } else {
       setItemSoldCarats(prev => {
@@ -939,30 +947,31 @@ export const SellingPage: React.FC<SellingPageProps> = ({
           itemModalSoldCarats
         )
       : 0;
+  const itemModalSoldCt =
+    itemModalTarget != null && itemNeedsSoldCaratsInput(itemModalTarget)
+      ? parseSoldCaratsInput(itemModalSoldCarats)
+      : null;
   const itemModalListLineGross =
-    itemModalTarget != null
-      ? lotListLineGross(itemModalTarget, parseSoldCaratsInput(itemModalSoldCarats))
+    itemModalTarget != null && itemNeedsSoldCaratsInput(itemModalTarget)
+      ? lotListLineGross(itemModalTarget, itemModalSoldCt)
       : null;
   const itemModalPiecesAvail =
     itemModalTarget != null ? rawPiecesAvailForItem(itemModalTarget) : 0;
-  const itemModalDiscount = Math.max(
-    0,
-    roundMoney2(
-      (itemModalListLineGross ?? itemModalListUnit * Math.max(1, itemModalQty)) -
-        itemModalUnitPrice * Math.max(1, itemModalQty)
-    )
-  );
-  const itemModalListBasis = itemModalListLineGross ?? itemModalListUnit * Math.max(1, itemModalQty);
+  const itemModalSellLine =
+    itemModalTarget != null && itemNeedsSoldCaratsInput(itemModalTarget)
+      ? lineGrossFromPerCt(itemModalUnitPrice, itemModalSoldCt)
+      : roundMoney2(Math.max(0, itemModalUnitPrice) * Math.max(1, itemModalQty));
+  const itemModalListBasis =
+    itemModalListLineGross ??
+    roundMoney2(itemModalListUnit * Math.max(1, itemModalQty));
+  const itemModalDiscount = Math.max(0, roundMoney2(itemModalListBasis - itemModalSellLine));
   const itemModalDiscountPct =
     itemModalListBasis > 0 ? roundMoney2((itemModalDiscount / itemModalListBasis) * 100) : 0;
-  const itemModalSubtotal = roundMoney2(Math.max(0, itemModalUnitPrice) * Math.max(1, itemModalQty));
-  const itemModalPremium = Math.max(
-    0,
-    roundMoney2(itemModalUnitPrice * Math.max(1, itemModalQty) - itemModalListBasis)
-  );
+  const itemModalSubtotal = itemModalSellLine;
+  const itemModalPremium = Math.max(0, roundMoney2(itemModalSellLine - itemModalListBasis));
   const itemModalPremiumPct =
     itemModalListBasis > 0 ? roundMoney2((itemModalPremium / itemModalListBasis) * 100) : 0;
-  const modalPriceDiff = roundMoney2(itemModalListBasis - itemModalUnitPrice * Math.max(1, itemModalQty));
+  const modalPriceDiff = roundMoney2(itemModalListBasis - itemModalSellLine);
   const modalShowSavingBanner = modalPriceDiff > 0.005;
   const modalShowAboveBanner = modalPriceDiff < -0.005;
 
@@ -1138,7 +1147,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
       return false;
     }
     for (const item of cart) {
-      if (!lotNeedsSoldCaratsInput(item)) continue;
+      if (!itemNeedsSoldCaratsInput(item)) continue;
       const soldCt = parseSoldCaratsInput(itemSoldCarats[item.id]);
       const err = validateSoldCaratsForLot(item.weight_carats, soldCt);
       if (err) {
@@ -1155,7 +1164,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
 
   const buildInvoiceItemsBody = () =>
     cart.map(item => {
-      const soldCt = lotNeedsSoldCaratsInput(item) ? parseSoldCaratsInput(itemSoldCarats[item.id]) : null;
+      const soldCt = itemNeedsSoldCaratsInput(item) ? parseSoldCaratsInput(itemSoldCarats[item.id]) : null;
       return {
         inventory_item_id: item.id,
         price: lineApiUnitPriceForItem(item),
@@ -1528,17 +1537,24 @@ export const SellingPage: React.FC<SellingPageProps> = ({
         quantities[row.id] = qty;
         reserved[row.id] = qty;
         const lineTotal = Number(line.line_total || 0);
-        unitPrices[row.id] = roundMoney2(qty > 0 ? lineTotal / qty : 0);
         const lineCt = (line as { weight_carats?: number | null }).weight_carats;
         if (lineCt != null && Number.isFinite(Number(lineCt)) && Number(lineCt) > 0) {
           soldCarats[row.id] = String(lineCt);
+          unitPrices[row.id] = roundMoney2(lineTotal / Number(lineCt));
+        } else {
+          unitPrices[row.id] = roundMoney2(qty > 0 ? lineTotal / qty : 0);
         }
       }
 
       let itemsDiscSum = 0;
       for (const line of data.items) {
         const qty = Math.max(1, Math.floor(Number(line.quantity) || 1));
-        const lg = qty * Number(line.unit_price || 0);
+        const lineCt = (line as { weight_carats?: number | null }).weight_carats;
+        const unit = Number(line.unit_price || 0);
+        const lg =
+          lineCt != null && Number.isFinite(Number(lineCt)) && Number(lineCt) > 0
+            ? unit * Number(lineCt)
+            : qty * unit;
         itemsDiscSum += Math.max(0, lg - Number(line.line_total || 0));
       }
       const orderDisc = Math.max(0, Number(data.discount ?? 0) - itemsDiscSum);
@@ -1644,7 +1660,11 @@ export const SellingPage: React.FC<SellingPageProps> = ({
   const openItemModalWithItem = (item: InventoryItem, fromCartEdit: boolean) => {
     const q = fromCartEdit ? itemQuantities[item.id] ?? 1 : 1;
     const safeQty = Math.max(1, Math.floor(Number(q) || 1));
-    const soldRaw = fromCartEdit ? itemSoldCarats[item.id] ?? '' : '';
+    const soldRaw = fromCartEdit
+      ? itemSoldCarats[item.id] ?? ''
+      : itemNeedsSoldCaratsInput(item) && item.weight_carats != null
+        ? String(item.weight_carats)
+        : '';
     const defaultUnit = fromCartEdit
       ? lineSellUnitForItem(item)
       : sellingUnitPrefillFromList(item, saleCurrency, safeQty, soldRaw);
@@ -2027,7 +2047,10 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                         <span className="selling-pos-line-meta-badge">{codeLabel}</span>
                       </div>
                       <div className="selling-pos-line-price-row">
-                        <span className="selling-pos-line-unit">{formatMoneyAmount(lineSellUnitForItem(it), saleCurrency)}</span>
+                        <span className="selling-pos-line-unit">
+                          {formatMoneyAmount(lineSellUnitForItem(it), saleCurrency)}
+                          {itemNeedsSoldCaratsInput(it) ? '/ct' : ''}
+                        </span>
                         {lineDiscount > 0 ? (
                           <span className="selling-pos-line-discount">-{formatMoneyAmount(lineDiscount, saleCurrency)} off</span>
                         ) : null}
@@ -2438,7 +2461,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                 <div className="selling-pos-item-modal-price-grid selling-pos-item-modal-price-grid--single">
                   <div className="selling-pos-item-modal-price-cell">
                     <div className="selling-pos-item-modal-price-cell-label">
-                      {itemModalTarget && lotNeedsSoldCaratsInput(itemModalTarget)
+                      {itemModalTarget && itemNeedsSoldCaratsInput(itemModalTarget)
                         ? 'List price (this sale)'
                         : 'Selling Price'}
                     </div>
@@ -2448,7 +2471,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                         : formatMoneyAmount(itemModalListUnit, saleCurrency)}
                     </div>
                     {itemModalTarget &&
-                    lotNeedsSoldCaratsInput(itemModalTarget) &&
+                    itemNeedsSoldCaratsInput(itemModalTarget) &&
                     itemModalTarget.selling_carat_price != null &&
                     Number(itemModalTarget.selling_carat_price) > 0 ? (
                       <div className="selling-pos-item-modal-carats-hint">
@@ -2462,8 +2485,8 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                   <div className="selling-pos-item-modal-unit-label">
                     <IconEdit />
                     <span>
-                      {itemModalTarget && lotNeedsSoldCaratsInput(itemModalTarget)
-                        ? 'Price per pc'
+                      {itemModalTarget && itemNeedsSoldCaratsInput(itemModalTarget)
+                        ? 'Price per ct'
                         : 'Unit Price'}
                     </span>
                   </div>
@@ -2479,8 +2502,15 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                         itemModalUnitPriceManualRef.current = true;
                         setItemModalUnitPrice(Math.max(0, parseMoneyInput(e.target.value)));
                       }}
-                      aria-label={`Unit price (${saleCurrency})`}
+                      aria-label={
+                        itemModalTarget && itemNeedsSoldCaratsInput(itemModalTarget)
+                          ? `Price per carat (${saleCurrency})`
+                          : `Unit price (${saleCurrency})`
+                      }
                     />
+                    {itemModalTarget && itemNeedsSoldCaratsInput(itemModalTarget) ? (
+                      <span className="selling-pos-item-modal-unit-currency">/ct</span>
+                    ) : null}
                   </div>
                 </div>
 
@@ -2508,7 +2538,7 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                 ) : null}
               </section>
 
-              {itemModalTarget && lotNeedsSoldCaratsInput(itemModalTarget) ? (
+              {itemModalTarget && itemNeedsSoldCaratsInput(itemModalTarget) ? (
                 <section className="selling-pos-item-modal-pricing">
                   <div className="selling-pos-item-modal-unit-row">
                     <div className="selling-pos-item-modal-unit-label">
@@ -2525,14 +2555,14 @@ export const SellingPage: React.FC<SellingPageProps> = ({
                           itemModalUnitPriceManualRef.current = false;
                           setItemModalSoldCarats(e.target.value);
                         }}
-                        aria-label="Total carat weight for pieces being sold"
+                        aria-label="Carat weight being sold"
                       />
                       <span className="selling-pos-item-modal-unit-currency">ct</span>
                     </div>
                   </div>
                   <p className="selling-pos-item-modal-carats-hint">
-                    Enter total weight for {itemModalQty} pc{itemModalQty === 1 ? '' : 's'} (lot has{' '}
-                    {itemModalTarget.weight_carats} ct remaining).
+                    Enter weight for this sale (item has {itemModalTarget.weight_carats} ct remaining).
+                    Line total = price per ct × carats.
                   </p>
                 </section>
               ) : null}

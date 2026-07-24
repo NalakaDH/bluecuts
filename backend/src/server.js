@@ -213,7 +213,7 @@ function isSingleStoneLot(stockRow) {
   return lotSize <= 1;
 }
 
-/** Carats leaving stock for a sale/memo line (null when lot has no carat weight). */
+/** Carats leaving stock for a sale/memo line (null when item has no carat weight). */
 function resolveSoldCaratsForStockOut(stockRow, quantity, requestedCarats) {
   const stockCt =
     stockRow.weight_carats != null && stockRow.weight_carats !== ''
@@ -222,21 +222,37 @@ function resolveSoldCaratsForStockOut(stockRow, quantity, requestedCarats) {
   if (stockCt == null || !Number.isFinite(stockCt) || stockCt <= 0) {
     return { soldCarats: null };
   }
-  if (isSingleStoneLot(stockRow)) {
-    return { soldCarats: roundCarats(stockCt) };
-  }
   const req =
     requestedCarats != null && requestedCarats !== '' ? Number(requestedCarats) : NaN;
   if (!Number.isFinite(req) || req <= 0) {
+    // Singles historically sold full remaining weight when client omitted ct.
+    if (isSingleStoneLot(stockRow)) {
+      return { soldCarats: roundCarats(stockCt) };
+    }
     const label = stockRow.item_code || stockRow.item_sticker || `#${stockRow.id}`;
-    return { error: `Carat weight is required when selling from lot ${label}` };
+    return { error: `Carat weight is required when selling ${label}` };
   }
   if (req > stockCt + 0.001) {
     return {
-      error: `Sold carats (${req} ct) cannot exceed remaining lot weight (${stockCt} ct)`,
+      error: `Sold carats (${req} ct) cannot exceed remaining weight (${stockCt} ct)`,
     };
   }
   return { soldCarats: roundCarats(req) };
+}
+
+/**
+ * Line gross: when weight_carats is set, unit_price is per ct; otherwise per piece.
+ * unit_price × ct (or × qty). Discount is still an absolute amount on the line.
+ */
+function lineGrossFromUnitPrice(unitPrice, quantity, weightCarats) {
+  const p = Number(unitPrice) || 0;
+  const ct =
+    weightCarats != null && weightCarats !== '' && Number.isFinite(Number(weightCarats)) && Number(weightCarats) > 0
+      ? Number(weightCarats)
+      : null;
+  if (ct != null) return roundMoney2(p * ct);
+  const q = Math.max(0, Math.floor(Number(quantity || 0)));
+  return roundMoney2(p * q);
 }
 
 /** Carats to restore when pcs are returned/restocked from a stored line total. */
@@ -2755,7 +2771,7 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
     if (!Number.isFinite(quantity) || quantity < 1) {
       return res.status(400).json({ error: 'Each line must have a quantity of at least 1' });
     }
-    const lineGross = unitPrice * quantity;
+    const lineGross = lineGrossFromUnitPrice(unitPrice, quantity, it.weight_carats);
     subtotalGross += lineGross;
     itemsDiscountTotal += Math.min(discount, lineGross);
   }
@@ -2802,7 +2818,9 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
       const unitPrice = Number(it.unit_price || 0);
       const discount = Number(it.discount || 0);
       const quantity = Math.floor(Number(it.quantity ?? 0));
-      const lineGross = unitPrice * quantity;
+      const reqWeightCarats =
+        it.weight_carats != null && it.weight_carats !== '' ? Number(it.weight_carats) : null;
+      const lineGross = lineGrossFromUnitPrice(unitPrice, quantity, reqWeightCarats);
       const lineTotal = Math.max(0, lineGross - Math.min(discount, lineGross));
       const reqCode = it.item_code != null ? String(it.item_code).trim() || null : null;
       const reqDesc = it.description != null ? String(it.description) : null;
@@ -2832,6 +2850,8 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
       const soldResolved = resolveSoldCaratsForStockOut(stockRow, quantity, it.weight_carats);
       if (soldResolved.error) throw new Error(soldResolved.error);
       const soldCarats = soldResolved.soldCarats;
+      const pricedGross = lineGrossFromUnitPrice(unitPrice, quantity, soldCarats);
+      const pricedTotal = Math.max(0, pricedGross - Math.min(discount, pricedGross));
 
       await dbRun(
         `
@@ -2840,7 +2860,7 @@ app.post('/api/memos', authMiddleware, requireRole(['owner', 'staff']), async (r
         )
         VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
       `,
-        [memoId, inventoryItemId, itemCode, description, quantity, unitPrice, lineTotal, soldCarats]
+        [memoId, inventoryItemId, itemCode, description, quantity, unitPrice, pricedTotal, soldCarats]
       );
 
       await stockOutInventory(inventoryItemId, quantity, soldCarats);
@@ -3156,7 +3176,7 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
           const delta = newQ - oldQ;
           const oldLineCarats = row.weight_carats != null ? Number(row.weight_carats) : null;
           let newLineCarats = oldLineCarats;
-          if (newQ !== oldQ) {
+          if (newQ !== oldQ || (it.weight_carats != null && it.weight_carats !== '')) {
             const soldResolved = resolveSoldCaratsForStockOut(stockRow2, newQ, it.weight_carats);
             if (soldResolved.error) {
               await dbRun('ROLLBACK');
@@ -3217,7 +3237,7 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
             );
           }
 
-          const lineGross = newP * newQ;
+          const lineGross = lineGrossFromUnitPrice(newP, newQ, newLineCarats);
           const lineTotal = Math.max(0, lineGross - Math.min(disc, lineGross));
           const reqCode = it.item_code != null ? String(it.item_code).trim() || null : null;
           const reqDesc = it.description != null ? String(it.description) : null;
@@ -3263,14 +3283,14 @@ app.patch('/api/memos/:id', authMiddleware, requireRole(['owner', 'staff']), asy
           }
 
           const description = buildInventoryLineDescription(stockRow, reqDesc);
-          const lineGrossNew = newP * newQ;
-          const lineTotal = Math.max(0, lineGrossNew - Math.min(disc, lineGrossNew));
           const soldResolved = resolveSoldCaratsForStockOut(stockRow, newQ, it.weight_carats);
           if (soldResolved.error) {
             await dbRun('ROLLBACK');
             return res.status(400).json({ error: soldResolved.error });
           }
           const soldCarats = soldResolved.soldCarats;
+          const lineGrossNew = lineGrossFromUnitPrice(newP, newQ, soldCarats);
+          const lineTotal = Math.max(0, lineGrossNew - Math.min(disc, lineGrossNew));
 
           await dbRun(
             `
@@ -3552,7 +3572,8 @@ app.post('/api/memos/:id/convert-to-invoice', authMiddleware, requireRole(['owne
       const q = Math.floor(Number(l.quantity || 0));
       const grossPc = Number(l.unit_price || 0);
       const rem = l.remaining;
-      const lineGross = grossPc * rem;
+      const remCarats = caratsToRestoreForQty(l.weight_carats, q, rem);
+      const lineGross = lineGrossFromUnitPrice(grossPc, rem, remCarats);
       const lineNet =
         q > 0 ? (Number(l.line_total || 0) * rem) / q : 0;
       const lineNetRounded = Math.round(lineNet * 100) / 100;
@@ -3595,7 +3616,6 @@ app.post('/api/memos/:id/convert-to-invoice', authMiddleware, requireRole(['owne
       const q = Math.floor(Number(l.quantity || 0));
       const grossPc = Number(l.unit_price || 0);
       const rem = l.remaining;
-      const lineGross = grossPc * rem;
       const lineNet =
         q > 0 ? (Number(l.line_total || 0) * rem) / q : 0;
       const lineTotalInv = Math.max(0, Math.round(lineNet * 100) / 100);
@@ -4228,7 +4248,7 @@ app.post('/api/invoices', authMiddleware, requireRole(['owner', 'staff']), async
     if (!Number.isFinite(quantity) || quantity < 1) {
       return res.status(400).json({ error: 'Invalid quantity' });
     }
-    const lineGross = unitPrice * quantity;
+    const lineGross = lineGrossFromUnitPrice(unitPrice, quantity, it.weight_carats);
     subtotal += lineGross;
     itemsDiscountTotal += Math.min(discount, lineGross);
   }
@@ -4262,8 +4282,6 @@ app.post('/api/invoices', authMiddleware, requireRole(['owner', 'staff']), async
       const unitPrice = Number(it.price || 0);
       const discount = Number(it.discount || 0);
       const quantity = Math.max(1, Math.floor(Number(it.quantity ?? 1)));
-      const lineGross = unitPrice * quantity;
-      const lineTotal = Math.max(0, lineGross - Math.min(discount, lineGross));
       const stockRow = await dbGet(
         `
         SELECT ${INVENTORY_LINE_STOCK_SQL}
@@ -4291,6 +4309,8 @@ app.post('/api/invoices', authMiddleware, requireRole(['owner', 'staff']), async
       const soldResolved = resolveSoldCaratsForStockOut(stockRow, quantity, it.weight_carats);
       if (soldResolved.error) throw new Error(soldResolved.error);
       const soldCarats = soldResolved.soldCarats;
+      const lineGross = lineGrossFromUnitPrice(unitPrice, quantity, soldCarats);
+      const lineTotal = Math.max(0, lineGross - Math.min(discount, lineGross));
       const lotCaratsBefore =
         soldCarats != null && Number(soldCarats) > 0
           ? (Number(stockRow.weight_carats) || 0) + Number(soldCarats)
@@ -4408,7 +4428,7 @@ app.put('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), as
     if (!Number.isFinite(quantity) || quantity < 1) {
       return res.status(400).json({ error: 'Invalid quantity' });
     }
-    const lineGross = unitPrice * quantity;
+    const lineGross = lineGrossFromUnitPrice(unitPrice, quantity, it.weight_carats);
     subtotal += lineGross;
     itemsDiscountTotal += Math.min(discount, lineGross);
   }
@@ -4467,8 +4487,6 @@ app.put('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), as
       const unitPrice = Number(it.price || 0);
       const discount = Number(it.discount || 0);
       const quantity = Math.max(1, Math.floor(Number(it.quantity ?? 1)));
-      const lineGross = unitPrice * quantity;
-      const lineTotal = Math.max(0, lineGross - Math.min(discount, lineGross));
       const stockRow = await dbGet(
         `
         SELECT ${INVENTORY_LINE_STOCK_SQL}
@@ -4496,6 +4514,8 @@ app.put('/api/invoices/:id', authMiddleware, requireRole(['owner', 'staff']), as
       const soldResolved = resolveSoldCaratsForStockOut(stockRow, quantity, it.weight_carats);
       if (soldResolved.error) throw new Error(soldResolved.error);
       const soldCarats = soldResolved.soldCarats;
+      const lineGross = lineGrossFromUnitPrice(unitPrice, quantity, soldCarats);
+      const lineTotal = Math.max(0, lineGross - Math.min(discount, lineGross));
       const lotCaratsBefore =
         soldCarats != null && Number(soldCarats) > 0
           ? (Number(stockRow.weight_carats) || 0) + Number(soldCarats)
