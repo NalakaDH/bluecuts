@@ -14503,6 +14503,97 @@
   flex-shrink: 0;
 }
 
+/* Expanded detail item row */
+.pay-inv-item-row--detail {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+}
+
+.pay-inv-item-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.55rem;
+}
+
+.pay-inv-item-detail-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 0.5rem;
+  margin-top: 0.1rem;
+}
+
+.pay-inv-item-detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.pay-inv-item-detail-label {
+  color: var(--fg-muted);
+  font-weight: 500;
+  flex-shrink: 0;
+  min-width: 90px;
+}
+
+.pay-inv-item-detail-val {
+  color: var(--fg);
+  font-weight: 500;
+  text-align: right;
+}
+
+.pay-inv-item-detail-hint {
+  color: var(--fg-muted);
+  font-weight: 400;
+  font-size: 0.68rem;
+}
+
+.pay-inv-item-detail-pct {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+
+.pay-inv-item-detail-row--discount .pay-inv-item-detail-label,
+.pay-inv-item-detail-val--discount {
+  color: #e04040;
+}
+
+.theme-dark .pay-inv-item-detail-row--discount .pay-inv-item-detail-label,
+.theme-dark .pay-inv-item-detail-val--discount {
+  color: #f87171;
+}
+
+.pay-inv-item-detail-row--net {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 0.28rem;
+  margin-top: 0.1rem;
+}
+
+.pay-inv-item-detail-val--net {
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.pay-inv-item-detail-val--returned {
+  color: #ca8a04;
+}
+
+.theme-dark .pay-inv-item-detail-val--returned {
+  color: #fbbf24;
+}
+
+.pay-inv-invoice-discount-pct {
+  color: var(--fg-muted);
+  font-size: 0.78em;
+}
+
 .pay-inv-no-payments {
   margin: 0;
   font-size: 0.82rem;

@@ -150,7 +150,12 @@ interface InvoiceItemRow {
 }
 
 function invoiceLineGrossAmount(item: InvoiceItemRow): number {
-  return Math.max(0, (item.quantity || 0) * Number(item.unit_price || 0));
+  const ct = Number(item.weight_carats || 0);
+  const qty = item.quantity || 0;
+  const unit = Number(item.unit_price || 0);
+  // When weight is set, unit_price is $/ct → gross = unit × ct × qty
+  // When no weight, unit_price is $/pc → gross = unit × qty
+  return Math.max(0, ct > 0 ? unit * ct * qty : unit * qty);
 }
 
 /** Per-line discount (gross − stored net line_total). */
@@ -158,6 +163,25 @@ function invoiceLineDiscountAmount(item: InvoiceItemRow): number {
   const g = invoiceLineGrossAmount(item);
   const net = Number(item.line_total) || 0;
   return Math.max(0, g - net);
+}
+
+function invoiceLineDiscountPct(item: InvoiceItemRow): number {
+  const g = invoiceLineGrossAmount(item);
+  if (g <= 0) return 0;
+  return (invoiceLineDiscountAmount(item) / g) * 100;
+}
+
+/** Discount % on $/ct — how much the $/ct rate was reduced relative to list. */
+function invoiceLineDiscountPctPerCt(item: InvoiceItemRow): number | null {
+  const ct = Number(item.weight_carats || 0);
+  if (ct <= 0) return null;
+  const listPricePerCt = Number(item.unit_price || 0);
+  if (listPricePerCt <= 0) return null;
+  const net = Number(item.line_total) || 0;
+  const qty = item.quantity || 0;
+  if (qty <= 0) return null;
+  const netPerCt = net / (qty * ct);
+  return Math.max(0, ((listPricePerCt - netPerCt) / listPricePerCt) * 100);
 }
 
 function itemCardTitle(item: InvoiceItemRow): string {
@@ -168,24 +192,6 @@ function itemCardTitle(item: InvoiceItemRow): string {
     item.inv_item_type ||
     'Line item'
   );
-}
-
-function itemCardSubline(item: InvoiceItemRow, currencyCode: string): string {
-  const parts: string[] = [];
-  if (item.item_code) parts.push(`Code ${item.item_code}`);
-  else parts.push(`#${item.inventory_item_id}`);
-  if (item.weight_carats != null && String(item.weight_carats) !== '') {
-    parts.push(`${item.weight_carats} ct`);
-  }
-  if (item.weight_grams != null && String(item.weight_grams) !== '') {
-    parts.push(`${item.weight_grams} g`);
-  }
-  parts.push(`${item.quantity} × ${formatMoneyAmount(item.unit_price, currencyCode)}`);
-  let s = parts.join(' · ');
-  if (invoiceLineDiscountAmount(item) > 0) {
-    s += ` · line disc. −${formatMoneyAmount(invoiceLineDiscountAmount(item), currencyCode)}`;
-  }
-  return s;
 }
 
 function itemCodeLetter(item: InvoiceItemRow): string {
@@ -799,6 +805,11 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
                       <p className="pay-inv-invoice-discount">
                         Invoice discount:{' '}
                         {formatMoneyAmount(selectedInvoice.discount, detailCurrency)}
+                        {selectedInvoice.subtotal > 0 && (
+                          <span className="pay-inv-invoice-discount-pct">
+                            {' '}({((selectedInvoice.discount / selectedInvoice.subtotal) * 100).toFixed(2)}% of subtotal)
+                          </span>
+                        )}
                       </p>
                     )}
                   </div>
@@ -806,20 +817,106 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
                   <div className="pay-inv-detail-body">
                     <div>
                       <div className="pay-inv-section-heading">Items</div>
-                      {selectedInvoice.items.map(item => (
-                        <div key={item.id} className="pay-inv-item-row">
-                          <div className="pay-inv-item-left">
-                            <div className="pay-inv-item-code">{itemCodeLetter(item)}</div>
-                            <div>
-                              <div className="pay-inv-item-title">{itemCardTitle(item)}</div>
-                              <div className="pay-inv-item-meta">{itemCardSubline(item, detailCurrency)}</div>
+                      {selectedInvoice.items.map(item => {
+                        const ct = Number(item.weight_carats || 0);
+                        const qty = item.quantity || 0;
+                        const unit = Number(item.unit_price || 0);
+                        const gross = invoiceLineGrossAmount(item);
+                        const discAmt = invoiceLineDiscountAmount(item);
+                        const discPct = invoiceLineDiscountPct(item);
+                        const discPctCt = invoiceLineDiscountPctPerCt(item);
+                        const net = Number(item.line_total) || 0;
+                        const returnedQty = Math.floor(Number(item.returned_qty || 0));
+                        const hasDiscount = discAmt > 0.005;
+                        return (
+                          <div key={item.id} className="pay-inv-item-row pay-inv-item-row--detail">
+                            <div className="pay-inv-item-header-row">
+                              <div className="pay-inv-item-left">
+                                <div className="pay-inv-item-code">{itemCodeLetter(item)}</div>
+                                <div>
+                                  <div className="pay-inv-item-title">{itemCardTitle(item)}</div>
+                                  <div className="pay-inv-item-meta">
+                                    {item.item_code ? `Code ${item.item_code}` : `#${item.inventory_item_id}`}
+                                    {item.inv_category ? ` · ${item.inv_category}` : ''}
+                                    {item.inv_item_type ? ` · ${item.inv_item_type}` : ''}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="pay-inv-item-price">
+                                {formatMoneyAmount(net, detailCurrency)}
+                              </div>
+                            </div>
+
+                            <div className="pay-inv-item-detail-grid">
+                              {ct > 0 && (
+                                <div className="pay-inv-item-detail-row">
+                                  <span className="pay-inv-item-detail-label">Weight</span>
+                                  <span className="pay-inv-item-detail-val">
+                                    {ct} ct
+                                    {item.weight_grams != null && item.weight_grams !== 0
+                                      ? ` · ${item.weight_grams} g`
+                                      : ''}
+                                  </span>
+                                </div>
+                              )}
+                              <div className="pay-inv-item-detail-row">
+                                <span className="pay-inv-item-detail-label">Qty sold</span>
+                                <span className="pay-inv-item-detail-val">{qty} pc{qty !== 1 ? 's' : ''}</span>
+                              </div>
+                              <div className="pay-inv-item-detail-row">
+                                <span className="pay-inv-item-detail-label">
+                                  {ct > 0 ? 'List price /ct' : 'Unit price'}
+                                </span>
+                                <span className="pay-inv-item-detail-val">
+                                  {formatMoneyAmount(unit, detailCurrency)}{ct > 0 ? ' /ct' : ''}
+                                </span>
+                              </div>
+                              <div className="pay-inv-item-detail-row">
+                                <span className="pay-inv-item-detail-label">Gross</span>
+                                <span className="pay-inv-item-detail-val">
+                                  {formatMoneyAmount(gross, detailCurrency)}
+                                  {ct > 0
+                                    ? <span className="pay-inv-item-detail-hint"> ({unit.toFixed(2)} × {ct} ct × {qty} pc{qty !== 1 ? 's' : ''})</span>
+                                    : <span className="pay-inv-item-detail-hint"> ({unit.toFixed(2)} × {qty} pc{qty !== 1 ? 's' : ''})</span>
+                                  }
+                                </span>
+                              </div>
+                              {hasDiscount && (
+                                <div className="pay-inv-item-detail-row pay-inv-item-detail-row--discount">
+                                  <span className="pay-inv-item-detail-label">Discount</span>
+                                  <span className="pay-inv-item-detail-val pay-inv-item-detail-val--discount">
+                                    −{formatMoneyAmount(discAmt, detailCurrency)}
+                                    {' '}
+                                    <span className="pay-inv-item-detail-pct">
+                                      ({discPct.toFixed(2)}% off
+                                      {discPctCt !== null ? ` · ${discPctCt.toFixed(2)}% off /ct` : ''})
+                                    </span>
+                                  </span>
+                                </div>
+                              )}
+                              <div className="pay-inv-item-detail-row pay-inv-item-detail-row--net">
+                                <span className="pay-inv-item-detail-label">Net charged</span>
+                                <span className="pay-inv-item-detail-val pay-inv-item-detail-val--net">
+                                  {formatMoneyAmount(net, detailCurrency)}
+                                  {ct > 0 && qty > 0 && (
+                                    <span className="pay-inv-item-detail-hint">
+                                      {' '}({(net / (qty * ct)).toFixed(2)} /ct effective)
+                                    </span>
+                                  )}
+                                </span>
+                              </div>
+                              {returnedQty > 0 && (
+                                <div className="pay-inv-item-detail-row pay-inv-item-detail-row--returned">
+                                  <span className="pay-inv-item-detail-label">Returned</span>
+                                  <span className="pay-inv-item-detail-val pay-inv-item-detail-val--returned">
+                                    {returnedQty} pc{returnedQty !== 1 ? 's' : ''} returned
+                                  </span>
+                                </div>
+                              )}
                             </div>
                           </div>
-                          <div className="pay-inv-item-price">
-                            {formatMoneyAmount(item.line_total, detailCurrency)}
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
 
                     <div>
