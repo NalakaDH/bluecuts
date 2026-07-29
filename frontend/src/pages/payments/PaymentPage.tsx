@@ -828,91 +828,105 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
                         const net = Number(item.line_total) || 0;
                         const returnedQty = Math.floor(Number(item.returned_qty || 0));
                         const hasDiscount = discAmt > 0.005;
+                        const effectivePerCt = ct > 0 && qty > 0 ? net / (qty * ct) : null;
                         return (
-                          <div key={item.id} className="pay-inv-item-row pay-inv-item-row--detail">
-                            <div className="pay-inv-item-header-row">
-                              <div className="pay-inv-item-left">
-                                <div className="pay-inv-item-code">{itemCodeLetter(item)}</div>
-                                <div>
-                                  <div className="pay-inv-item-title">{itemCardTitle(item)}</div>
-                                  <div className="pay-inv-item-meta">
-                                    {item.item_code ? `Code ${item.item_code}` : `#${item.inventory_item_id}`}
-                                    {item.inv_category ? ` · ${item.inv_category}` : ''}
-                                    {item.inv_item_type ? ` · ${item.inv_item_type}` : ''}
-                                  </div>
+                          <div key={item.id} className="pay-inv-item-card">
+                            {/* ── Header: avatar + name + code ── */}
+                            <div className="pay-inv-item-card-head">
+                              <div className="pay-inv-item-code">{itemCodeLetter(item)}</div>
+                              <div className="pay-inv-item-card-title-block">
+                                <div className="pay-inv-item-title">{itemCardTitle(item)}</div>
+                                <div className="pay-inv-item-card-badges">
+                                  {item.item_code && (
+                                    <span className="pay-inv-badge pay-inv-badge--code">{item.item_code}</span>
+                                  )}
+                                  {item.inv_category && (
+                                    <span className="pay-inv-badge pay-inv-badge--cat">{item.inv_category}</span>
+                                  )}
+                                  {item.inv_item_type && (
+                                    <span className="pay-inv-badge pay-inv-badge--type">{item.inv_item_type}</span>
+                                  )}
+                                  {returnedQty > 0 && (
+                                    <span className="pay-inv-badge pay-inv-badge--returned">
+                                      {returnedQty} returned
+                                    </span>
+                                  )}
                                 </div>
-                              </div>
-                              <div className="pay-inv-item-price">
-                                {formatMoneyAmount(net, detailCurrency)}
                               </div>
                             </div>
 
-                            <div className="pay-inv-item-detail-grid">
+                            {/* ── Specs strip: weight + qty ── */}
+                            <div className="pay-inv-item-specs">
                               {ct > 0 && (
-                                <div className="pay-inv-item-detail-row">
-                                  <span className="pay-inv-item-detail-label">Weight</span>
-                                  <span className="pay-inv-item-detail-val">
-                                    {ct} ct
-                                    {item.weight_grams != null && item.weight_grams !== 0
-                                      ? ` · ${item.weight_grams} g`
-                                      : ''}
+                                <div className="pay-inv-item-spec">
+                                  <span className="pay-inv-item-spec-label">Weight</span>
+                                  <span className="pay-inv-item-spec-val">
+                                    {ct} ct{item.weight_grams ? ` · ${item.weight_grams} g` : ''}
                                   </span>
                                 </div>
                               )}
-                              <div className="pay-inv-item-detail-row">
-                                <span className="pay-inv-item-detail-label">Qty sold</span>
-                                <span className="pay-inv-item-detail-val">{qty} pc{qty !== 1 ? 's' : ''}</span>
+                              <div className="pay-inv-item-spec">
+                                <span className="pay-inv-item-spec-label">Qty sold</span>
+                                <span className="pay-inv-item-spec-val">{qty} pc{qty !== 1 ? 's' : ''}</span>
                               </div>
-                              <div className="pay-inv-item-detail-row">
-                                <span className="pay-inv-item-detail-label">
-                                  {ct > 0 ? 'List price /ct' : 'Unit price'}
+                            </div>
+
+                            {/* ── Pricing breakdown ── */}
+                            <div className="pay-inv-item-pricing">
+                              {/* List price → Gross */}
+                              <div className="pay-inv-pricing-row">
+                                <span className="pay-inv-pricing-label">
+                                  {ct > 0 ? `List price` : 'Unit price'}
                                 </span>
-                                <span className="pay-inv-item-detail-val">
-                                  {formatMoneyAmount(unit, detailCurrency)}{ct > 0 ? ' /ct' : ''}
-                                </span>
-                              </div>
-                              <div className="pay-inv-item-detail-row">
-                                <span className="pay-inv-item-detail-label">Gross</span>
-                                <span className="pay-inv-item-detail-val">
-                                  {formatMoneyAmount(gross, detailCurrency)}
+                                <span className="pay-inv-pricing-val pay-inv-pricing-val--muted">
                                   {ct > 0
-                                    ? <span className="pay-inv-item-detail-hint"> ({unit.toFixed(2)} × {ct} ct × {qty} pc{qty !== 1 ? 's' : ''})</span>
-                                    : <span className="pay-inv-item-detail-hint"> ({unit.toFixed(2)} × {qty} pc{qty !== 1 ? 's' : ''})</span>
+                                    ? <>{formatMoneyAmount(unit, detailCurrency)} <span className="pay-inv-pricing-unit">/ct</span></>
+                                    : formatMoneyAmount(unit, detailCurrency)
                                   }
                                 </span>
                               </div>
+                              <div className="pay-inv-pricing-row">
+                                <span className="pay-inv-pricing-label pay-inv-pricing-label--sub">
+                                  {ct > 0
+                                    ? `${formatMoneyAmount(unit, detailCurrency)} × ${ct} ct × ${qty} pc${qty !== 1 ? 's' : ''}`
+                                    : `${formatMoneyAmount(unit, detailCurrency)} × ${qty} pc${qty !== 1 ? 's' : ''}`
+                                  }
+                                </span>
+                                <span className="pay-inv-pricing-val pay-inv-pricing-val--muted">
+                                  {formatMoneyAmount(gross, detailCurrency)}
+                                </span>
+                              </div>
+
+                              {/* Discount */}
                               {hasDiscount && (
-                                <div className="pay-inv-item-detail-row pay-inv-item-detail-row--discount">
-                                  <span className="pay-inv-item-detail-label">Discount</span>
-                                  <span className="pay-inv-item-detail-val pay-inv-item-detail-val--discount">
+                                <div className="pay-inv-pricing-row pay-inv-pricing-row--discount">
+                                  <span className="pay-inv-pricing-label">
+                                    Discount
+                                    <span className="pay-inv-discount-badge">{discPct.toFixed(1)}% off</span>
+                                    {discPctCt !== null && (
+                                      <span className="pay-inv-discount-badge pay-inv-discount-badge--ct">{discPctCt.toFixed(1)}% off /ct</span>
+                                    )}
+                                  </span>
+                                  <span className="pay-inv-pricing-val pay-inv-pricing-val--discount">
                                     −{formatMoneyAmount(discAmt, detailCurrency)}
-                                    {' '}
-                                    <span className="pay-inv-item-detail-pct">
-                                      ({discPct.toFixed(2)}% off
-                                      {discPctCt !== null ? ` · ${discPctCt.toFixed(2)}% off /ct` : ''})
-                                    </span>
                                   </span>
                                 </div>
                               )}
-                              <div className="pay-inv-item-detail-row pay-inv-item-detail-row--net">
-                                <span className="pay-inv-item-detail-label">Net charged</span>
-                                <span className="pay-inv-item-detail-val pay-inv-item-detail-val--net">
-                                  {formatMoneyAmount(net, detailCurrency)}
-                                  {ct > 0 && qty > 0 && (
-                                    <span className="pay-inv-item-detail-hint">
-                                      {' '}({(net / (qty * ct)).toFixed(2)} /ct effective)
+
+                              {/* Net total */}
+                              <div className="pay-inv-pricing-row pay-inv-pricing-row--net">
+                                <span className="pay-inv-pricing-label pay-inv-pricing-label--net">
+                                  Charged
+                                  {effectivePerCt !== null && (
+                                    <span className="pay-inv-effective-rate">
+                                      {effectivePerCt.toFixed(2)} /ct effective
                                     </span>
                                   )}
                                 </span>
+                                <span className="pay-inv-pricing-val pay-inv-pricing-val--net">
+                                  {formatMoneyAmount(net, detailCurrency)}
+                                </span>
                               </div>
-                              {returnedQty > 0 && (
-                                <div className="pay-inv-item-detail-row pay-inv-item-detail-row--returned">
-                                  <span className="pay-inv-item-detail-label">Returned</span>
-                                  <span className="pay-inv-item-detail-val pay-inv-item-detail-val--returned">
-                                    {returnedQty} pc{returnedQty !== 1 ? 's' : ''} returned
-                                  </span>
-                                </div>
-                              )}
                             </div>
                           </div>
                         );
