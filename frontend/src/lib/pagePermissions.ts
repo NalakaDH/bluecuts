@@ -22,7 +22,7 @@ export const ASSIGNABLE_STAFF_PAGE_LABELS: Record<StaffAssignablePageId, string>
   updateInventory: 'Update Inventory',
   checkInventory: 'Check Inventory',
   selling: 'Invoice',
-  payments: 'Payments & Loans',
+  payments: 'Payment',
   invoiceCheckout: 'Invoice Checkout',
   customers: 'Customers',
   memo: 'Memos',

@@ -678,12 +678,55 @@ function memoLineDescription(it: MemoItemRow): string {
   return `${base} · ${typeBit}`;
 }
 
-/** Memo detail modal item column: carats line only. */
-function memoDetailModalItemCt(it: MemoItemRow): string | null {
-  if (it.weight_carats != null && Number(it.weight_carats) > 0) {
-    return `${it.weight_carats} ct`;
+/** Card title for memo detail items — prefer clean description over code/weight mashups. */
+function memoDetailItemCardTitle(it: MemoItemRow): string {
+  const desc = (it.description || '').trim();
+  if (
+    desc &&
+    !desc.includes(' · ') &&
+    !/\d+(\.\d+)?\s*ct\b/i.test(desc) &&
+    !/\d+(\.\d+)?\s*g\b/i.test(desc)
+  ) {
+    return desc;
   }
-  return null;
+  const typeLine = [it.category, it.item_type]
+    .map(s => (s || '').trim().replace(/_/g, ' '))
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  if (typeLine) return typeLine;
+  return memoLineDescription(it);
+}
+
+function memoDetailItemCodeLetter(it: MemoItemRow): string {
+  const raw = (it.item_code || '').trim() || String(it.inventory_item_id);
+  return raw.charAt(0).toUpperCase() || '?';
+}
+
+function memoDetailLineAmounts(it: MemoItemRow) {
+  return memoReceiptLineRemainingAmounts({
+    item_code: it.item_code,
+    description: it.description,
+    quantity: it.quantity,
+    returned_qty: it.returned_qty,
+    unit_price: it.unit_price,
+    line_total: it.line_total,
+    weight_carats: it.weight_carats,
+    weight_grams: it.weight_grams,
+  });
+}
+
+function memoDetailLineDiscountPct(it: MemoItemRow): number {
+  const unit = Number(it.unit_price) || 0;
+  const q = Math.max(1, Math.floor(Number(it.quantity) || 1));
+  const ct =
+    it.weight_carats != null && Number.isFinite(Number(it.weight_carats)) && Number(it.weight_carats) > 0
+      ? Number(it.weight_carats)
+      : null;
+  const grossFull = ct != null ? roundMoney2(unit * ct) : roundMoney2(unit * q);
+  const netFull = roundMoney2(Number(it.line_total) || 0);
+  if (grossFull <= 0) return 0;
+  return Math.max(0, roundMoney2(((grossFull - netFull) / grossFull) * 100));
 }
 
 /** Memo detail modal item column: type line only (inventory item_type). */
@@ -2603,208 +2646,162 @@ export const MemoPage: React.FC<MemoPageProps> = ({
         )}
 
         {memoMainTab === 'open' && (
-        <section role="tabpanel" id="memo-panel-open" aria-label="Open memos">
-          <section className="payments-kpi-grid memos-kpi-grid" aria-label="Memo summary stats">
-            <div className="dashT-kpi-sum dashT-kpi-sum--blue memos-kpi-sum">
-              <div className="dashT-kpi-sum__top">
-                <span className="dashT-kpi-sum__label">Open memos</span>
-                <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--blue" aria-hidden="true">
-                  <IconKpiMemoClipboard />
-                </div>
-              </div>
-              <div className="dashT-kpi-sum__value">{totals.openCount}</div>
-              <div className="payments-kpi-sub memos-kpi-sub">
-                {memoKpiStats?.memos_in_scope ?? 0} in scope · open & partially returned · matches search &
-                status filter
-              </div>
+        <section role="tabpanel" id="memo-panel-open" className="memos-open" aria-label="Open memos">
+          <header className="memos-open-page-head">
+            <div className="memos-open-eyebrow">Blue Cuts · POS</div>
+            <h2 className="memos-open-title">Open Memos</h2>
+          </header>
+
+          <section className="memos-open-kpi-grid" aria-label="Memo summary stats">
+            <div className="memos-open-kpi memos-open-kpi--accent">
+              <div className="memos-open-kpi__label">Open Memos</div>
+              <div className="memos-open-kpi__value">{totals.openCount}</div>
             </div>
-            <div className="dashT-kpi-sum dashT-kpi-sum--pink memos-kpi-sum">
-              <div className="dashT-kpi-sum__top">
-                <span className="dashT-kpi-sum__label">Overdue memos</span>
-                <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--pink" aria-hidden="true">
-                  <IconKpiAlertCircle />
-                </div>
-              </div>
-              <div className="dashT-kpi-sum__value">{totals.overdueCount}</div>
-              <div className="payments-kpi-sub memos-kpi-sub">Past due date · same scope as the other tiles</div>
+            <div className="memos-open-kpi memos-open-kpi--red">
+              <div className="memos-open-kpi__label">Overdue Memos</div>
+              <div className="memos-open-kpi__value">{totals.overdueCount}</div>
             </div>
-            <div className="dashT-kpi-sum dashT-kpi-sum--orange memos-kpi-sum">
-              <div className="dashT-kpi-sum__top">
-                <span className="dashT-kpi-sum__label">Items on memo</span>
-                <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--orange" aria-hidden="true">
-                  <IconKpiPackage />
-                </div>
-              </div>
-              <div className="dashT-kpi-sum__value">{totals.itemsOnMemo}</div>
-              <div className="payments-kpi-sub memos-kpi-sub">Total pieces on open memos in scope</div>
+            <div className="memos-open-kpi memos-open-kpi--blue">
+              <div className="memos-open-kpi__label">Items on Memo</div>
+              <div className="memos-open-kpi__value">{totals.itemsOnMemo}</div>
             </div>
-            <div className="dashT-kpi-sum dashT-kpi-sum--green memos-kpi-sum">
-              <div className="dashT-kpi-sum__top">
-                <span className="dashT-kpi-sum__label">Total memo value</span>
-                <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--green" aria-hidden="true">
-                  <IconKpiBanknote />
-                </div>
-              </div>
-              <div className="dashT-kpi-sum__value">{formatUsdOnlyFromThb(totals.totalValueThb, thbPerUnit)}</div>
-              <div className="payments-kpi-sub memos-kpi-sub">
-                Open memos · USD from Profile rates · full line totals for current search & status
-                {memoListTruncated ? ' · table lists first 300' : ''}
-              </div>
+            <div className="memos-open-kpi memos-open-kpi--purple">
+              <div className="memos-open-kpi__label">Total Memo Value</div>
+              <div className="memos-open-kpi__value">{formatUsdOnlyFromThb(totals.totalValueThb, thbPerUnit)}</div>
             </div>
           </section>
-        <section className="memo-card">
-          <div className="memo-card-head">
-            <h3 className="selling-section-title">Open Memos</h3>
-            <div className="memo-card-sub">Search and manage memos.</div>
-          </div>
 
-          <div className="selling-invoices-toolbar">
-            <div className="selling-invoices-search-wrap">
-              <span className="selling-invoices-search-icon" aria-hidden="true">
-                <IconSearch />
-              </span>
-              <input
-                type="search"
-                className="selling-invoices-search"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="Search memo # or customer"
-                aria-label="Search memos"
-              />
-            </div>
-            <div className="selling-invoices-filters" role="tablist" aria-label="Memo status filters">
-              {(['all', 'Open', 'Partially Returned', 'Closed'] as const).map(key => {
-                const label = key === 'all' ? 'All' : key === 'Partially Returned' ? 'Partial' : key;
-                const active = statusFilter === key;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    className={`selling-invoices-filter${active ? ' is-active' : ''}`}
-                    onClick={() => setStatusFilter(key)}
-                    role="tab"
-                    aria-selected={active}
-                    title={key === 'Partially Returned' ? 'Partially Returned' : undefined}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="memo-table-wrap">
-            <table className="memo-table memo-table--list" aria-label="Memos">
-              <thead>
-                <tr>
-                  <th scope="col">Memo #</th>
-                  <th scope="col">Customer</th>
-                  <th scope="col">Date</th>
-                  <th scope="col">Due</th>
-                  <th scope="col" className="right">
-                    Items
-                  </th>
-                  <th scope="col" className="right">
-                    Value
-                  </th>
-                  <th scope="col" className="memo-th-center">
-                    Status
-                  </th>
-                  <th scope="col" className="memo-th-center">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr>
-                    <td colSpan={8} className="memo-empty-cell">
-                      Loading…
-                    </td>
-                  </tr>
-                ) : error ? (
-                  <tr>
-                    <td colSpan={8} className="memo-empty-cell">
-                      {error}
-                    </td>
-                  </tr>
-                ) : memos.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="memo-empty-cell">
-                      No memos.
-                    </td>
-                  </tr>
-                ) : (
-                  memos.map(m => {
-                    const overdue =
-                      m.status !== 'Closed' && m.due_date
-                        ? new Date(m.due_date).getTime() < new Date(todayIso()).getTime()
-                        : false;
+          <section className="memos-open-card">
+            <div className="memos-open-card-head">
+              <h3 className="memos-open-card-title">Memos</h3>
+              <div className="memos-open-card-tools">
+                <input
+                  type="search"
+                  className="memos-open-search"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  placeholder="Search memo #, customer, phone"
+                  aria-label="Search memos"
+                />
+                <div className="memos-open-filters" role="tablist" aria-label="Memo status filters">
+                  {(['all', 'Open', 'Partially Returned', 'Closed'] as const).map(key => {
+                    const label = key === 'all' ? 'All' : key;
+                    const active = statusFilter === key;
                     return (
-                      <tr key={m.id}>
-                        <td>
-                          <button
-                            type="button"
-                            className="memo-no-btn"
-                            onClick={() => openDetail(m.id)}
-                          >
-                            {m.memo_no}
-                          </button>
-                        </td>
-                        <td>
-                          <div className="memo-cust">{m.customer_name || 'Walk-in'}</div>
-                          {m.customer_phone ? (
-                            <div className="memo-cust-sub">{m.customer_phone}</div>
-                          ) : null}
-                        </td>
-                        <td className="memo-cell-muted">{m.memo_date}</td>
-                        <td className={overdue ? 'memo-due memo-due--over' : 'memo-cell-muted memo-due'}>
-                          {m.due_date || '—'}
-                        </td>
-                        <td className="right memo-cell-numeric">{m.items_count}</td>
-                        <td className="right memo-cell-numeric">
-                          {formatMoneyAmount(Number(m.total_value) || 0, m.currency_code || DEFAULT_CURRENCY_CODE)}
-                        </td>
-                        <td className="memo-td-center">
-                          <span
-                            className={`memo-status memo-status--${String(m.status).toLowerCase().replace(/\s+/g, '-')}`}
-                          >
-                            {m.status}
-                          </span>
-                        </td>
-                        <td className="memo-actions memo-td-center">
-                          <button
-                            type="button"
-                            className="memo-action-btn memo-action-btn--view"
-                            aria-label={`View ${m.memo_no}`}
-                            onClick={() => openDetail(m.id)}
-                          >
-                            <IconEye />
-                          </button>
-                          <button
-                            type="button"
-                            className="memo-action-btn memo-action-btn--print"
-                            aria-label={`Print ${m.memo_no}`}
-                            onClick={async () => {
-                              try {
-                                const d = await openDetail(m.id);
-                                printMemo(d);
-                              } catch {
-                                // error is shown in modal state
-                              }
-                            }}
-                          >
-                            <IconPrinter />
-                          </button>
-                        </td>
-                      </tr>
+                      <button
+                        key={key}
+                        type="button"
+                        className={`memos-open-filter${active ? ' is-active' : ''}`}
+                        onClick={() => setStatusFilter(key)}
+                        role="tab"
+                        aria-selected={active}
+                      >
+                        {label}
+                      </button>
                     );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="memos-open-table-wrap">
+              <table className="memos-open-table" aria-label="Memos">
+                <thead>
+                  <tr>
+                    <th scope="col">Memo</th>
+                    <th scope="col">Customer</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Memo Date</th>
+                    <th scope="col">Due Date</th>
+                    <th scope="col" className="memos-open-th-center">
+                      Items
+                    </th>
+                    <th scope="col" className="memos-open-th-right">
+                      Total
+                    </th>
+                    <th scope="col" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr>
+                      <td colSpan={8} className="memos-open-empty">
+                        Loading…
+                      </td>
+                    </tr>
+                  ) : error ? (
+                    <tr>
+                      <td colSpan={8} className="memos-open-empty">
+                        {error}
+                      </td>
+                    </tr>
+                  ) : memos.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="memos-open-empty">
+                        No memos match your search.
+                      </td>
+                    </tr>
+                  ) : (
+                    memos.map(m => {
+                      const overdue =
+                        m.status !== 'Closed' && m.due_date
+                          ? new Date(m.due_date).getTime() < new Date(todayIso()).getTime()
+                          : false;
+                      return (
+                        <tr key={m.id}>
+                          <td>
+                            <button type="button" className="memos-open-memo-no" onClick={() => openDetail(m.id)}>
+                              {m.memo_no}
+                            </button>
+                          </td>
+                          <td>
+                            <div className="memos-open-cust">{m.customer_name || 'Walk-in'}</div>
+                            <div className="memos-open-cust-sub">{m.customer_phone || '—'}</div>
+                          </td>
+                          <td>
+                            <span
+                              className={`memos-open-status memos-open-status--${String(m.status)
+                                .toLowerCase()
+                                .replace(/\s+/g, '-')}`}
+                            >
+                              {m.status}
+                            </span>
+                          </td>
+                          <td className="memos-open-muted">{m.memo_date}</td>
+                          <td className={overdue ? 'memos-open-due memos-open-due--over' : 'memos-open-muted'}>
+                            {m.due_date || '—'}
+                          </td>
+                          <td className="memos-open-th-center memos-open-mono">{m.items_count}</td>
+                          <td className="memos-open-th-right memos-open-mono memos-open-total">
+                            {formatMoneyAmount(Number(m.total_value) || 0, m.currency_code || DEFAULT_CURRENCY_CODE)}
+                          </td>
+                          <td className="memos-open-actions">
+                            <button type="button" className="memos-open-text-btn" onClick={() => openDetail(m.id)}>
+                              View
+                            </button>
+                            <button
+                              type="button"
+                              className="memos-open-text-btn"
+                              onClick={async () => {
+                                try {
+                                  const d = await openDetail(m.id);
+                                  printMemo(d);
+                                } catch {
+                                  // error is shown in modal state
+                                }
+                              }}
+                            >
+                              Print
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
         </section>
         )}
       </div>
@@ -3067,36 +3064,37 @@ export const MemoPage: React.FC<MemoPageProps> = ({
             if (e.target === e.currentTarget) closeDetail();
           }}
         >
-          <div className="memo-detail-v2" onClick={e => e.stopPropagation()}>
-            <div className="memo-detail-v2-mhdr">
+          <div className="memo-detail-v2 memo-detail-v2--open" onClick={e => e.stopPropagation()}>
+            <div className="memo-detail-v2-mhdr memo-detail-v2-mhdr--open">
               <div className="memo-detail-v2-hl">
-                <div className="memo-detail-v2-hicon" aria-hidden="true">
-                  <IconMemoDetailDoc20 />
-                </div>
+                {!detailLoading && detail ? (
+                  <div className="memo-detail-v2-cavatar memo-detail-v2-cavatar--lg" aria-hidden="true">
+                    {memoDetailCustomerInitial(detail.customer_name)}
+                  </div>
+                ) : (
+                  <div className="memo-detail-v2-hicon" aria-hidden="true">
+                    <IconMemoDetailDoc20 />
+                  </div>
+                )}
                 <div>
-                  <div className="memo-detail-v2-memo-id" id="memo-detail-title">
-                    {detailLoading ? 'Memo details' : detailError ? 'Memo' : detail?.memo_no ?? 'Memo'}
+                  <div className="memo-detail-v2-eyebrow">
+                    Memo ·{' '}
+                    <span id="memo-detail-title">
+                      {detailLoading ? '…' : detailError ? '—' : detail?.memo_no ?? 'Memo'}
+                    </span>
                   </div>
                   {!detailLoading && detail ? (
-                    <div className="memo-detail-v2-mcust">
-                      <span className="memo-detail-v2-cavatar">{memoDetailCustomerInitial(detail.customer_name)}</span>
-                      {memoDetailDisplayCustomer(detail)}
-                    </div>
+                    <div className="memo-detail-v2-mcust-name">{memoDetailDisplayCustomer(detail)}</div>
                   ) : null}
                   {!detailLoading && !detail && !detailError ? (
-                    <div className="memo-detail-v2-mcust" style={{ opacity: 0.85 }}>
+                    <div className="memo-detail-v2-mcust-name" style={{ opacity: 0.85 }}>
                       Loading…
                     </div>
                   ) : null}
                 </div>
               </div>
-              <button
-                type="button"
-                className="memo-detail-v2-xbtn"
-                onClick={closeDetail}
-                aria-label="Close memo details"
-              >
-                <IconMemoDetailClose13 />
+              <button type="button" className="memo-detail-v2-xbtn memo-detail-v2-xbtn--text" onClick={closeDetail}>
+                ✕ Close
               </button>
             </div>
 
@@ -3107,44 +3105,49 @@ export const MemoPage: React.FC<MemoPageProps> = ({
                   const dueRaw = (detail.due_date || '').trim();
                   const dueOverdue = memoDetailDueOverdue(detail);
                   const dueDisplay = dueRaw ? formatMemoDetailDisplayDate(dueRaw) : 'Not set';
+                  const totalRem = computeMemoConvertInvoiceTotal(detail);
+                  const orderDisc = Number(detail.order_discount) || 0;
                   return (
-                    <div className="memo-detail-v2-srow">
-                      <div className="memo-detail-v2-sc">
-                        <span className="memo-detail-v2-sl">Memo date</span>
-                        <span className="memo-detail-v2-sv">{formatMemoDetailDisplayDate(detail.memo_date)}</span>
+                    <>
+                      <div className="memo-detail-v2-srow">
+                        <div className="memo-detail-v2-sc">
+                          <span className="memo-detail-v2-sl">Memo Date</span>
+                          <span className="memo-detail-v2-sv">{formatMemoDetailDisplayDate(detail.memo_date)}</span>
+                        </div>
+                        <div className="memo-detail-v2-sc">
+                          <span className="memo-detail-v2-sl">Due Date</span>
+                          <span
+                            className={
+                              dueRaw
+                                ? dueOverdue
+                                  ? 'memo-detail-v2-sv memo-detail-v2-sv--due-bad'
+                                  : 'memo-detail-v2-sv'
+                                : 'memo-detail-v2-sv memo-detail-v2-sv--muted'
+                            }
+                          >
+                            {dueDisplay}
+                          </span>
+                        </div>
+                        <div className="memo-detail-v2-sc memo-detail-v2-sc--status">
+                          <span className="memo-detail-v2-sl">Status</span>
+                          {memoDetailStatusPill(detail.status)}
+                        </div>
+                        <div className="memo-detail-v2-sc memo-detail-v2-sc--total">
+                          <span className="memo-detail-v2-sl">Total ({detailCur})</span>
+                          <span className="memo-detail-v2-sv memo-detail-v2-sv--big">
+                            {formatMoneyAmount(totalRem, detailCur)}
+                          </span>
+                        </div>
                       </div>
-                      <div className="memo-detail-v2-sc">
-                        <span className="memo-detail-v2-sl">Due date</span>
-                        <span
-                          className={
-                            dueRaw
-                              ? dueOverdue
-                                ? 'memo-detail-v2-sv memo-detail-v2-sv--due-bad'
-                                : 'memo-detail-v2-sv'
-                              : 'memo-detail-v2-sv memo-detail-v2-sv--muted'
-                          }
-                        >
-                          {dueDisplay}
-                        </span>
-                      </div>
-                      <div className="memo-detail-v2-sc">
-                        <span className="memo-detail-v2-sl">Status</span>
-                        {memoDetailStatusPill(detail.status)}
-                      </div>
-                      <div className="memo-detail-v2-sc">
-                        <span className="memo-detail-v2-sl">Total ({detailCur})</span>
-                        <span className="memo-detail-v2-sv memo-detail-v2-sv--big">
-                          {formatUsdOnlyFromAny(
-                            detail.items.reduce((s, it) => s + memoDetailRemainingLineValue(it), 0),
-                            detailCur,
-                            thbPerUnit
-                          )}
-                        </span>
-                      </div>
-                    </div>
+                      {orderDisc > 0.0001 ? (
+                        <div className="memo-detail-v2-order-disc">
+                          Order discount:{' '}
+                          <strong>{formatMoneyAmount(orderDisc, detailCur)}</strong>
+                        </div>
+                      ) : null}
+                    </>
                   );
                 })()}
-                <div className="memo-detail-v2-dv" aria-hidden="true" />
               </>
             ) : null}
 
@@ -3158,104 +3161,176 @@ export const MemoPage: React.FC<MemoPageProps> = ({
                   {detail.notes ? <div className="memo-detail-v2-notes">{detail.notes}</div> : null}
                   {(() => {
                     const detailCur = detail.currency_code || DEFAULT_CURRENCY_CODE;
-                    const nItems = detail.items.length;
+                    const remainingPcs = detail.items.reduce(
+                      (a, it) => a + Math.max(0, (it.quantity || 0) - (it.returned_qty || 0)),
+                      0
+                    );
                     return (
                       <div className="memo-detail-v2-isec">
                         <div className="memo-detail-v2-ihdr">
-                          <span className="memo-detail-v2-ititle">Memo items</span>
+                          <span className="memo-detail-v2-ititle">Items</span>
                           <span className="memo-detail-v2-ibadge">
-                            {nItems} {nItems === 1 ? 'item' : 'items'}
+                            {remainingPcs} {remainingPcs === 1 ? 'item' : 'items'}
                           </span>
                         </div>
                         {detail.items.map(it => {
                           const remaining = Math.max(0, (it.quantity || 0) - (it.returned_qty || 0));
                           const draft = Math.floor(Number(returnDraft[it.id] || 0));
                           const draftClamped = Math.max(0, Math.min(remaining, draft));
-                          const remAmt = memoReceiptLineRemainingAmounts({
-                            item_code: it.item_code,
-                            description: it.description,
-                            quantity: it.quantity,
-                            returned_qty: it.returned_qty,
-                            unit_price: it.unit_price,
-                            line_total: it.line_total,
-                          });
+                          const remAmt = memoDetailLineAmounts(it);
                           const codeStr = (it.item_code || '').trim() || `#${it.inventory_item_id}`;
-                          const ctLine = memoDetailModalItemCt(it);
+                          const category = (it.category || '').trim().replace(/_/g, ' ');
                           const typeLine = memoDetailModalItemType(it);
-                          const discShow = remAmt.lineDiscRem > 0.0001;
+                          const discPct = memoDetailLineDiscountPct(it);
+                          const discShow = remAmt.lineDiscRem > 0.0001 && discPct > 0.05;
+                          const ct = Number(it.weight_carats) || 0;
+                          const g = Number(it.weight_grams) || 0;
+                          const hasCt = ct > 0;
+                          const qty = it.quantity || 0;
+                          const unit = qty === 1 ? 'pc' : 'pcs';
+                          const listPrice = formatMoneyAmount(Number(it.unit_price) || 0, detailCur);
+                          const formulaLabel = hasCt
+                            ? `${listPrice} × ${ct} ct × ${qty} ${unit}`
+                            : `${listPrice} × ${qty} ${unit}`;
+                          const weightLabel = hasCt
+                            ? `${ct} ct${g > 0 ? ` · ${g} g` : ''}`
+                            : g > 0
+                              ? `${g} g`
+                              : '—';
+                          const canReturn = detail.status !== 'Closed' && remaining > 0;
                           return (
-                            <div key={it.id} className="memo-detail-v2-ic">
-                              <div className="memo-detail-v2-ith" aria-hidden="true">
-                                {it.image_path ? (
-                                  <img src={memoItemImageSrc(it.image_path)} alt="" />
-                                ) : (
-                                  '💎'
-                                )}
-                              </div>
-                              <div className="memo-detail-v2-ii">
-                                <div className="memo-detail-v2-in">{codeStr}</div>
-                                <div className="memo-detail-v2-im">
-                                  {ctLine ? <span className="memo-detail-v2-chip">{ctLine}</span> : null}
-                                  {typeLine ? <span className="memo-detail-v2-chip">{typeLine}</span> : null}
+                            <article key={it.id} className="pay-detail-item-card memo-detail-item-card">
+                              <div className="pay-detail-item-card__head">
+                                <div className="pay-inv-item-code" aria-hidden="true">
+                                  {memoDetailItemCodeLetter(it)}
                                 </div>
-                                <div className="memo-detail-v2-is">
-                                  <div className="memo-detail-v2-ist">
-                                    <span className="memo-detail-v2-il">Qty</span>
-                                    <span className="memo-detail-v2-iv memo-detail-v2-iv--b">{it.quantity}</span>
+                                <div className="pay-detail-item-card__title-wrap">
+                                  <div className="pay-detail-item-card__title-row">
+                                    <div className="pay-detail-item-card__title">
+                                      {memoDetailItemCardTitle(it)}
+                                    </div>
                                   </div>
-                                  <div className="memo-detail-v2-ist">
-                                    <span className="memo-detail-v2-il">Returned</span>
-                                    <span className="memo-detail-v2-iv memo-detail-v2-iv--a">{it.returned_qty}</span>
+                                  <div className="pay-inv-item-card-badges">
+                                    <span className="pay-inv-badge pay-inv-badge--code">{codeStr}</span>
+                                    {category ? (
+                                      <span className="pay-inv-badge pay-inv-badge--cat">{category}</span>
+                                    ) : null}
+                                    {typeLine ? (
+                                      <span className="pay-inv-badge pay-inv-badge--type">{typeLine}</span>
+                                    ) : null}
                                   </div>
-                                  <div className="memo-detail-v2-ist">
-                                    <span className="memo-detail-v2-il">Remaining</span>
-                                    <span className="memo-detail-v2-iv memo-detail-v2-iv--g">{remaining}</span>
-                                  </div>
-                                  <div className="memo-detail-v2-ist">
-                                    <span className="memo-detail-v2-il">Discount</span>
-                                    <span className="memo-detail-v2-iv memo-detail-v2-iv--m">
-                                      {discShow ? `−${formatMoneyAmount(remAmt.lineDiscRem, detailCur)}` : '—'}
+                                  {(it.returned_qty || 0) > 0 ? (
+                                    <div className="pay-inv-item-card-badges pay-inv-item-card-badges--secondary">
+                                      <span className="pay-inv-badge pay-inv-badge--returned">
+                                        {it.returned_qty} returned
+                                      </span>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+
+                              <div className="pay-detail-item-card__specs memo-detail-item-card__specs">
+                                <div className="pay-detail-item-card__spec">
+                                  <span>Weight</span>
+                                  <strong>{weightLabel}</strong>
+                                </div>
+                                <div className="pay-detail-item-card__spec">
+                                  <span>Qty Sold</span>
+                                  <strong>
+                                    {qty} {unit}
+                                  </strong>
+                                </div>
+                                <div className="pay-detail-item-card__spec">
+                                  <span>Returned</span>
+                                  <strong>
+                                    {it.returned_qty || 0} {unit}
+                                  </strong>
+                                </div>
+                                <div className="pay-detail-item-card__spec">
+                                  <span>Remaining</span>
+                                  <strong>
+                                    {remaining} {unit}
+                                  </strong>
+                                </div>
+                              </div>
+
+                              <div className="pay-detail-item-card__pricing">
+                                <div className="pay-detail-item-card__pricing-row">
+                                  <span>List price</span>
+                                  <strong>{hasCt ? `${listPrice} /ct` : `${listPrice} /pc`}</strong>
+                                </div>
+                                <div className="pay-detail-item-card__pricing-row pay-detail-item-card__pricing-row--muted">
+                                  <span>{formulaLabel}</span>
+                                  <strong>{formatMoneyAmount(remAmt.lineGrossRem, detailCur)}</strong>
+                                </div>
+                                {discShow ? (
+                                  <div className="pay-detail-item-card__pricing-row pay-detail-item-card__pricing-row--discount">
+                                    <span>
+                                      Discount
+                                      <span className="pay-inv-discount-badge">{discPct.toFixed(1)}% off</span>
+                                      {hasCt ? (
+                                        <span className="pay-inv-discount-badge pay-inv-discount-badge--ct">
+                                          {discPct.toFixed(1)}% off /ct
+                                        </span>
+                                      ) : null}
                                     </span>
+                                    <strong>−{formatMoneyAmount(remAmt.lineDiscRem, detailCur)}</strong>
                                   </div>
-                                  <div className="memo-detail-v2-ist">
-                                    <span className="memo-detail-v2-il">Return qty</span>
-                                    <input
-                                      className="memo-detail-v2-qi"
-                                      type="number"
-                                      min={0}
-                                      max={remaining}
-                                      disabled={actionBusy || detail.status === 'Closed' || remaining === 0}
-                                      value={Number.isFinite(draftClamped) ? draftClamped : 0}
-                                      onChange={e => {
-                                        const v = Math.max(0, Math.min(remaining, Math.floor(Number(e.target.value) || 0)));
-                                        setReturnDraft(prev => ({ ...prev, [it.id]: v }));
-                                      }}
-                                      aria-label={`Return quantity for ${codeStr}`}
-                                    />
-                                  </div>
+                                ) : null}
+                                <div className="pay-detail-item-card__pricing-row">
+                                  <span>Remaining value</span>
+                                  <strong>{formatMoneyAmount(remAmt.lineNetRem, detailCur)}</strong>
                                 </div>
                               </div>
-                              <div className="memo-detail-v2-ipr">
-                                <span className="memo-detail-v2-plab">Net / pc</span>
-                                <span className="memo-detail-v2-pval">{formatMoneyAmount(memoDetailNetUnit(it), detailCur)}</span>
-                                <span className="memo-detail-v2-plab" style={{ marginTop: 7 }}>
-                                  Subtotal
-                                </span>
-                                <span className="memo-detail-v2-pval memo-detail-v2-pval--green">
-                                  {formatMoneyAmount(remAmt.lineGrossRem, detailCur)}
-                                </span>
-                                <span className="memo-detail-v2-plab" style={{ marginTop: 7 }}>
-                                  Rem. value
-                                </span>
-                                <span className="memo-detail-v2-pval memo-detail-v2-pval--muted">
-                                  {formatMoneyAmount(remAmt.lineNetRem, detailCur)}
-                                </span>
-                              </div>
-                            </div>
+
+                              {canReturn ? (
+                                <div className="memo-detail-item-card__return">
+                                  <span>Return qty</span>
+                                  <input
+                                    className="memo-detail-v2-qi"
+                                    type="number"
+                                    min={0}
+                                    max={remaining}
+                                    disabled={actionBusy}
+                                    value={Number.isFinite(draftClamped) ? draftClamped : 0}
+                                    onChange={e => {
+                                      const v = Math.max(
+                                        0,
+                                        Math.min(remaining, Math.floor(Number(e.target.value) || 0))
+                                      );
+                                      setReturnDraft(prev => ({ ...prev, [it.id]: v }));
+                                    }}
+                                    aria-label={`Return quantity for ${codeStr}`}
+                                  />
+                                  <span className="memo-detail-item-card__return-hint">
+                                    of {remaining} remaining
+                                  </span>
+                                </div>
+                              ) : null}
+                            </article>
                           );
                         })}
                       </div>
                     );
+                  })()}
+
+                  {(() => {
+                    const st = detail.status;
+                    const banner =
+                      st === 'Closed'
+                        ? detail.converted_invoice_id
+                          ? `Converted · ${detail.converted_invoice_id}`
+                          : 'Closed · No items remaining.'
+                        : st === 'Partially Returned'
+                          ? 'Partially returned · Some items still out.'
+                          : 'Open · Awaiting return or conversion.';
+                    const bannerMod =
+                      st === 'Closed'
+                        ? 'is-closed'
+                        : st === 'Partially Returned'
+                          ? 'is-partial'
+                          : 'is-open';
+                    return <div className={`memo-detail-v2-banner ${bannerMod}`}>{banner}</div>;
                   })()}
                 </>
               ) : null}

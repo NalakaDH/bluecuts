@@ -185,18 +185,59 @@ function invoiceLineDiscountPctPerCt(item: InvoiceItemRow): number | null {
 }
 
 function itemCardTitle(item: InvoiceItemRow): string {
-  return (
-    item.description ||
-    item.inventory_description ||
-    item.inv_category ||
-    item.inv_item_type ||
-    'Line item'
+  const invDesc = (item.inventory_description || '').trim();
+  if (
+    invDesc &&
+    !invDesc.includes(' · ') &&
+    !/\d+(\.\d+)?\s*ct\b/i.test(invDesc) &&
+    !/\d+(\.\d+)?\s*g\b/i.test(invDesc)
+  ) {
+    return invDesc;
+  }
+
+  const typeLine = [item.inv_category, item.inv_item_type].filter(Boolean).join(' ').trim();
+  if (typeLine) return typeLine;
+
+  const raw = (item.description || '').trim();
+  if (!raw) return 'Line item';
+
+  const segments = raw
+    .split(/\s*·\s*/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  const nameSeg = segments.find(
+    s =>
+      !/^[A-Z0-9]{2,}$/i.test(s) &&
+      !/^\d+(\.\d+)?\s*ct$/i.test(s) &&
+      !/^\d+(\.\d+)?\s*g$/i.test(s)
   );
+  return nameSeg || segments[0] || 'Line item';
 }
 
 function itemCodeLetter(item: InvoiceItemRow): string {
   const raw = item.item_code?.trim() || String(item.inventory_item_id);
   return raw.charAt(0).toUpperCase() || '?';
+}
+
+function formatDetailDateTime(value: string): string {
+  return dateFromServerUtc(value).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function formatDetailDateTimeWithSeconds(value: string): string {
+  return dateFromServerUtc(value).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }
 
 interface PaymentRow {
@@ -441,6 +482,10 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
     selectedInvoice != null
       ? (selectedInvoice.items || []).some(it => Math.floor(Number(it.returned_qty || 0)) > 0)
       : false;
+  const selectedInvoiceDiscountPct =
+    selectedInvoice && selectedInvoice.subtotal > 0
+      ? (selectedInvoice.discount / selectedInvoice.subtotal) * 100
+      : 0;
 
   const printInvoiceReceipt = (inv: InvoiceDetail) => {
     openInvoiceReceiptWindow(
@@ -532,70 +577,75 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
           </div>
         </div>
       )}
-      <section
-        className="payments-kpi-grid payments-kpi-grid--inv-ui"
-        aria-label="Payments summary stats"
-      >
-        <div className="dashT-kpi-sum dashT-kpi-sum--green">
-          <div className="dashT-kpi-sum__top">
-            <span className="dashT-kpi-sum__label">Total Collected</span>
-            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--green" aria-hidden="true">
-              <IconCheck />
-            </div>
+      <div className="pay-shell">
+        <section className="pay-hero" aria-label="Payments page header">
+          <div>
+            <p className="pay-hero__eyebrow">Finance workspace</p>
+            <h1 className="pay-hero__title">Payment</h1>
+            <p className="pay-hero__subtitle">
+              Review invoices, inspect every line item in detail, track discounts per carat,
+              print receipts, and collect outstanding balances.
+            </p>
           </div>
-          <div className="dashT-kpi-sum__value">{formatUsdOnlyFromThb(kpiPaidAmountThb, thbPerUnit)}</div>
-          <div className="payments-kpi-sub">
-            All time · paid invoices · USD from Profile rates (matches search and status filter)
+          <div className="pay-hero__meta">
+            <span className="pay-hero__meta-pill">{kpiTotalInvoices} invoices in scope</span>
+            {listTruncated ? (
+              <span className="pay-hero__meta-note">Showing first 500 matches. Refine search.</span>
+            ) : (
+              <span className="pay-hero__meta-note">Filters apply to totals and the invoice list.</span>
+            )}
           </div>
-        </div>
+        </section>
 
-        <div className="dashT-kpi-sum dashT-kpi-sum--orange">
-          <div className="dashT-kpi-sum__top">
-            <span className="dashT-kpi-sum__label">Outstanding</span>
-            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--orange" aria-hidden="true">
-              <IconAlertCircle />
+        <section className="pay-stat-grid" aria-label="Payments summary stats">
+          <article className="pay-stat-card pay-stat-card--success">
+            <div className="pay-stat-card__label">Total collected</div>
+            <div className="pay-stat-card__value">
+              {formatUsdOnlyFromThb(kpiPaidAmountThb, thbPerUnit)}
             </div>
-          </div>
-          <div className="dashT-kpi-sum__value">{formatUsdOnlyFromThb(kpiOutstandingThb, thbPerUnit)}</div>
-          <div className="payments-kpi-sub">
-            {kpiUnpaidCount + kpiPartialCount > 0
-              ? `${kpiUnpaidCount} unpaid · ${kpiPartialCount} partial · same scope as list`
-              : 'No balance in scope'}
-          </div>
-        </div>
-
-        <div className="dashT-kpi-sum dashT-kpi-sum--blue">
-          <div className="dashT-kpi-sum__top">
-            <span className="dashT-kpi-sum__label">Total Invoices</span>
-            <div className="dashT-kpi-sum__icon dashT-kpi-sum__icon--blue" aria-hidden="true">
-              <IconCreditCard />
+            <div className="pay-stat-card__sub">Paid invoices converted with profile rates.</div>
+          </article>
+          <article className="pay-stat-card pay-stat-card--warning">
+            <div className="pay-stat-card__label">Outstanding balance</div>
+            <div className="pay-stat-card__value">
+              {formatUsdOnlyFromThb(kpiOutstandingThb, thbPerUnit)}
             </div>
-          </div>
-          <div className="dashT-kpi-sum__value">{kpiTotalInvoices}</div>
-          <div className="payments-kpi-sub">
-            {kpiPaidCount} paid · {kpiUnpaidCount} unpaid
-            {listTruncated ? ' · list shows first 500; refine search' : ''}
-          </div>
-        </div>
-      </section>
+            <div className="pay-stat-card__sub">
+              {kpiUnpaidCount} unpaid and {kpiPartialCount} partial invoices.
+            </div>
+          </article>
+          <article className="pay-stat-card pay-stat-card--primary">
+            <div className="pay-stat-card__label">Total invoices</div>
+            <div className="pay-stat-card__value">{kpiTotalInvoices}</div>
+            <div className="pay-stat-card__sub">
+              {kpiPaidCount} paid across the current search and status scope.
+            </div>
+          </article>
+        </section>
 
-      <section className="payments-layout payments-layout--inv-ui">
-        <div className="pay-inv-list-panel">
-          <div className="pay-inv-list-card">
-            <div className="pay-inv-list-card-header">
-              <div className="pay-inv-list-card-top">
-                <h2 className="pay-inv-list-title">Invoices</h2>
+        <section className="pay-workspace">
+          <div className="pay-panel pay-panel--list">
+            <div className="pay-panel__header pay-panel__header--list">
+              <div>
+                <p className="pay-panel__eyebrow">Invoices</p>
+                <h2 className="pay-panel__title">Payment Queue</h2>
               </div>
+              <div className="pay-panel__header-note">
+                {loading ? 'Refreshing…' : `${invoices.length} result${invoices.length === 1 ? '' : 's'}`}
+              </div>
+            </div>
+
+            <div className="pay-list-toolbar">
               {error && (
                 <div className="pay-inv-inline-error" role="alert">
                   {error}
                 </div>
               )}
-              <div className="pay-inv-search">
+              <div className="pay-inv-search pay-inv-search--modern">
                 <IconSearch />
                 <input
                   type="search"
-                  placeholder="Search by invoice number or customer…"
+                  placeholder="Search invoice no. or customer"
                   value={search}
                   onChange={e => setSearch(e.target.value)}
                   aria-label="Search invoices"
@@ -605,7 +655,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
                 {(['all', 'Unpaid', 'Partial', 'Paid'] as const).map(key => {
                   const label = key === 'all' ? 'All' : key;
                   const active = statusFilter === key;
-                  let tabClass = 'pay-inv-filter-tab';
+                  let tabClass = 'pay-inv-filter-tab pay-inv-filter-tab--modern';
                   if (active) {
                     tabClass +=
                       key === 'all'
@@ -628,77 +678,51 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
               </div>
             </div>
 
-            <div className="pay-inv-row-list" aria-label="Invoices for payment">
+            <div className="pay-inv-row-list pay-inv-row-list--modern" aria-label="Invoices for payment">
               {loading ? (
                 <div className="pay-inv-row-empty">Loading invoices…</div>
               ) : invoices.length === 0 ? (
-                <div className="pay-inv-row-empty">No invoices to display yet.</div>
+                <div className="pay-inv-row-empty">No invoices match the current filters.</div>
               ) : (
                 invoices.map(inv => {
                   const isSelected = selectedInvoiceId === inv.id;
                   const st = (inv.status || 'Unpaid').toLowerCase() as 'paid' | 'unpaid' | 'partial';
                   const hasReturns = inv.returnedQty > 0;
-                  const createdLabel = dateFromServerUtc(inv.createdAt).toLocaleString(undefined, {
-                    month: 'numeric',
-                    day: 'numeric',
-                    year: 'numeric',
-                    hour: 'numeric',
-                    minute: '2-digit',
-                  });
-                  const balanceLabel =
-                    inv.remaining <= 0
-                      ? 'Fully paid'
-                      : `${formatMoneyAmount(inv.remaining, inv.currencyCode)} due`;
                   return (
                     <button
                       type="button"
                       key={inv.id}
-                      className={`pay-inv-row${isSelected ? ' pay-inv-row--selected' : ''}`}
+                      className={`pay-inv-row pay-inv-row--modern${isSelected ? ' pay-inv-row--selected' : ''}`}
                       onClick={() => handleRowClick(inv.id)}
                     >
-                      <div className={`pay-inv-row-icon pay-inv-row-icon--${st}`}>
-                        {inv.status === 'Paid' ? (
-                          <IconCheck />
-                        ) : inv.status === 'Partial' ? (
-                          <IconPartial />
-                        ) : (
-                          <IconAlertCircle />
-                        )}
-                      </div>
                       <div className="pay-inv-row-main">
-                        <div className="pay-inv-row-line1">
+                        <div className="pay-inv-row-line1 pay-inv-row-line1--modern">
                           <span className="pay-inv-num">{inv.invoiceNo}</span>
-                          <span className="pay-inv-dot" aria-hidden="true">
-                            ·
-                          </span>
-                          <span className={`pay-inv-status pay-inv-status--${st}`}>{inv.status}</span>
-                          {hasReturns ? (
-                            <>
-                              <span className="pay-inv-dot" aria-hidden="true">
-                                ·
-                              </span>
-                              <span className="pay-inv-status pay-inv-status--partial">Return</span>
-                            </>
-                          ) : null}
+                          <span className={`pay-chip pay-chip--${st}`}>{inv.status}</span>
+                          {hasReturns ? <span className="pay-chip pay-chip--return">Return</span> : null}
                         </div>
-                        <div className="pay-inv-row-line2">
-                          <span className="pay-inv-customer">{inv.customerName}</span>
+                        <div className="pay-inv-customer">{inv.customerName}</div>
+                        <div className="pay-inv-row-line2 pay-inv-row-line2--modern">
+                          <span className="pay-inv-date">{formatDetailDateTime(inv.createdAt)}</span>
                           <span className="pay-inv-dot" aria-hidden="true">
                             ·
                           </span>
-                          <span className="pay-inv-date">{createdLabel}</span>
+                          <span>
+                            Paid {formatMoneyAmount(inv.paid, inv.currencyCode)} of{' '}
+                            {formatMoneyAmount(inv.total, inv.currencyCode)}
+                          </span>
                         </div>
                       </div>
-                      <div className="pay-inv-row-right" aria-label="Invoice amounts">
+                      <div className="pay-inv-row-right pay-inv-row-right--modern" aria-label="Invoice amounts">
                         <div className="pay-inv-total">
-                          {formatMoneyAmount(inv.total, inv.currencyCode)}
+                          {formatMoneyAmount(inv.remaining > 0 ? inv.remaining : inv.total, inv.currencyCode)}
                         </div>
                         <div
                           className={`pay-inv-balance ${
                             inv.remaining <= 0 ? 'pay-inv-balance--zero' : 'pay-inv-balance--due'
                           }`}
                         >
-                          {balanceLabel}
+                          {inv.remaining <= 0 ? 'Settled' : 'Due now'}
                         </div>
                       </div>
                     </button>
@@ -707,343 +731,343 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, token }) =
               )}
             </div>
           </div>
-        </div>
 
-        <aside className="pay-inv-detail-aside">
-          {!selectedInvoiceId && !detailLoading && !detailError ? (
-            <div className="pay-inv-detail-empty">
-              <div className="pay-inv-detail-empty-icon" aria-hidden="true">
-                <IconCreditCard />
+          <aside className="pay-panel pay-panel--detail">
+            {!selectedInvoiceId && !detailLoading && !detailError ? (
+              <div className="pay-inv-detail-empty pay-inv-detail-empty--modern">
+                <div className="pay-inv-detail-empty-icon" aria-hidden="true">
+                  <IconCreditCard />
+                </div>
+                <h3 className="pay-inv-detail-empty-title">Select an invoice</h3>
+                <p className="pay-inv-detail-empty-text">
+                  Pick an invoice from the left to inspect line items, discount percentages, and
+                  payment history.
+                </p>
               </div>
-              <h3 className="pay-inv-detail-empty-title">Select an invoice</h3>
-              <p className="pay-inv-detail-empty-text">
-                Choose an invoice from the list to view details, print, or pay.
-              </p>
-            </div>
-          ) : (
-            <div className="pay-inv-detail-card">
-              {detailLoading && (
-                <div className="pay-inv-detail-placeholder">
-                  <p>Loading invoice details…</p>
-                </div>
-              )}
-              {detailError && !detailLoading && (
-                <div className="pay-inv-detail-placeholder pay-inv-detail-placeholder--error">
-                  <p>{detailError}</p>
-                </div>
-              )}
-              {selectedInvoice && !detailLoading && !detailError && (
-                <>
-                  <div className="pay-inv-detail-head">
-                    <div className="pay-inv-detail-head-top">
-                      <div>
-                        <div className="pay-inv-detail-eyebrow">
+            ) : (
+              <div className="pay-inv-detail-card pay-inv-detail-card--modern">
+                {detailLoading && (
+                  <div className="pay-inv-detail-placeholder">
+                    <p>Loading invoice details…</p>
+                  </div>
+                )}
+                {detailError && !detailLoading && (
+                  <div className="pay-inv-detail-placeholder pay-inv-detail-placeholder--error">
+                    <p>{detailError}</p>
+                  </div>
+                )}
+                {selectedInvoice && !detailLoading && !detailError && (
+                  <>
+                    <div className="pay-detail-hero">
+                      <div className="pay-detail-hero__main">
+                        <div className="pay-detail-hero__eyebrow">
                           Invoice · {selectedInvoice.invoice_no}
                         </div>
-                        <div className="pay-inv-detail-customer-name">
-                          {selectedInvoice.customer_name || 'Walk-in customer'}
+                        <div className="pay-detail-hero__head-row">
+                          <div>
+                            <div className="pay-detail-hero__customer">
+                              {selectedInvoice.customer_name || 'Walk-in customer'}
+                            </div>
+                            <div className="pay-detail-hero__meta">
+                              {formatDetailDateTime(selectedInvoice.created_at)}
+                            </div>
+                          </div>
+                          <div className="pay-inv-detail-head-actions">
+                            <button
+                              type="button"
+                              className="pay-inv-btn-print"
+                              onClick={() => printInvoiceReceipt(selectedInvoice)}
+                            >
+                              Print
+                            </button>
+                            <button
+                              type="button"
+                              className="pay-inv-btn-close pay-inv-btn-close--labelled"
+                              aria-label="Close invoice details"
+                              onClick={handleCloseDetail}
+                            >
+                              Close
+                            </button>
+                          </div>
                         </div>
-                        <div className="pay-inv-detail-when">
-                          {dateFromServerUtc(selectedInvoice.created_at).toLocaleString(undefined, {
-                            month: 'numeric',
-                            day: 'numeric',
-                            year: 'numeric',
-                            hour: 'numeric',
-                            minute: '2-digit',
-                            second: '2-digit',
-                          })}
-                        </div>
-                      </div>
-                      <div className="pay-inv-detail-head-actions">
-                        <button
-                          type="button"
-                          className="pay-inv-btn-print"
-                          onClick={() => printInvoiceReceipt(selectedInvoice)}
-                        >
-                          <IconPrinter />
-                          Print
-                        </button>
-                        <button
-                          type="button"
-                          className="pay-inv-btn-close"
-                          aria-label="Close invoice details"
-                          onClick={handleCloseDetail}
-                        >
-                          ✕
-                        </button>
                       </div>
                     </div>
-                    <div className="pay-inv-amount-grid">
-                      <div className="pay-inv-amount-tile pay-inv-amount-tile--total">
-                        <div className="pay-inv-amount-label">Total amount</div>
-                        <div className="pay-inv-amount-value">
+
+                    <div className="pay-detail-summary-grid">
+                      <div className="pay-detail-summary-card">
+                        <div className="pay-detail-summary-card__label">Total amount</div>
+                        <div className="pay-detail-summary-card__value">
                           {formatMoneyAmount(selectedInvoice.total, detailCurrency)}
                         </div>
                       </div>
-                      <div className="pay-inv-amount-tile pay-inv-amount-tile--paid">
-                        <div className="pay-inv-amount-label">Amount paid</div>
-                        <div className="pay-inv-amount-value">
+                      <div className="pay-detail-summary-card">
+                        <div className="pay-detail-summary-card__label">Amount paid</div>
+                        <div className="pay-detail-summary-card__value pay-detail-summary-card__value--paid">
                           {formatMoneyAmount(selectedInvoice.paid, detailCurrency)}
                         </div>
                       </div>
-                      <div
-                        className={`pay-inv-amount-tile ${
-                          selectedRemaining <= 0
-                            ? 'pay-inv-amount-tile--cleared'
-                            : selectedInvoice.derived_status === 'Partial'
-                              ? 'pay-inv-amount-tile--partial'
-                              : 'pay-inv-amount-tile--due'
-                        }`}
-                      >
-                        <div className="pay-inv-amount-label">Remaining</div>
-                        <div className="pay-inv-amount-value">
+                      <div className="pay-detail-summary-card">
+                        <div className="pay-detail-summary-card__label">Remaining</div>
+                        <div
+                          className={`pay-detail-summary-card__value ${
+                            selectedRemaining > 0
+                              ? 'pay-detail-summary-card__value--due'
+                              : 'pay-detail-summary-card__value--paid'
+                          }`}
+                        >
                           {formatMoneyAmount(selectedRemaining, detailCurrency)}
                         </div>
                       </div>
-                    </div>
-                    {selectedInvoice.discount > 0 && (
-                      <p className="pay-inv-invoice-discount">
-                        Invoice discount:{' '}
-                        {formatMoneyAmount(selectedInvoice.discount, detailCurrency)}
-                        {selectedInvoice.subtotal > 0 && (
-                          <span className="pay-inv-invoice-discount-pct">
-                            {' '}({((selectedInvoice.discount / selectedInvoice.subtotal) * 100).toFixed(2)}% of subtotal)
-                          </span>
-                        )}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="pay-inv-detail-body">
-                    <div>
-                      <div className="pay-inv-section-heading">Items</div>
-                      {selectedInvoice.items.map(item => {
-                        const ct = Number(item.weight_carats || 0);
-                        const qty = item.quantity || 0;
-                        const unit = Number(item.unit_price || 0);
-                        const gross = invoiceLineGrossAmount(item);
-                        const discAmt = invoiceLineDiscountAmount(item);
-                        const discPct = invoiceLineDiscountPct(item);
-                        const discPctCt = invoiceLineDiscountPctPerCt(item);
-                        const net = Number(item.line_total) || 0;
-                        const returnedQty = Math.floor(Number(item.returned_qty || 0));
-                        const hasDiscount = discAmt > 0.005;
-                        const effectivePerCt = ct > 0 && qty > 0 ? net / (qty * ct) : null;
-                        return (
-                          <div key={item.id} className="pay-inv-item-card">
-                            {/* ── Header: avatar + name + code ── */}
-                            <div className="pay-inv-item-card-head">
-                              <div className="pay-inv-item-code">{itemCodeLetter(item)}</div>
-                              <div className="pay-inv-item-card-title-block">
-                                <div className="pay-inv-item-title">{itemCardTitle(item)}</div>
-                                <div className="pay-inv-item-card-badges">
-                                  {item.item_code && (
-                                    <span className="pay-inv-badge pay-inv-badge--code">{item.item_code}</span>
-                                  )}
-                                  {item.inv_category && (
-                                    <span className="pay-inv-badge pay-inv-badge--cat">{item.inv_category}</span>
-                                  )}
-                                  {item.inv_item_type && (
-                                    <span className="pay-inv-badge pay-inv-badge--type">{item.inv_item_type}</span>
-                                  )}
-                                  {returnedQty > 0 && (
-                                    <span className="pay-inv-badge pay-inv-badge--returned">
-                                      {returnedQty} returned
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* ── Specs strip: weight + qty ── */}
-                            <div className="pay-inv-item-specs">
-                              {ct > 0 && (
-                                <div className="pay-inv-item-spec">
-                                  <span className="pay-inv-item-spec-label">Weight</span>
-                                  <span className="pay-inv-item-spec-val">
-                                    {ct} ct{item.weight_grams ? ` · ${item.weight_grams} g` : ''}
-                                  </span>
-                                </div>
-                              )}
-                              <div className="pay-inv-item-spec">
-                                <span className="pay-inv-item-spec-label">Qty sold</span>
-                                <span className="pay-inv-item-spec-val">{qty} pc{qty !== 1 ? 's' : ''}</span>
-                              </div>
-                            </div>
-
-                            {/* ── Pricing breakdown ── */}
-                            <div className="pay-inv-item-pricing">
-                              {/* List price → Gross */}
-                              <div className="pay-inv-pricing-row">
-                                <span className="pay-inv-pricing-label">
-                                  {ct > 0 ? `List price` : 'Unit price'}
-                                </span>
-                                <span className="pay-inv-pricing-val pay-inv-pricing-val--muted">
-                                  {ct > 0
-                                    ? <>{formatMoneyAmount(unit, detailCurrency)} <span className="pay-inv-pricing-unit">/ct</span></>
-                                    : formatMoneyAmount(unit, detailCurrency)
-                                  }
-                                </span>
-                              </div>
-                              <div className="pay-inv-pricing-row">
-                                <span className="pay-inv-pricing-label pay-inv-pricing-label--sub">
-                                  {ct > 0
-                                    ? `${formatMoneyAmount(unit, detailCurrency)} × ${ct} ct × ${qty} pc${qty !== 1 ? 's' : ''}`
-                                    : `${formatMoneyAmount(unit, detailCurrency)} × ${qty} pc${qty !== 1 ? 's' : ''}`
-                                  }
-                                </span>
-                                <span className="pay-inv-pricing-val pay-inv-pricing-val--muted">
-                                  {formatMoneyAmount(gross, detailCurrency)}
-                                </span>
-                              </div>
-
-                              {/* Discount */}
-                              {hasDiscount && (
-                                <div className="pay-inv-pricing-row pay-inv-pricing-row--discount">
-                                  <span className="pay-inv-pricing-label">
-                                    Discount
-                                    <span className="pay-inv-discount-badge">{discPct.toFixed(1)}% off</span>
-                                    {discPctCt !== null && (
-                                      <span className="pay-inv-discount-badge pay-inv-discount-badge--ct">{discPctCt.toFixed(1)}% off /ct</span>
-                                    )}
-                                  </span>
-                                  <span className="pay-inv-pricing-val pay-inv-pricing-val--discount">
-                                    −{formatMoneyAmount(discAmt, detailCurrency)}
-                                  </span>
-                                </div>
-                              )}
-
-                              {/* Net total */}
-                              <div className="pay-inv-pricing-row pay-inv-pricing-row--net">
-                                <span className="pay-inv-pricing-label pay-inv-pricing-label--net">
-                                  Charged
-                                  {effectivePerCt !== null && (
-                                    <span className="pay-inv-effective-rate">
-                                      {effectivePerCt.toFixed(2)} /ct effective
-                                    </span>
-                                  )}
-                                </span>
-                                <span className="pay-inv-pricing-val pay-inv-pricing-val--net">
-                                  {formatMoneyAmount(net, detailCurrency)}
-                                </span>
-                              </div>
-                            </div>
+                      {selectedInvoice.discount > 0 ? (
+                        <div className="pay-detail-summary-card pay-detail-summary-card--discount">
+                          <div className="pay-detail-summary-card__label">Invoice discount</div>
+                          <div className="pay-detail-summary-card__value">
+                            {formatMoneyAmount(selectedInvoice.discount, detailCurrency)}
                           </div>
-                        );
-                      })}
+                          {selectedInvoice.subtotal > 0 ? (
+                            <div className="pay-detail-summary-card__hint">
+                              {selectedInvoiceDiscountPct.toFixed(1)}% of subtotal
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
 
-                    <div>
-                      <div className="pay-inv-section-heading">Payment history</div>
-                      {selectedInvoice.payments.length === 0 ? (
-                        <p className="pay-inv-no-payments">No payments recorded yet.</p>
-                      ) : (
-                        <div className="pay-inv-payment-timeline">
-                          {selectedInvoice.payments.map(p => (
-                            <div key={p.id} className="pay-inv-payment-entry">
-                              <div className="pay-inv-payment-dot">
-                                <IconCheck />
-                              </div>
-                              <div className="pay-inv-payment-body">
-                                <div className="pay-inv-payment-row-line">
-                                  <div>
-                                    <div className="pay-inv-payment-method">{p.method}</div>
-                                    <div className="pay-inv-payment-when">
-                                      {dateFromServerUtc(p.created_at).toLocaleString(undefined, {
-                                        month: 'numeric',
-                                        day: 'numeric',
-                                        year: 'numeric',
-                                        hour: 'numeric',
-                                        minute: '2-digit',
-                                        second: '2-digit',
-                                      })}
+                    <div className="pay-inv-detail-body pay-inv-detail-body--modern">
+                      <section className="pay-detail-section">
+                        <div className="pay-inv-section-heading">Items</div>
+                        <div className="pay-detail-item-list">
+                          {selectedInvoice.items.map(item => {
+                            const ct = Number(item.weight_carats || 0);
+                            const qty = item.quantity || 0;
+                            const unit = Number(item.unit_price || 0);
+                            const gross = invoiceLineGrossAmount(item);
+                            const discAmt = invoiceLineDiscountAmount(item);
+                            const discPct = invoiceLineDiscountPct(item);
+                            const discPctCt = invoiceLineDiscountPctPerCt(item);
+                            const net = Number(item.line_total) || 0;
+                            const returnedQty = Math.floor(Number(item.returned_qty || 0));
+                            const hasDiscount = discAmt > 0.005;
+                            const effectivePerCt = ct > 0 && qty > 0 ? net / (qty * ct) : null;
+                            return (
+                              <article key={item.id} className="pay-detail-item-card">
+                                <div className="pay-detail-item-card__head">
+                                  <div className="pay-inv-item-code">{itemCodeLetter(item)}</div>
+                                  <div className="pay-detail-item-card__title-wrap">
+                                    <div className="pay-detail-item-card__title-row">
+                                      <div className="pay-detail-item-card__title">
+                                        {itemCardTitle(item)}
+                                      </div>
+                                    </div>
+                                    <div className="pay-inv-item-card-badges">
+                                      {item.item_code ? (
+                                        <span className="pay-inv-badge pay-inv-badge--code">
+                                          {item.item_code}
+                                        </span>
+                                      ) : null}
+                                      {item.inv_category ? (
+                                        <span className="pay-inv-badge pay-inv-badge--cat">
+                                          {item.inv_category}
+                                        </span>
+                                      ) : null}
+                                      {item.inv_item_type ? (
+                                        <span className="pay-inv-badge pay-inv-badge--type">
+                                          {item.inv_item_type}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <div className="pay-inv-item-card-badges pay-inv-item-card-badges--secondary">
+                                      {returnedQty > 0 ? (
+                                        <span className="pay-inv-badge pay-inv-badge--returned">
+                                          {returnedQty} returned
+                                        </span>
+                                      ) : null}
                                     </div>
                                   </div>
-                                  <div className="pay-inv-payment-amt">
-                                    {formatMoneyAmount(p.amount, detailCurrency)}
+                                  <div className="pay-detail-item-card__amount">
+                                    {formatMoneyAmount(net, detailCurrency)}
                                   </div>
                                 </div>
-                                <button
-                                  type="button"
-                                  className="pay-inv-payment-print-btn"
-                                  onClick={() => printPaymentReceipt(selectedInvoice, p.id)}
-                                >
-                                  <IconPrinter />
-                                  Print payment receipt
-                                </button>
+
+                                <div className="pay-detail-item-card__specs">
+                                  <div className="pay-detail-item-card__spec">
+                                    <span>Qty</span>
+                                    <strong>
+                                      {qty} pc{qty === 1 ? '' : 's'}
+                                    </strong>
+                                  </div>
+                                  <div className="pay-detail-item-card__spec">
+                                    <span>Weight</span>
+                                    <strong>
+                                      {ct > 0
+                                        ? `${ct} ct${item.weight_grams ? ` · ${item.weight_grams} g` : ''}`
+                                        : 'N/A'}
+                                    </strong>
+                                  </div>
+                                  <div className="pay-detail-item-card__spec">
+                                    <span>{ct > 0 ? 'List rate' : 'Unit price'}</span>
+                                    <strong>
+                                      {ct > 0
+                                        ? `${formatMoneyAmount(unit, detailCurrency)} /ct`
+                                        : formatMoneyAmount(unit, detailCurrency)}
+                                    </strong>
+                                  </div>
+                                </div>
+
+                                <div className="pay-detail-item-card__pricing">
+                                  <div className="pay-detail-item-card__pricing-row">
+                                    <span>List price</span>
+                                    <strong>
+                                      {ct > 0
+                                        ? `${formatMoneyAmount(unit, detailCurrency)} /ct`
+                                        : formatMoneyAmount(unit, detailCurrency)}
+                                    </strong>
+                                  </div>
+                                  <div className="pay-detail-item-card__pricing-row pay-detail-item-card__pricing-row--muted">
+                                    <span>
+                                      {ct > 0
+                                        ? `${formatMoneyAmount(unit, detailCurrency)} × ${ct} ct × ${qty} pc${
+                                            qty === 1 ? '' : 's'
+                                          }`
+                                        : `${formatMoneyAmount(unit, detailCurrency)} × ${qty} pc${
+                                            qty === 1 ? '' : 's'
+                                          }`}
+                                    </span>
+                                    <strong>{formatMoneyAmount(gross, detailCurrency)}</strong>
+                                  </div>
+                                  {hasDiscount ? (
+                                    <div className="pay-detail-item-card__pricing-row pay-detail-item-card__pricing-row--discount">
+                                      <span>
+                                        Discount
+                                        <span className="pay-inv-discount-badge">
+                                          {discPct.toFixed(1)}% off
+                                        </span>
+                                        {discPctCt !== null ? (
+                                          <span className="pay-inv-discount-badge pay-inv-discount-badge--ct">
+                                            {discPctCt.toFixed(1)}% off /ct
+                                          </span>
+                                        ) : null}
+                                      </span>
+                                      <strong>-{formatMoneyAmount(discAmt, detailCurrency)}</strong>
+                                    </div>
+                                  ) : null}
+                                  <div className="pay-detail-item-card__pricing-row">
+                                    <span>Charged</span>
+                                    <strong>{formatMoneyAmount(net, detailCurrency)}</strong>
+                                  </div>
+                                  {effectivePerCt !== null ? (
+                                    <div className="pay-detail-item-card__pricing-note">
+                                      Effective rate: {formatMoneyAmount(effectivePerCt, detailCurrency)} /ct
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      </section>
+
+                      <section className="pay-detail-section">
+                        <div className="pay-inv-section-heading">Payment history</div>
+                        {selectedInvoice.payments.length === 0 ? (
+                          <p className="pay-inv-no-payments">No payments recorded yet.</p>
+                        ) : (
+                          <div className="pay-detail-payments">
+                            {selectedInvoice.payments.map(p => (
+                              <div key={p.id} className="pay-detail-payment-card">
+                                <div className="pay-detail-payment-card__head">
+                                  <div className="pay-detail-payment-card__meta">
+                                    <span className="pay-detail-payment-card__dot" aria-hidden="true" />
+                                    <div>
+                                      <div className="pay-detail-payment-card__method">{p.method}</div>
+                                      <div className="pay-detail-payment-card__date">
+                                        {formatDetailDateTime(p.created_at)}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="pay-detail-payment-card__amount">
+                                    {formatMoneyAmount(p.amount, detailCurrency)}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="pay-inv-payment-print-btn"
+                                    onClick={() => printPaymentReceipt(selectedInvoice, p.id)}
+                                  >
+                                    Print receipt
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+
+                      <section className="pay-detail-section">
+                        {selectedRemaining > 0 ? (
+                          <div
+                            className={`pay-inv-status-banner pay-inv-status-banner--${(
+                              selectedInvoice.derived_status || ''
+                            ).toLowerCase()}`}
+                            role="status"
+                          >
+                            <div className="pay-inv-status-banner-icon">
+                              <IconAlertCircle />
+                            </div>
+                            <div>
+                              <div className="pay-inv-status-banner-title">
+                                {selectedInvoice.derived_status === 'Partial'
+                                  ? 'Partially paid'
+                                  : 'Unpaid'}
+                              </div>
+                              <div className="pay-inv-status-banner-sub">
+                                {formatMoneyAmount(selectedRemaining, detailCurrency)} still needs to be
+                                collected.
                               </div>
                             </div>
-                          ))}
-                        </div>
-                      )}
+                          </div>
+                        ) : (
+                          <div className="pay-inv-status-banner pay-inv-status-banner--paid" role="status">
+                            <div className="pay-inv-status-banner-icon pay-inv-status-banner-icon--ok">
+                              <IconCheck />
+                            </div>
+                            <div>
+                              <div className="pay-inv-status-banner-title">Fully paid</div>
+                              <div className="pay-inv-status-banner-sub">
+                                No balance remaining.
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </section>
                     </div>
 
-                    {selectedRemaining > 0 ? (
-                      <div
-                        className={`pay-inv-status-banner pay-inv-status-banner--${(
-                          selectedInvoice.derived_status || ''
-                        ).toLowerCase()}`}
-                        role="status"
-                      >
-                        <div className="pay-inv-status-banner-icon">
-                          <IconAlertCircle />
-                        </div>
-                        <div>
-                          <div className="pay-inv-status-banner-title">
-                            {selectedInvoice.derived_status === 'Partial'
-                              ? 'Partially paid'
-                              : 'Unpaid'}
-                          </div>
-                          <div className="pay-inv-status-banner-sub">
-                            {formatMoneyAmount(selectedRemaining, detailCurrency)} balance remaining
-                            on this invoice.
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="pay-inv-status-banner pay-inv-status-banner--paid" role="status">
-                        <div className="pay-inv-status-banner-icon pay-inv-status-banner-icon--ok">
-                          <IconCheck />
-                        </div>
-                        <div>
-                          <div className="pay-inv-status-banner-title">Fully paid</div>
-                          <div className="pay-inv-status-banner-sub">
-                            No balance remaining on this invoice.
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                    {selectedHasReturns ? (
-                      <div className="pay-inv-pay-hint" style={{ marginTop: 8 }}>
-                        This invoice includes returned item(s).
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="pay-inv-detail-footer">
-                    {selectedRemaining > 0 ? (
-                      <>
-                        <button
-                          type="button"
-                          className="pay-inv-btn-pay"
-                          onClick={() => handlePayClick(selectedInvoice.id)}
-                        >
-                          <IconCreditCard />
-                          Pay invoice
-                        </button>
-                        <p className="pay-inv-pay-hint">
-                          Opens invoice checkout to choose payment method, currency, and amount
-                          tendered.
-                        </p>
-                      </>
-                    ) : null}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-        </aside>
-      </section>
+                    <div className="pay-inv-detail-footer pay-inv-detail-footer--modern">
+                      {selectedHasReturns ? (
+                        <p className="pay-inv-pay-hint">This invoice includes returned item(s).</p>
+                      ) : null}
+                      {selectedRemaining > 0 ? (
+                        <>
+                          <button
+                            type="button"
+                            className="pay-inv-btn-pay"
+                            onClick={() => handlePayClick(selectedInvoice.id)}
+                          >
+                            <IconCreditCard />
+                            Pay invoice
+                          </button>
+                          <p className="pay-inv-pay-hint">
+                            Open checkout to record the payment method, amount, and receipt.
+                          </p>
+                        </>
+                      ) : null}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </aside>
+        </section>
+      </div>
     </div>
   );
 }
