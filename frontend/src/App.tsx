@@ -275,7 +275,7 @@ const LocalApp: React.FC = () => {
         case 'invoiceCheckout':
           return <InvoiceCheckoutPage token={auth.token} onNavigate={goToPage} />;
         case 'customers':
-          return <CustomersPage token={auth.token} />;
+          return <CustomersPage token={auth.token} onNavigate={goToPage} />;
         case 'memo':
           return <MemoPage token={auth.token} onNavigate={goToPage} view={memoView} onChangeView={setMemoView} />;
         case 'returns':

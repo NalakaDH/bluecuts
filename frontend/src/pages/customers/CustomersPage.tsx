@@ -1,9 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { useAlertDialog } from '../../components/AlertDialog';
+import {
+  InvoiceDetailCard,
+  type InvoiceDetail,
+} from '../../components/InvoiceDetailCard';
 import { apiUrl, parseErrorResponse } from '../../api';
 import type { ThbPerUnitMap } from '../../lib/exchangeConversion';
 import { formatUsdOnlyFromThb } from '../../lib/moneyUsdDisplay';
 import { DEFAULT_CURRENCY_CODE, formatMoneyAmount } from '../../lib/currencies';
+import { mapApiInvoiceToReceipt, openInvoiceReceiptWindow } from '../../lib/receiptDocument';
+import { openPaymentReceiptForInvoicePayment } from '../../lib/paymentReceipt';
+import { INVOICE_CHECKOUT_INVOICE_ID_KEY } from '../../constants/invoiceCheckout';
+import type { PageId } from '../../components/layout/Layout';
 
 const IconSearch: React.FC = () => (
   <svg
@@ -157,6 +165,7 @@ interface ApiCustomer {
 
 interface CustomersPageProps {
   token: string;
+  onNavigate?: (page: PageId) => void;
 }
 
 interface CustomerInvoiceRow {
@@ -264,7 +273,7 @@ function formatStoredCalendarDate(raw: string | null | undefined): string {
   });
 }
 
-export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
+export const CustomersPage: React.FC<CustomersPageProps> = ({ token, onNavigate }) => {
   const { showAlert, showConfirm } = useAlertDialog();
   const [thbPerUnit, setThbPerUnit] = useState<ThbPerUnitMap>({ THB: 1 });
   const [search, setSearch] = useState('');
@@ -303,6 +312,10 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
   const [memoDetailLoading, setMemoDetailLoading] = useState(false);
   const [memoDetailError, setMemoDetailError] = useState<string | null>(null);
   const [memoDetail, setMemoDetail] = useState<MemoDetailResponse | null>(null);
+  const [invoiceDetailOpen, setInvoiceDetailOpen] = useState(false);
+  const [invoiceDetailLoading, setInvoiceDetailLoading] = useState(false);
+  const [invoiceDetailError, setInvoiceDetailError] = useState<string | null>(null);
+  const [invoiceDetail, setInvoiceDetail] = useState<InvoiceDetail | null>(null);
 
   const [editOpen, setEditOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -615,6 +628,113 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
     } finally {
       setMemoDetailLoading(false);
     }
+  };
+
+  const closeInvoiceDetail = () => {
+    setInvoiceDetailOpen(false);
+    setInvoiceDetail(null);
+    setInvoiceDetailError(null);
+  };
+
+  const openInvoiceDetail = async (invoiceId: number) => {
+    setInvoiceDetailOpen(true);
+    setInvoiceDetailLoading(true);
+    setInvoiceDetailError(null);
+    setInvoiceDetail(null);
+    try {
+      const res = await fetch(apiUrl(`/api/invoices/${invoiceId}`), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const msg = await parseErrorResponse(res, 'Failed to load invoice');
+        throw new Error(msg);
+      }
+      const data: InvoiceDetail = await res.json();
+      setInvoiceDetail(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to load invoice';
+      setInvoiceDetailError(msg);
+      showAlert({ title: 'Could not load invoice', message: msg, variant: 'error' });
+    } finally {
+      setInvoiceDetailLoading(false);
+    }
+  };
+
+  const printInvoiceReceipt = (inv: InvoiceDetail) => {
+    openInvoiceReceiptWindow(
+      mapApiInvoiceToReceipt({
+        invoice_no: inv.invoice_no,
+        created_at: inv.created_at,
+        customer_name: inv.customer_name,
+        customer_phone: inv.customer_phone,
+        customer_email: inv.customer_email,
+        customer_address_line1: inv.customer_address_line1,
+        customer_address_line2: inv.customer_address_line2,
+        customer_city: inv.customer_city,
+        customer_postal_code: inv.customer_postal_code,
+        customer_country: inv.customer_country,
+        subtotal: inv.subtotal,
+        discount: inv.discount,
+        total: inv.total,
+        paid: inv.paid,
+        status: inv.status,
+        currency_code: inv.currency_code,
+        items: inv.items.map(it => ({
+          item_code: it.item_code,
+          description: it.description,
+          quantity: it.quantity,
+          unit_price: it.unit_price,
+          line_total: it.line_total,
+          weight_grams: it.weight_grams,
+          weight_carats: it.weight_carats,
+          inv_category: it.inv_category,
+          inv_item_type: it.inv_item_type,
+          inventory_description: it.inventory_description,
+        })),
+        payments: inv.payments.map(p => ({
+          method: p.method,
+          amount: p.amount,
+          created_at: p.created_at,
+        })),
+      })
+    );
+  };
+
+  const printPaymentReceipt = (inv: InvoiceDetail, paymentId: number) => {
+    const currency =
+      inv.currency_code != null && inv.currency_code !== ''
+        ? inv.currency_code
+        : DEFAULT_CURRENCY_CODE;
+    const ok = openPaymentReceiptForInvoicePayment({
+      invoice_no: inv.invoice_no,
+      customer_name: inv.customer_name,
+      currency_code: currency,
+      invoice_total: inv.total,
+      payments: inv.payments.map(p => ({
+        id: p.id,
+        method: p.method,
+        amount: p.amount,
+        created_at: p.created_at,
+      })),
+      paymentId,
+    });
+    if (!ok) {
+      showAlert({
+        title: 'Could not print',
+        message: 'Payment receipt could not be opened.',
+        variant: 'error',
+      });
+    }
+  };
+
+  const handlePayInvoice = (invoiceId: number) => {
+    try {
+      window.sessionStorage.setItem(INVOICE_CHECKOUT_INVOICE_ID_KEY, String(invoiceId));
+    } catch {
+      // Ignore storage errors and still navigate when possible.
+    }
+    closeInvoiceDetail();
+    onNavigate?.('invoiceCheckout');
   };
 
   const saveCustomer = async () => {
@@ -970,12 +1090,13 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
                             <th>Paid</th>
                             <th>Balance</th>
                             <th>Status</th>
+                            <th />
                           </tr>
                         </thead>
                         <tbody>
                           {detail.invoices.length === 0 ? (
                             <tr>
-                              <td colSpan={7} className="customers-empty-cell">
+                              <td colSpan={8} className="customers-empty-cell">
                                 No invoices.
                               </td>
                             </tr>
@@ -1006,6 +1127,15 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
                                   >
                                     {inv.status}
                                   </span>
+                                </td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="ghost-button small"
+                                    onClick={() => openInvoiceDetail(inv.id)}
+                                  >
+                                    View
+                                  </button>
                                 </td>
                               </tr>
                             ))
@@ -1685,6 +1815,33 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ token }) => {
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {invoiceDetailOpen && (
+        <div
+          className="customers-memo-overlay customers-invoice-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Invoice details"
+          onClick={closeInvoiceDetail}
+        >
+          <div
+            className="customers-memo-panel customers-invoice-panel"
+            onClick={e => e.stopPropagation()}
+          >
+            <InvoiceDetailCard
+              invoice={invoiceDetail}
+              loading={invoiceDetailLoading}
+              error={invoiceDetailError}
+              onClose={closeInvoiceDetail}
+              onPrintInvoice={printInvoiceReceipt}
+              onPrintPayment={printPaymentReceipt}
+              onPay={onNavigate ? handlePayInvoice : undefined}
+              showPay={Boolean(onNavigate)}
+              showClose
+            />
           </div>
         </div>
       )}

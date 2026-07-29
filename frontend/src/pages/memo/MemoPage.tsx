@@ -698,11 +698,6 @@ function memoDetailItemCardTitle(it: MemoItemRow): string {
   return memoLineDescription(it);
 }
 
-function memoDetailItemCodeLetter(it: MemoItemRow): string {
-  const raw = (it.item_code || '').trim() || String(it.inventory_item_id);
-  return raw.charAt(0).toUpperCase() || '?';
-}
-
 function memoDetailLineAmounts(it: MemoItemRow) {
   return memoReceiptLineRemainingAmounts({
     item_code: it.item_code,
@@ -3201,9 +3196,6 @@ export const MemoPage: React.FC<MemoPageProps> = ({
                           return (
                             <article key={it.id} className="pay-detail-item-card memo-detail-item-card">
                               <div className="pay-detail-item-card__head">
-                                <div className="pay-inv-item-code" aria-hidden="true">
-                                  {memoDetailItemCodeLetter(it)}
-                                </div>
                                 <div className="pay-detail-item-card__title-wrap">
                                   <div className="pay-detail-item-card__title-row">
                                     <div className="pay-detail-item-card__title">

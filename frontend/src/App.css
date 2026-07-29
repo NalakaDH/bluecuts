@@ -14313,6 +14313,29 @@
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
+.pay-inv-btn-close--labelled {
+  width: auto;
+  height: auto;
+  min-width: 4.5rem;
+  min-height: 2.25rem;
+  padding: 0.45rem 0.95rem;
+  border-radius: 9px;
+  background: var(--bg-subtle, #f8fafc);
+  color: var(--fg, #1f2937);
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.pay-inv-btn-close--labelled:hover {
+  background: rgba(220, 38, 38, 0.08);
+  color: var(--danger);
+  border-color: rgba(220, 38, 38, 0.25);
+}
+
 .pay-inv-btn-close:hover {
   background: rgba(220, 38, 38, 0.08);
   color: var(--danger);
@@ -24806,6 +24829,34 @@
   flex-direction: column;
   max-height: calc(100vh - 2rem);
   overflow: hidden;
+}
+
+.customers-invoice-panel {
+  max-width: 760px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  overflow: visible;
+  max-height: none;
+}
+
+.customers-invoice-panel .pay-inv-detail-card--modern {
+  width: 100%;
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: 16px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.3);
+}
+
+.customers-invoice-panel .pay-detail-hero,
+.customers-invoice-panel .pay-detail-summary-card,
+.customers-invoice-panel .pay-detail-item-card,
+.customers-invoice-panel .pay-detail-payment-card,
+.customers-invoice-panel .pay-detail-info-card {
+  background: var(--bg-card);
 }
 
 .customers-memo-panel-header {
